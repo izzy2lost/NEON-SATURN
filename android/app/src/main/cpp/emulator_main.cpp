@@ -219,9 +219,6 @@ private:
             return false;
         }
 
-        m_saturn.configuration.video.threadedVDP1 = false;
-        m_saturn.configuration.video.threadedVDP2 = false;
-        m_saturn.configuration.video.threadedDeinterlacer = false;
         m_saturn.configuration.cdblock.useLLE = !m_config.cdbPath.empty();
         m_saturn.configuration.NotifyObservers();
 
