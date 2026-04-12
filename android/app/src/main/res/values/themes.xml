@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.NeonSaturn" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:statusBarColor">@color/neon_saturn_bg</item>
+        <item name="android:navigationBarColor">@color/neon_saturn_bg</item>
+        <item name="colorPrimary">@color/neon_saturn_primary</item>
+        <item name="colorOnPrimary">@color/neon_saturn_on_primary</item>
+        <item name="colorSurface">@color/neon_saturn_surface</item>
+        <item name="android:windowBackground">@color/neon_saturn_bg</item>
+    </style>
+
+    <style name="Theme.NeonSaturn.Emulator" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
+</resources>
+

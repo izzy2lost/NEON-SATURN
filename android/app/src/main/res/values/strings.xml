@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NEON SATURN</string>
+    <string name="launcher_summary">Import Saturn BIOS and disc files, or copy them into the app storage folders, then launch the emulator.</string>
+    <string name="ipl_title">IPL BIOS</string>
+    <string name="cdb_title">CD Block ROM</string>
+    <string name="disc_title">Disc Image</string>
+    <string name="import_ipl">Import BIOS</string>
+    <string name="import_cdb">Import CD Block ROM</string>
+    <string name="import_disc">Import Disc</string>
+    <string name="start_emulator">Start Emulator</string>
+    <string name="not_set">Not imported yet</string>
+    <string name="not_set_optional">Not imported yet (optional)</string>
+    <string name="storage_hint">App data lives under %1$s. Multi-file disc sets such as .cue/.bin must be copied there together.</string>
+</resources>
