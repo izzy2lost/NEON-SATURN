@@ -23,6 +23,8 @@ Introduced save state file version 12.
     - The cursor is kept below 15% of the top and above 35% of the bottom of the viewport.
 - Debugger: Manage SH2 breakpoints and watchpoints on the frontend and allow enabling/disabling them without removing from the list.
 - Debugger: Optimize SH2 breakpoints and watchpoints when debug tracing is enabled. They no longer become more expensive with the amount of entries added and the baseline cost is lower than before.
+- Debugger: Trace and display SH2 call stack.
+- Debugger: Trace and display SH2 data stack contents.
 - GameDB: Add new flags to double the clock rate of the MC68EC000 and stall VDP1 drawing on VRAM writes to improve compatibility with some games.
 - Input: Added support for mouse events.
 - Input: Mouse capture support for light gun and mouse peripherals, supporting these modes:
@@ -49,8 +51,8 @@ Introduced save state file version 12.
     - Chisato Moritaka - Watarase Bashi & Lala Sunshine -- crash at startup (#604)
     - Dragon Ball Z - Idainaru Dragon Ball Densetsu -- black screen after starting a new game (#538)
     - Metal Fighter Miku -- black screen after start menu (#466)
-    - Steamgear Mash -- flickering graphics (#440)
     - Spot Goes to Hollywood -- glitched graphics in European version only (#520)
+    - Steamgear Mash -- flickering graphics (#440)
 - GameDB: Force fast bus timings to fix crashes in Deep Fear. (#740)
 - Input: Fixed analog to D-Pad axis conversion to not overwrite whenever an input was released in opposite direction. (#754; @PringleElUno)
 - MIDI: Defend against crashes when the library fails to initialize.
@@ -64,12 +66,17 @@ Introduced save state file version 12.
 - VDP1: Increase PTM=1 drawing delay and apply it only during VBlank. Fixes flickering graphics on Earthworm Jim 2. (#745)
 - VDP1: Properly load save state data when threaded VDP1 rendering is enabled.
 - VDP1: Rework cycle counting method and increase cycle budget per frame. Fixes slowdowns in Road Rash and graphics glitches in multiple games, including Virtua Cop and Burning Rangers. (#704, #721, #722)
+- VDP1: Slow down VDP1 to fix no-boot regressing in Jikkyou Oshaberi Parodius. (#283)
 - VDP1: Stall VDP1 drawing on VRAM writes exclusively on Mega Man X3 and Rockman X3 to fix garbled sprites. (#244)
 - VDP1: Stop processing commands if encountering an all-zeros entry. Fixes invalid clipping coordinates in Sekai no Shasou kara - I Swiss-hen - Alps Tozantetsudou no Tabi. (#761)
 - VDP2: Apply VRAM access shift per bank to scroll NBGs with invalid timing patterns. Fixes World Heroes Perfect title screen shift and Cyberbots - Fullmetal Madness HUD shift and broken background in stage 2. (#756)
 - VDP2: Clear normal shadow flag on transparent sprite pixels. Fixes shadows extending vertically across the screen in Tokyo Shadow. (#752)
 - VDP2: Compute vertical cell scroll delays/offsets when enabling/disabling the effect in addition to access cycle changes.
 - VDP2: Consolidate sprite data handling and fix 16-bit readout of 8-bit sprite data. Fixes garbled graphics in NBA Live 98 in-game.
+- VDP2: Convert the "allow bitmap data access during SH-2 cycles" hack into a game-specific flag and enable it only for games that display issues with the strict timing checks:
+    - Lunar - Silver Star Story
+    - Mechanical Violator Hakaider
+    - Shin Kaitei Gunkan
 - VDP2: Fix and optimize per-dot coefficient access checks. Fixes graphics glitches in Radiant Silvergun when starting a new game after interrupting the AKA-O boss fight in attract mode.
 - VDP2: Fix NBG per dot special priority calculations. Fixes priority issues in Mr. Bones. (#703)
 - VDP2: Illegal CP accesses in low-res modes are handled differently between T0-T3 and T4-T7. Fixes gaps in backgrounds in X-Men vs. Street Fighter. (#775)

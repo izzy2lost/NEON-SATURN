@@ -133,7 +133,7 @@ public:
     /// @brief Switches to the software renderer.
     /// @return a pointer to the renderer, or `nullptr` if it failed to instantiate
     SoftwareVDPRenderer *UseSoftwareRenderer() {
-        auto *renderer = UseRenderer<SoftwareVDPRenderer>(m_state, vdp2DebugRenderOptions);
+        auto *renderer = UseRenderer<SoftwareVDPRenderer>(m_state, vdp2DebugRenderOptions, vdp2AccessPatternsConfig);
         if (renderer != nullptr) {
             renderer->EnableThreadedVDP1(m_config.video.threadedVDP1);
             renderer->EnableThreadedVDP2(m_config.video.threadedVDP2);
@@ -173,6 +173,15 @@ public:
 
     bool IsStallVDP1OnVRAMWrites() const {
         return m_stallVDP1OnVRAMWrites;
+    }
+
+    // Enable or disable VDP1 slowdown.
+    void SetSlowVDP1(bool enable) {
+        m_VDP1CyclesShift = enable ? 0 : 2;
+    }
+
+    bool IsSlowVDP1() const {
+        return m_VDP1CyclesShift == 0;
     }
 
     // -------------------------------------------------------------------------
@@ -404,6 +413,7 @@ private:
     static constexpr uint64 kVDP1TimingPenaltyPerWrite = 22;
     uint64 m_VDP1TimingPenaltyCycles; // accumulated cycle penalty
     bool m_stallVDP1OnVRAMWrites = false;
+    uint64 m_VDP1CyclesShift = 2;
 
     void VDP1SwapFramebuffer();
     void VDP1BeginFrame();
@@ -432,6 +442,7 @@ public:
     bool IsLayerEnabled(Layer layer) const;
 
     config::VDP2DebugRender vdp2DebugRenderOptions;
+    config::VDP2AccessPatternsConfig vdp2AccessPatternsConfig;
 
     class Probe {
     public:
