@@ -3,6 +3,7 @@
 #include "audio_system.hpp"
 #include "rom_loader.hpp"
 
+#include <ymir/core/hash.hpp>
 #include <ymir/hw/scsp/scsp.hpp>
 #include <ymir/hw/smpc/peripheral/peripheral_report.hpp>
 #include <ymir/hw/vdp/renderer/vdp_renderer_base.hpp>
@@ -14,13 +15,20 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
+#include <cereal/archives/portable_binary.hpp>
+#include <jni.h>
+#include <serdes/cereal_savestate.hpp>
+
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <memory>
-#include <string_view>
+#include <mutex>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -29,7 +37,17 @@ namespace neonsaturn::android {
 
 using ymir::peripheral::Button;
 
+class EmulatorApp;
+
 namespace {
+
+struct ActionResult {
+    bool success = false;
+    std::string message;
+};
+
+std::mutex g_activeAppMutex;
+EmulatorApp *g_activeApp = nullptr;
 
 std::string_view ArgValue(std::string_view argument, std::string_view prefix) {
     if (!argument.starts_with(prefix)) {
@@ -50,9 +68,45 @@ BootstrapConfig BootstrapConfigFromArgs(int argc, char **argv) {
             config.discPath.assign(value);
         } else if (const auto value = ArgValue(argument, "--data-root="); !value.empty()) {
             config.dataRoot.assign(value);
+        } else if (const auto value = ArgValue(argument, "--gamecontrollerdb="); !value.empty()) {
+            config.gameControllerDbPath.assign(value);
         }
     }
     return config;
+}
+
+void SetActiveApp(EmulatorApp *app) {
+    std::scoped_lock lock{g_activeAppMutex};
+    g_activeApp = app;
+}
+
+EmulatorApp *GetActiveApp() {
+    std::scoped_lock lock{g_activeAppMutex};
+    return g_activeApp;
+}
+
+void RequestQuickActionsDialog() {
+    auto *env = static_cast<JNIEnv *>(SDL_GetAndroidJNIEnv());
+    auto *activity = static_cast<jobject>(SDL_GetAndroidActivity());
+    if (env == nullptr || activity == nullptr) {
+        return;
+    }
+
+    jclass activityClass = env->GetObjectClass(activity);
+    if (activityClass == nullptr) {
+        return;
+    }
+
+    const jmethodID method = env->GetStaticMethodID(activityClass, "requestQuickActionsFromNative", "()V");
+    if (method != nullptr) {
+        env->CallStaticVoidMethod(activityClass, method);
+        if (env->ExceptionCheck()) {
+            env->ExceptionDescribe();
+            env->ExceptionClear();
+        }
+    }
+
+    env->DeleteLocalRef(activityClass);
 }
 
 } // namespace
@@ -62,6 +116,101 @@ public:
     explicit EmulatorApp(BootstrapConfig config)
         : m_config(std::move(config)) {}
 
+    void SetPaused(bool paused) {
+        if (m_paused.exchange(paused) == paused) {
+            return;
+        }
+
+        ResetInputs();
+
+        if (paused) {
+            if (m_audioStarted && m_audioSystem.IsRunning()) {
+                m_audioSystem.Stop();
+            }
+        } else if (m_audioStarted && !m_audioSystem.IsRunning()) {
+            m_audioSystem.Start();
+        }
+    }
+
+    [[nodiscard]] ActionResult SaveStateToSlot(std::size_t slotIndex) {
+        if (slotIndex >= 10) {
+            return {.success = false, .message = "Invalid save state slot"};
+        }
+
+        try {
+            std::scoped_lock lock{m_coreMutex};
+
+            ymir::savestate::SaveState state{};
+            m_saturn.SaveState(state);
+
+            std::error_code error{};
+            const auto gameStatesPath = SaveStatesDirectory(state.discHash);
+            std::filesystem::create_directories(gameStatesPath, error);
+            if (error) {
+                return {.success = false, .message = "Could not prepare save state storage"};
+            }
+
+            const auto statePath = gameStatesPath / (std::to_string(slotIndex) + ".savestate");
+            std::ofstream out{statePath, std::ios::binary};
+            if (!out) {
+                return {.success = false, .message = "Could not open the save state slot"};
+            }
+
+            cereal::PortableBinaryOutputArchive archive{out};
+            archive(state);
+            return {.success = true, .message = "State 1 saved"};
+        } catch (const cereal::Exception &e) {
+            return {.success = false, .message = std::string{"Save failed: "} + e.what()};
+        } catch (const std::exception &e) {
+            return {.success = false, .message = std::string{"Save failed: "} + e.what()};
+        } catch (...) {
+            return {.success = false, .message = "Save failed"};
+        }
+    }
+
+    [[nodiscard]] ActionResult LoadStateFromSlot(std::size_t slotIndex) {
+        if (slotIndex >= 10) {
+            return {.success = false, .message = "Invalid save state slot"};
+        }
+
+        try {
+            std::scoped_lock lock{m_coreMutex};
+
+            const auto discHash = m_saturn.GetDiscHash();
+            const auto statePath = SaveStatesDirectory(discHash) / (std::to_string(slotIndex) + ".savestate");
+            std::ifstream in{statePath, std::ios::binary};
+            if (!in) {
+                return {.success = false, .message = "State 1 is empty"};
+            }
+
+            ymir::savestate::SaveState state{};
+            cereal::PortableBinaryInputArchive archive{in};
+            archive(state);
+
+            if (!state.ValidateDiscHash(discHash)) {
+                return {.success = false, .message = "That state belongs to a different game"};
+            }
+
+            if (!m_saturn.LoadState(state, true)) {
+                return {.success = false, .message = "Could not load that state"};
+            }
+
+            ResetInputs();
+            return {.success = true, .message = "State 1 loaded"};
+        } catch (const cereal::Exception &e) {
+            return {.success = false, .message = std::string{"Load failed: "} + e.what()};
+        } catch (const std::exception &e) {
+            return {.success = false, .message = std::string{"Load failed: "} + e.what()};
+        } catch (...) {
+            return {.success = false, .message = "Load failed"};
+        }
+    }
+
+    void RequestStop() {
+        ResetInputs();
+        m_running = false;
+    }
+
     int Run() {
         SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
 
@@ -69,6 +218,8 @@ public:
             SDL_Log("SDL_Init failed: %s", SDL_GetError());
             return 1;
         }
+
+        LoadGameControllerDatabase();
 
         if (!CreateWindowAndRenderer()) {
             Shutdown();
@@ -85,17 +236,35 @@ public:
             return 1;
         }
 
-        while (m_running) {
+        SetActiveApp(this);
+
+        while (m_running.load()) {
             SDL_Event event{};
+            if (m_paused.load()) {
+                if (SDL_WaitEventTimeout(&event, 16)) {
+                    HandleEvent(event);
+                    while (SDL_PollEvent(&event)) {
+                        HandleEvent(event);
+                    }
+                }
+                continue;
+            }
+
             while (SDL_PollEvent(&event)) {
                 HandleEvent(event);
             }
 
-            if (!m_running) {
+            if (!m_running.load()) {
                 break;
             }
 
-            m_saturn.RunFrame();
+            {
+                std::scoped_lock lock{m_coreMutex};
+                if (!m_running.load() || m_paused.load()) {
+                    continue;
+                }
+                m_saturn.RunFrame();
+            }
             Present();
         }
 
@@ -118,6 +287,7 @@ private:
     SDL_Texture *m_texture = nullptr;
     SDL_Gamepad *m_gamepad = nullptr;
     SDL_JoystickID m_gamepadId = 0;
+    std::mutex m_coreMutex{};
 
     std::vector<std::uint32_t> m_framebuffer;
     std::uint32_t m_frameWidth = 320;
@@ -125,7 +295,8 @@ private:
     std::uint32_t m_textureWidth = 0;
     std::uint32_t m_textureHeight = 0;
     bool m_frameDirty = false;
-    bool m_running = true;
+    std::atomic_bool m_running = true;
+    std::atomic_bool m_paused = false;
     bool m_audioStarted = false;
 
     Button m_buttons = Button::Default;
@@ -144,6 +315,30 @@ private:
 
     std::filesystem::path SavesDirectory() const {
         return std::filesystem::path{m_config.dataRoot} / "saves";
+    }
+
+    std::filesystem::path SaveStatesRootDirectory() const {
+        return StateDirectory() / "savestates";
+    }
+
+    std::filesystem::path SaveStatesDirectory(const ymir::XXH128Hash &discHash) const {
+        return SaveStatesRootDirectory() / ymir::ToString(discHash);
+    }
+
+    void LoadGameControllerDatabase() const {
+        if (m_config.gameControllerDbPath.empty()) {
+            return;
+        }
+
+        SDL_Log("Loading controller database from %s", m_config.gameControllerDbPath.c_str());
+        const int result = SDL_AddGamepadMappingsFromFile(m_config.gameControllerDbPath.c_str());
+        if (result < 0) {
+            SDL_LogWarn(
+                SDL_LOG_CATEGORY_APPLICATION, "Failed to load controller database: %s", SDL_GetError());
+            return;
+        }
+
+        SDL_Log("Loaded %d controller mappings", result);
     }
 
     bool CreateWindowAndRenderer() {
@@ -302,7 +497,7 @@ private:
             break;
 
         case SDL_EVENT_DID_ENTER_FOREGROUND:
-            if (m_audioStarted && !m_audioSystem.IsRunning()) {
+            if (!m_paused.load() && m_audioStarted && !m_audioSystem.IsRunning()) {
                 m_audioSystem.Start();
             }
             break;
@@ -319,21 +514,32 @@ private:
                 SDL_CloseGamepad(m_gamepad);
                 m_gamepad = nullptr;
                 m_gamepadId = 0;
+                ResetInputs();
             }
             break;
 
         case SDL_EVENT_GAMEPAD_AXIS_MOTION:
-            HandleGamepadAxis(event);
+            if (!m_paused.load()) {
+                HandleGamepadAxis(event);
+            }
             break;
 
         case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
         case SDL_EVENT_GAMEPAD_BUTTON_UP:
-            HandleGamepadButton(event.gbutton.button, event.gbutton.down);
+            if (event.gbutton.button == SDL_GAMEPAD_BUTTON_BACK && event.gbutton.down) {
+                RequestQuickActionsDialog();
+                break;
+            }
+            if (!m_paused.load()) {
+                HandleGamepadButton(event.gbutton.button, event.gbutton.down);
+            }
             break;
 
         case SDL_EVENT_KEY_DOWN:
         case SDL_EVENT_KEY_UP:
-            HandleKeyboard(event.key.scancode, event.key.down);
+            if (!m_paused.load()) {
+                HandleKeyboard(event.key.scancode, event.key.down);
+            }
             break;
 
         default:
@@ -356,11 +562,6 @@ private:
         case SDL_SCANCODE_D: SetButtonState(Button::Z, pressed); break;
         case SDL_SCANCODE_Q: SetButtonState(Button::L, pressed); break;
         case SDL_SCANCODE_W: SetButtonState(Button::R, pressed); break;
-        case SDL_SCANCODE_ESCAPE:
-            if (pressed) {
-                m_running = false;
-            }
-            break;
         default:
             break;
         }
@@ -405,14 +606,21 @@ private:
         case SDL_GAMEPAD_BUTTON_DPAD_DOWN: m_dpadDown = pressed; RebuildDirections(); break;
         case SDL_GAMEPAD_BUTTON_DPAD_LEFT: m_dpadLeft = pressed; RebuildDirections(); break;
         case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: m_dpadRight = pressed; RebuildDirections(); break;
-        case SDL_GAMEPAD_BUTTON_BACK:
-            if (pressed) {
-                m_running = false;
-            }
-            break;
         default:
             break;
         }
+    }
+
+    void ResetInputs() {
+        m_buttons = Button::Default;
+        m_dpadUp = false;
+        m_dpadDown = false;
+        m_dpadLeft = false;
+        m_dpadRight = false;
+        m_stickUp = false;
+        m_stickDown = false;
+        m_stickLeft = false;
+        m_stickRight = false;
     }
 
     void RebuildDirections() {
@@ -513,6 +721,8 @@ private:
     }
 
     void Shutdown() {
+        SetActiveApp(nullptr);
+
         if (!m_config.dataRoot.empty()) {
             std::error_code error{};
             m_saturn.SMPC.SavePersistentDataTo(StateDirectory() / "smpc.bin", error);
@@ -545,15 +755,48 @@ private:
     }
 };
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_izzy2lost_neonsaturn_EmulatorActivity_nativeSetPaused(JNIEnv *, jobject, jboolean paused) {
+    if (auto *app = GetActiveApp(); app != nullptr) {
+        app->SetPaused(paused == JNI_TRUE);
+    }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_izzy2lost_neonsaturn_EmulatorActivity_nativeSaveState(JNIEnv *env, jobject, jint slotIndex) {
+    if (auto *app = GetActiveApp(); app != nullptr) {
+        return env->NewStringUTF(app->SaveStateToSlot(static_cast<std::size_t>(slotIndex)).message.c_str());
+    }
+
+    return env->NewStringUTF("Emulator is not ready yet");
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_izzy2lost_neonsaturn_EmulatorActivity_nativeLoadState(JNIEnv *env, jobject, jint slotIndex) {
+    if (auto *app = GetActiveApp(); app != nullptr) {
+        return env->NewStringUTF(app->LoadStateFromSlot(static_cast<std::size_t>(slotIndex)).message.c_str());
+    }
+
+    return env->NewStringUTF("Emulator is not ready yet");
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_izzy2lost_neonsaturn_EmulatorActivity_nativeExitEmulator(JNIEnv *, jobject) {
+    if (auto *app = GetActiveApp(); app != nullptr) {
+        app->RequestStop();
+    }
+}
+
 } // namespace neonsaturn::android
 
 int SDL_main(int argc, char **argv) {
     auto config = neonsaturn::android::BootstrapConfigFromArgs(argc, argv);
     SDL_Log(
-        "Bootstrap args parsed: ipl=%s disc=%s cdb=%s dataRoot=%s",
+        "Bootstrap args parsed: ipl=%s disc=%s cdb=%s controllerdb=%s dataRoot=%s",
         config.iplPath.empty() ? "missing" : "set",
         config.discPath.empty() ? "missing" : "set",
         config.cdbPath.empty() ? "missing" : "unset",
+        config.gameControllerDbPath.empty() ? "unset" : "set",
         config.dataRoot.empty() ? "missing" : "set");
     auto app = std::make_unique<neonsaturn::android::EmulatorApp>(std::move(config));
     return app->Run();

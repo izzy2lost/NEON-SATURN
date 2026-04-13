@@ -9,10 +9,10 @@ struct BootstrapConfig {
     std::string cdbPath;
     std::string discPath;
     std::string dataRoot;
+    std::string gameControllerDbPath;
 };
 
 void SetBootstrapConfig(BootstrapConfig config);
 BootstrapConfig GetBootstrapConfig();
 
 } // namespace neonsaturn::android
-

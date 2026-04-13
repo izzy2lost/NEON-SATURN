@@ -1,4 +1,5 @@
 find_package(SDL3 REQUIRED CONFIG)
+find_package(cereal CONFIG REQUIRED)
 
 add_library(neonsaturn-main SHARED
     bootstrap.cpp
@@ -20,6 +21,7 @@ target_include_directories(neonsaturn-main PRIVATE
 )
 
 target_link_libraries(neonsaturn-main PRIVATE
+    cereal::cereal
     SDL3::SDL3
     ymir-core
     android

@@ -1,23 +1,42 @@
 package com.izzy2lost.neonsaturn
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts.OpenDocument
+import androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.isVisible
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.progressindicator.LinearProgressIndicator
 import java.io.File
 import java.util.Locale
+import kotlin.concurrent.thread
 
 class LauncherActivity : AppCompatActivity() {
     private lateinit var store: BootstrapStore
     private lateinit var importer: ContentImporter
     private lateinit var paths: NeonSaturnPaths
+    private lateinit var libraryAdapter: GameLibraryAdapter
 
+    private lateinit var wizardContainer: android.view.View
+    private lateinit var libraryContainer: android.view.View
     private lateinit var iplValueText: TextView
     private lateinit var cdbValueText: TextView
-    private lateinit var discValueText: TextView
-    private lateinit var startButton: MaterialButton
+    private lateinit var gamesFolderValueText: TextView
+    private lateinit var libraryFolderValueText: TextView
+    private lateinit var emptyLibraryText: TextView
+    private lateinit var libraryProgressIndicator: LinearProgressIndicator
+    private lateinit var libraryRecyclerView: RecyclerView
+
+    private var currentGamesFolderUri: String? = null
+    private var currentLibraryEntries: List<GameLibraryEntry> = emptyList()
+    private var libraryScanGeneration = 0
+    private var launchInProgress = false
 
     private val importIplLauncher = registerForActivityResult(OpenDocument()) { uri ->
         uri ?: return@registerForActivityResult
@@ -29,9 +48,20 @@ class LauncherActivity : AppCompatActivity() {
         importDocument(uri, ContentBucket.CDB) { file -> store.saveCdb(file.absolutePath) }
     }
 
-    private val importDiscLauncher = registerForActivityResult(OpenDocument()) { uri ->
+    private val gamesFolderLauncher = registerForActivityResult(OpenDocumentTree()) { uri ->
         uri ?: return@registerForActivityResult
-        importDocument(uri, ContentBucket.DISC) { file -> store.saveDisc(file.absolutePath) }
+        runCatching {
+            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            store.saveGamesFolderUri(uri.toString())
+        }.onFailure { error ->
+            Toast.makeText(
+                this,
+                "Unable to use that games folder: ${error.message ?: error::class.java.simpleName}",
+                Toast.LENGTH_LONG
+            ).show()
+        }.onSuccess {
+            refreshUi(forceRescan = true)
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -44,11 +74,22 @@ class LauncherActivity : AppCompatActivity() {
         paths.ensureAll()
         importer = ContentImporter(this, paths)
 
+        libraryAdapter = GameLibraryAdapter(::launchGame)
+
+        wizardContainer = findViewById(R.id.wizardContainer)
+        libraryContainer = findViewById(R.id.libraryContainer)
         iplValueText = findViewById(R.id.iplValueText)
         cdbValueText = findViewById(R.id.cdbValueText)
-        discValueText = findViewById(R.id.discValueText)
-        startButton = findViewById(R.id.startButton)
-        findViewById<TextView>(R.id.hintText).text =
+        gamesFolderValueText = findViewById(R.id.gamesFolderValueText)
+        libraryFolderValueText = findViewById(R.id.libraryFolderValueText)
+        emptyLibraryText = findViewById(R.id.emptyLibraryText)
+        libraryProgressIndicator = findViewById(R.id.libraryProgressIndicator)
+        libraryRecyclerView = findViewById(R.id.libraryRecyclerView)
+
+        libraryRecyclerView.layoutManager = LinearLayoutManager(this)
+        libraryRecyclerView.adapter = libraryAdapter
+
+        findViewById<TextView>(R.id.storageHintText).text =
             getString(R.string.storage_hint, paths.root.absolutePath)
 
         findViewById<MaterialButton>(R.id.importIplButton).setOnClickListener {
@@ -57,23 +98,32 @@ class LauncherActivity : AppCompatActivity() {
         findViewById<MaterialButton>(R.id.importCdbButton).setOnClickListener {
             importCdbLauncher.launch(arrayOf("*/*"))
         }
-        findViewById<MaterialButton>(R.id.importDiscButton).setOnClickListener {
-            importDiscLauncher.launch(arrayOf("*/*"))
+        findViewById<MaterialButton>(R.id.chooseGamesFolderButton).setOnClickListener {
+            gamesFolderLauncher.launch(null)
         }
-        startButton.setOnClickListener {
-            launchEmulator()
+        findViewById<MaterialButton>(R.id.libraryChangeGamesFolderButton).setOnClickListener {
+            gamesFolderLauncher.launch(null)
+        }
+        findViewById<MaterialButton>(R.id.libraryImportIplButton).setOnClickListener {
+            importIplLauncher.launch(arrayOf("*/*"))
+        }
+        findViewById<MaterialButton>(R.id.libraryImportCdbButton).setOnClickListener {
+            importCdbLauncher.launch(arrayOf("*/*"))
+        }
+        findViewById<MaterialButton>(R.id.libraryRefreshButton).setOnClickListener {
+            refreshUi(forceRescan = true)
         }
 
-        refreshUi()
+        refreshUi(forceRescan = true)
     }
 
     override fun onResume() {
         super.onResume()
-        refreshUi()
+        refreshUi(forceRescan = false)
     }
 
     private fun importDocument(
-        uri: android.net.Uri,
+        uri: Uri,
         bucket: ContentBucket,
         onStored: (File) -> Unit
     ) {
@@ -81,7 +131,7 @@ class LauncherActivity : AppCompatActivity() {
             importer.importDocument(uri, bucket)
         }.onSuccess { file ->
             onStored(file)
-            refreshUi()
+            refreshUi(forceRescan = false)
         }.onFailure { error ->
             Toast.makeText(
                 this,
@@ -91,34 +141,137 @@ class LauncherActivity : AppCompatActivity() {
         }
     }
 
-    private fun refreshUi() {
+    private fun refreshUi(forceRescan: Boolean) {
         val selection = resolveSelection()
+        val gamesFolderUri = selection.gamesFolderUri
+        val setupComplete = selection.iplPath != null && gamesFolderUri != null
+
         iplValueText.text = selection.iplPath?.let(::fileLabel) ?: getString(R.string.not_set)
         cdbValueText.text = selection.cdbPath?.let(::fileLabel) ?: getString(R.string.not_set_optional)
-        discValueText.text = selection.discPath?.let(::fileLabel) ?: getString(R.string.not_set)
-        startButton.isEnabled = selection.iplPath != null && selection.discPath != null
+        val folderLabel = gamesFolderUri?.let(::folderLabel) ?: getString(R.string.not_set)
+        gamesFolderValueText.text = folderLabel
+        libraryFolderValueText.text = folderLabel
+
+        wizardContainer.isVisible = !setupComplete
+        libraryContainer.isVisible = setupComplete
+
+        if (!setupComplete) {
+            currentGamesFolderUri = null
+            currentLibraryEntries = emptyList()
+            libraryAdapter.submitList(emptyList())
+            emptyLibraryText.isVisible = false
+            setLibraryLoading(false)
+            return
+        }
+
+        if (forceRescan || currentGamesFolderUri != gamesFolderUri || currentLibraryEntries.isEmpty()) {
+            refreshLibrary(requireNotNull(gamesFolderUri))
+        }
     }
 
-    private fun launchEmulator() {
+    private fun refreshLibrary(gamesFolderUri: String) {
+        val scanGeneration = ++libraryScanGeneration
+        currentGamesFolderUri = gamesFolderUri
+        setLibraryLoading(true)
+        emptyLibraryText.isVisible = false
+
+        thread(name = "game-library-scan") {
+            val result = runCatching {
+                applicationContext.scanGameLibrary(Uri.parse(gamesFolderUri))
+            }
+
+            runOnUiThread {
+                if (isFinishing || scanGeneration != libraryScanGeneration) {
+                    return@runOnUiThread
+                }
+
+                setLibraryLoading(false)
+
+                result.onSuccess { entries ->
+                    currentLibraryEntries = entries
+                    libraryAdapter.submitList(entries)
+                    emptyLibraryText.isVisible = entries.isEmpty()
+                    emptyLibraryText.text = getString(R.string.library_empty)
+                }.onFailure { error ->
+                    currentLibraryEntries = emptyList()
+                    libraryAdapter.submitList(emptyList())
+                    emptyLibraryText.isVisible = true
+                    emptyLibraryText.text = getString(
+                        R.string.library_scan_error_inline,
+                        error.message ?: error::class.java.simpleName
+                    )
+                }
+            }
+        }
+    }
+
+    private fun launchGame(entry: GameLibraryEntry) {
+        if (launchInProgress) {
+            return
+        }
+
         val selection = resolveSelection()
-        val validationError = validateSelection(selection)
+        val validationError = validateCoreSelection(selection)
         if (validationError != null) {
             Toast.makeText(this, validationError, Toast.LENGTH_LONG).show()
             return
         }
 
-        runCatching {
-            startActivity(EmulatorActivity.createIntent(this, selection, paths))
-        }.onFailure { error ->
-            Toast.makeText(
-                this,
-                "Unable to launch emulator: ${error.message ?: error::class.java.simpleName}",
-                Toast.LENGTH_LONG
-            ).show()
+        launchInProgress = true
+        setLibraryLoading(true)
+
+        thread(name = "game-launch-prep") {
+            val result = runCatching {
+                val stagedDisc = applicationContext.stageGameForLaunch(entry, paths)
+                val gameControllerDbPath = applicationContext.installBundledGameControllerDb(paths).absolutePath
+                val launchSelection = StoredLaunchSelection(
+                    iplPath = selection.iplPath,
+                    cdbPath = selection.cdbPath,
+                    discPath = stagedDisc.absolutePath,
+                    gamesFolderUri = selection.gamesFolderUri
+                )
+
+                validateSelection(launchSelection)?.let { error ->
+                    throw IllegalStateException(error)
+                }
+
+                launchSelection to gameControllerDbPath
+            }
+
+            runOnUiThread {
+                launchInProgress = false
+                setLibraryLoading(false)
+                if (isFinishing) {
+                    return@runOnUiThread
+                }
+
+                result.onSuccess { (launchSelection, gameControllerDbPath) ->
+                    startActivity(EmulatorActivity.createIntent(this, launchSelection, paths, gameControllerDbPath))
+                }.onFailure { error ->
+                    Toast.makeText(
+                        this,
+                        "Unable to launch ${entry.title}: ${error.message ?: error::class.java.simpleName}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
         }
     }
 
+    private fun setLibraryLoading(loading: Boolean) {
+        libraryProgressIndicator.isVisible = loading
+        libraryRecyclerView.alpha = if (loading) 0.5f else 1.0f
+        libraryRecyclerView.isEnabled = !loading
+    }
+
     private fun fileLabel(path: String): String = File(path).name
+
+    private fun folderLabel(uriString: String): String {
+        val uri = Uri.parse(uriString)
+        return androidx.documentfile.provider.DocumentFile.fromTreeUri(this, uri)?.name
+            ?: uri.lastPathSegment
+            ?: getString(R.string.games_folder_unknown)
+    }
 
     private fun migrateLegacyStorageIfNeeded() {
         val legacyPaths = applicationContext.legacyNeonSaturnPaths()
@@ -152,15 +305,23 @@ class LauncherActivity : AppCompatActivity() {
 
     private fun resolveSelection(): StoredLaunchSelection {
         val stored = store.load()
-        val resolved = StoredLaunchSelection(
-            iplPath = resolveStoredOrFirst(stored.iplPath, paths.iplDir, ROM_EXTENSIONS),
-            cdbPath = resolveStoredOrFirst(stored.cdbPath, paths.cdbDir, ROM_EXTENSIONS),
-            discPath = resolveStoredOrFirst(stored.discPath, paths.discDir, DISC_ENTRY_EXTENSIONS)
-        )
-        if (resolved != stored) {
-            store.save(resolved)
+        val resolvedIplPath = resolveStoredOrFirst(stored.iplPath, paths.iplDir, ROM_EXTENSIONS)
+        val resolvedCdbPath = resolveStoredOrFirst(stored.cdbPath, paths.cdbDir, ROM_EXTENSIONS)
+
+        if (resolvedIplPath != stored.iplPath || resolvedCdbPath != stored.cdbPath) {
+            store.save(
+                stored.copy(
+                    iplPath = resolvedIplPath,
+                    cdbPath = resolvedCdbPath
+                )
+            )
         }
-        return resolved
+
+        return stored.copy(
+            iplPath = resolvedIplPath,
+            cdbPath = resolvedCdbPath,
+            discPath = null
+        )
     }
 
     private fun resolveStoredOrFirst(
@@ -181,28 +342,32 @@ class LauncherActivity : AppCompatActivity() {
             ?.absolutePath
     }
 
-    private fun validateSelection(selection: StoredLaunchSelection): String? {
-        val iplPath = selection.iplPath ?: return "Import or copy a Saturn BIOS first."
-        val discPath = selection.discPath ?: return "Import or copy a Saturn disc image first."
-
-        val iplFile = File(iplPath)
-        if (!iplFile.isFile) {
-            return "The selected BIOS file is missing. Reimport it or copy one into ${paths.iplDir.absolutePath}."
+    private fun validateCoreSelection(selection: StoredLaunchSelection): String? {
+        val iplPath = selection.iplPath ?: return getString(R.string.validation_missing_bios)
+        if (!File(iplPath).isFile) {
+            return getString(R.string.validation_missing_selected_bios, paths.iplDir.absolutePath)
         }
 
         val cdbPath = selection.cdbPath
         if (cdbPath != null && !File(cdbPath).isFile) {
             store.saveCdb(null)
-            return "The selected CD Block ROM is missing. Reimport it or remove it from ${paths.cdbDir.absolutePath}."
+            return getString(R.string.validation_missing_selected_cdb, paths.cdbDir.absolutePath)
         }
 
+        return null
+    }
+
+    private fun validateSelection(selection: StoredLaunchSelection): String? {
+        validateCoreSelection(selection)?.let { return it }
+
+        val discPath = selection.discPath ?: return getString(R.string.validation_missing_disc)
         val discFile = File(discPath)
         if (!discFile.isFile) {
-            return "The selected disc image is missing. Reimport it or copy one into ${paths.discDir.absolutePath}."
+            return getString(R.string.validation_missing_selected_disc)
         }
 
         if (isLikelyMultiFileDescriptor(discFile) && !hasLikelyCompanionFiles(discFile)) {
-            return "This disc format needs its companion track files. Copy the full set into ${paths.discDir.absolutePath}."
+            return getString(R.string.validation_missing_companion_disc_files)
         }
 
         return null
@@ -233,7 +398,6 @@ class LauncherActivity : AppCompatActivity() {
 
     private companion object {
         val ROM_EXTENSIONS = setOf("bin", "rom")
-        val DISC_ENTRY_EXTENSIONS = setOf("chd", "cue", "iso", "ccd", "mds")
         val MULTI_FILE_DISC_DESCRIPTOR_EXTENSIONS = setOf("cue", "ccd", "mds")
     }
 }

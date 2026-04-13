@@ -10,11 +10,12 @@ data class NeonSaturnPaths(
     val iplDir: File,
     val cdbDir: File,
     val discDir: File,
+    val supportDir: File,
     val stateDir: File,
     val savesDir: File
 ) {
     fun ensureAll() {
-        listOf(root, iplDir, cdbDir, discDir, stateDir, savesDir).forEach { directory ->
+        listOf(root, iplDir, cdbDir, discDir, supportDir, stateDir, savesDir).forEach { directory ->
             if (!directory.exists()) {
                 directory.mkdirs()
             }
@@ -37,6 +38,7 @@ private fun buildNeonSaturnPaths(baseDir: File): NeonSaturnPaths {
         iplDir = File(root, "ipl"),
         cdbDir = File(root, "cdb"),
         discDir = File(root, "disc"),
+        supportDir = File(root, "support"),
         stateDir = File(root, "state"),
         savesDir = File(root, "saves")
     )

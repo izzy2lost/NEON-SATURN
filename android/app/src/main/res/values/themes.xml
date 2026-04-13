@@ -13,5 +13,8 @@
         <item name="android:windowFullscreen">true</item>
         <item name="android:windowBackground">@android:color/black</item>
     </style>
-</resources>
 
+    <style name="ThemeOverlay.NeonSaturn.QuickActionsDialog" parent="ThemeOverlay.Material3.MaterialAlertDialog">
+        <item name="materialAlertDialogBodyTextStyle">@style/TextAppearance.Material3.BodyLarge</item>
+    </style>
+</resources>

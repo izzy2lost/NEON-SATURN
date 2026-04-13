@@ -6,7 +6,8 @@ import java.io.File
 data class StoredLaunchSelection(
     val iplPath: String? = null,
     val cdbPath: String? = null,
-    val discPath: String? = null
+    val discPath: String? = null,
+    val gamesFolderUri: String? = null
 )
 
 class BootstrapStore(context: Context) {
@@ -17,7 +18,8 @@ class BootstrapStore(context: Context) {
         StoredLaunchSelection(
             iplPath = preferences.getString(KEY_IPL_PATH, null),
             cdbPath = preferences.getString(KEY_CDB_PATH, null),
-            discPath = preferences.getString(KEY_DISC_PATH, null)
+            discPath = preferences.getString(KEY_DISC_PATH, null),
+            gamesFolderUri = preferences.getString(KEY_GAMES_FOLDER_URI, null)
         )
 
     fun save(selection: StoredLaunchSelection) {
@@ -25,6 +27,7 @@ class BootstrapStore(context: Context) {
             .putString(KEY_IPL_PATH, selection.iplPath)
             .putString(KEY_CDB_PATH, selection.cdbPath)
             .putString(KEY_DISC_PATH, selection.discPath)
+            .putString(KEY_GAMES_FOLDER_URI, selection.gamesFolderUri)
             .apply()
     }
 
@@ -38,6 +41,10 @@ class BootstrapStore(context: Context) {
 
     fun saveDisc(path: String?) {
         preferences.edit().putString(KEY_DISC_PATH, path).apply()
+    }
+
+    fun saveGamesFolderUri(uri: String?) {
+        preferences.edit().putString(KEY_GAMES_FOLDER_URI, uri).apply()
     }
 
     fun migratePaths(fromRoot: File, toRoot: File) {
@@ -64,5 +71,6 @@ class BootstrapStore(context: Context) {
         private const val KEY_IPL_PATH = "ipl_path"
         private const val KEY_CDB_PATH = "cdb_path"
         private const val KEY_DISC_PATH = "disc_path"
+        private const val KEY_GAMES_FOLDER_URI = "games_folder_uri"
     }
 }
