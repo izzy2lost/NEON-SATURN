@@ -7,7 +7,9 @@
     android:layout_marginBottom="12dp"
     android:clickable="true"
     android:focusable="true"
-    app:cardUseCompatPadding="true">
+    app:cardUseCompatPadding="true"
+    app:strokeColor="@color/neon_saturn_primary"
+    app:strokeWidth="1dp">
 
     <LinearLayout
         android:layout_width="match_parent"

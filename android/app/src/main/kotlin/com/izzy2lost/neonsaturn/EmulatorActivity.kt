@@ -72,6 +72,8 @@ class EmulatorActivity : SDLActivity() {
         intent.getStringExtra(EXTRA_DATA_ROOT)?.let { arguments += "--data-root=$it" }
         intent.getStringExtra(EXTRA_CDB_PATH)?.let { arguments += "--cdb=$it" }
         intent.getStringExtra(EXTRA_GAME_CONTROLLER_DB_PATH)?.let { arguments += "--gamecontrollerdb=$it" }
+        intent.getStringExtra(EXTRA_ASPECT_RATIO)?.let { arguments += "--aspect-ratio=$it" }
+        intent.getStringExtra(EXTRA_TEXTURE_FILTER)?.let { arguments += "--texture-filter=$it" }
         return arguments.toTypedArray()
     }
 
@@ -146,12 +148,18 @@ class EmulatorActivity : SDLActivity() {
         private const val EXTRA_DATA_ROOT = "com.izzy2lost.neonsaturn.extra.DATA_ROOT"
         private const val EXTRA_GAME_CONTROLLER_DB_PATH =
             "com.izzy2lost.neonsaturn.extra.GAME_CONTROLLER_DB_PATH"
+        private const val EXTRA_ASPECT_RATIO =
+            "com.izzy2lost.neonsaturn.extra.ASPECT_RATIO"
+        private const val EXTRA_TEXTURE_FILTER =
+            "com.izzy2lost.neonsaturn.extra.TEXTURE_FILTER"
 
         fun createIntent(
             context: Context,
             selection: StoredLaunchSelection,
             paths: NeonSaturnPaths,
-            gameControllerDbPath: String? = null
+            gameControllerDbPath: String? = null,
+            aspectRatio: String = BootstrapStore.ASPECT_4_3,
+            textureFilter: String = BootstrapStore.FILTER_NEAREST
         ): Intent =
             Intent(context, EmulatorActivity::class.java).apply {
                 putExtra(EXTRA_IPL_PATH, selection.iplPath)
@@ -159,6 +167,8 @@ class EmulatorActivity : SDLActivity() {
                 putExtra(EXTRA_DISC_PATH, selection.discPath)
                 putExtra(EXTRA_DATA_ROOT, paths.root.absolutePath)
                 putExtra(EXTRA_GAME_CONTROLLER_DB_PATH, gameControllerDbPath)
+                putExtra(EXTRA_ASPECT_RATIO, aspectRatio)
+                putExtra(EXTRA_TEXTURE_FILTER, textureFilter)
             }
 
         private fun updateCurrentInstance(instance: EmulatorActivity?) {

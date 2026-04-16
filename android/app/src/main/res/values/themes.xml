@@ -17,4 +17,8 @@
     <style name="ThemeOverlay.NeonSaturn.QuickActionsDialog" parent="ThemeOverlay.Material3.MaterialAlertDialog">
         <item name="materialAlertDialogBodyTextStyle">@style/TextAppearance.Material3.BodyLarge</item>
     </style>
+
+    <style name="ThemeOverlay.NeonSaturn.LibrarySettingsDialog" parent="ThemeOverlay.Material3.MaterialAlertDialog">
+        <item name="materialAlertDialogBodyTextStyle">@style/TextAppearance.Material3.BodyLarge</item>
+    </style>
 </resources>

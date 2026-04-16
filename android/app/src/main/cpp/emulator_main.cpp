@@ -70,6 +70,10 @@ BootstrapConfig BootstrapConfigFromArgs(int argc, char **argv) {
             config.dataRoot.assign(value);
         } else if (const auto value = ArgValue(argument, "--gamecontrollerdb="); !value.empty()) {
             config.gameControllerDbPath.assign(value);
+        } else if (const auto value = ArgValue(argument, "--aspect-ratio="); !value.empty()) {
+            config.aspectRatio.assign(value);
+        } else if (const auto value = ArgValue(argument, "--texture-filter="); !value.empty()) {
+            config.textureFilter.assign(value);
         }
     }
     return config;
@@ -685,7 +689,8 @@ private:
             return false;
         }
 
-        SDL_SetTextureScaleMode(m_texture, SDL_SCALEMODE_NEAREST);
+        SDL_SetTextureScaleMode(m_texture,
+            m_config.textureFilter == "bilinear" ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
         m_textureWidth = width;
         m_textureHeight = height;
         return true;
@@ -706,7 +711,33 @@ private:
         SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 255);
         SDL_RenderClear(m_renderer);
         if (m_texture != nullptr) {
-            SDL_RenderTexture(m_renderer, m_texture, nullptr, nullptr);
+            if (m_config.aspectRatio == "stretch") {
+                SDL_RenderTexture(m_renderer, m_texture, nullptr, nullptr);
+            } else {
+                int outW = 0;
+                int outH = 0;
+                SDL_GetRenderOutputSize(m_renderer, &outW, &outH);
+
+                const float targetAspect = m_config.aspectRatio == "16:9"
+                    ? 16.0f / 9.0f
+                    : 4.0f / 3.0f;
+                const float windowAspect =
+                    static_cast<float>(outW) / static_cast<float>(outH);
+
+                SDL_FRect dest{};
+                if (windowAspect > targetAspect) {
+                    dest.h = static_cast<float>(outH);
+                    dest.w = dest.h * targetAspect;
+                    dest.x = (static_cast<float>(outW) - dest.w) / 2.0f;
+                    dest.y = 0.0f;
+                } else {
+                    dest.w = static_cast<float>(outW);
+                    dest.h = dest.w / targetAspect;
+                    dest.x = 0.0f;
+                    dest.y = (static_cast<float>(outH) - dest.h) / 2.0f;
+                }
+                SDL_RenderTexture(m_renderer, m_texture, nullptr, &dest);
+            }
         }
         SDL_RenderPresent(m_renderer);
     }

@@ -6,12 +6,38 @@
     android:background="@color/neon_saturn_bg"
     android:orientation="vertical">
 
-    <com.google.android.material.appbar.MaterialToolbar
-        android:id="@+id/toolbar"
+    <FrameLayout
+        android:id="@+id/headerContainer"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:title="@string/app_name"
-        app:titleCentered="false" />
+        android:paddingStart="0dp"
+        android:paddingTop="0dp"
+        android:paddingEnd="12dp"
+        android:paddingBottom="0dp">
+
+        <ImageView
+            android:id="@+id/headerAppIcon"
+            android:layout_width="136dp"
+            android:layout_height="136dp"
+            android:layout_gravity="center"
+            android:adjustViewBounds="true"
+            android:contentDescription="@null"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_header_saturn" />
+
+        <ImageButton
+            android:id="@+id/librarySettingsButton"
+            android:layout_width="60dp"
+            android:layout_height="60dp"
+            android:layout_gravity="end|center_vertical"
+            android:layout_marginEnd="12dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/library_open_settings"
+            android:padding="10dp"
+            android:src="@drawable/ic_settings_24"
+            android:tint="?attr/colorOnSurface"
+            android:visibility="gone" />
+    </FrameLayout>
 
     <com.google.android.material.progressindicator.LinearProgressIndicator
         android:id="@+id/libraryProgressIndicator"
@@ -29,6 +55,7 @@
             android:id="@+id/wizardContainer"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
+            android:clipToPadding="false"
             android:fillViewport="true">
 
             <LinearLayout
@@ -172,84 +199,16 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:orientation="vertical"
-            android:padding="24dp"
+            android:paddingStart="24dp"
+            android:paddingTop="0dp"
+            android:paddingEnd="24dp"
+            android:paddingBottom="24dp"
             android:visibility="gone">
-
-            <com.google.android.material.card.MaterialCardView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="20dp">
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="@string/library_title"
-                        android:textAppearance="?attr/textAppearanceHeadlineSmall" />
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="8dp"
-                        android:text="@string/library_summary"
-                        android:textAppearance="?attr/textAppearanceBodyMedium" />
-
-                    <TextView
-                        android:id="@+id/libraryFolderValueText"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="12dp"
-                        android:textAppearance="?attr/textAppearanceBodySmall" />
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="16dp"
-                        android:orientation="vertical">
-
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/libraryRefreshButton"
-                            style="@style/Widget.Material3.Button"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:text="@string/library_refresh" />
-
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/libraryChangeGamesFolderButton"
-                            style="@style/Widget.Material3.Button.OutlinedButton"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="12dp"
-                            android:text="@string/library_change_games_folder" />
-
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/libraryImportIplButton"
-                            style="@style/Widget.Material3.Button.OutlinedButton"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="12dp"
-                            android:text="@string/library_change_bios" />
-
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/libraryImportCdbButton"
-                            style="@style/Widget.Material3.Button.OutlinedButton"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="12dp"
-                            android:text="@string/library_change_cdb" />
-                    </LinearLayout>
-                </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
 
             <TextView
                 android:id="@+id/emptyLibraryText"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="20dp"
                 android:text="@string/library_empty"
                 android:textAppearance="?attr/textAppearanceBodyLarge"
                 android:visibility="gone" />
@@ -258,7 +217,7 @@
                 android:id="@+id/libraryRecyclerView"
                 android:layout_width="match_parent"
                 android:layout_height="0dp"
-                android:layout_marginTop="16dp"
+                android:layout_marginTop="4dp"
                 android:layout_weight="1"
                 android:clipToPadding="false"
                 android:paddingBottom="24dp" />

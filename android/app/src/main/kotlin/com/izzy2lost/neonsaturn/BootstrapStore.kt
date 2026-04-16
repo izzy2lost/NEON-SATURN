@@ -47,6 +47,28 @@ class BootstrapStore(context: Context) {
         preferences.edit().putString(KEY_GAMES_FOLDER_URI, uri).apply()
     }
 
+    fun clearSetup() {
+        preferences.edit()
+            .remove(KEY_IPL_PATH)
+            .remove(KEY_CDB_PATH)
+            .remove(KEY_GAMES_FOLDER_URI)
+            .apply()
+    }
+
+    fun saveAspectRatio(value: String) {
+        preferences.edit().putString(KEY_ASPECT_RATIO, value).apply()
+    }
+
+    fun loadAspectRatio(): String =
+        preferences.getString(KEY_ASPECT_RATIO, ASPECT_4_3) ?: ASPECT_4_3
+
+    fun saveTextureFilter(value: String) {
+        preferences.edit().putString(KEY_TEXTURE_FILTER, value).apply()
+    }
+
+    fun loadTextureFilter(): String =
+        preferences.getString(KEY_TEXTURE_FILTER, FILTER_NEAREST) ?: FILTER_NEAREST
+
     fun migratePaths(fromRoot: File, toRoot: File) {
         val current = load()
         val migrated = StoredLaunchSelection(
@@ -67,10 +89,19 @@ class BootstrapStore(context: Context) {
         return File(toRoot, relativePath).absolutePath
     }
 
-    private companion object {
+    companion object {
+        const val ASPECT_4_3 = "4:3"
+        const val ASPECT_16_9 = "16:9"
+        const val ASPECT_STRETCH = "stretch"
+
+        const val FILTER_NEAREST = "nearest"
+        const val FILTER_BILINEAR = "bilinear"
+
         private const val KEY_IPL_PATH = "ipl_path"
         private const val KEY_CDB_PATH = "cdb_path"
         private const val KEY_DISC_PATH = "disc_path"
         private const val KEY_GAMES_FOLDER_URI = "games_folder_uri"
+        private const val KEY_ASPECT_RATIO = "aspect_ratio"
+        private const val KEY_TEXTURE_FILTER = "texture_filter"
     }
 }

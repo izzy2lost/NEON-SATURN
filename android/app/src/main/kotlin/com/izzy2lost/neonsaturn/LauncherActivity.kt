@@ -3,15 +3,24 @@ package com.izzy2lost.neonsaturn
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.view.LayoutInflater
+import android.widget.ImageButton
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts.OpenDocument
 import androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.isVisible
+import androidx.core.view.updatePadding
+import androidx.core.view.updatePaddingRelative
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.progressindicator.LinearProgressIndicator
 import java.io.File
 import java.util.Locale
@@ -25,10 +34,10 @@ class LauncherActivity : AppCompatActivity() {
 
     private lateinit var wizardContainer: android.view.View
     private lateinit var libraryContainer: android.view.View
+    private lateinit var librarySettingsButton: ImageButton
     private lateinit var iplValueText: TextView
     private lateinit var cdbValueText: TextView
     private lateinit var gamesFolderValueText: TextView
-    private lateinit var libraryFolderValueText: TextView
     private lateinit var emptyLibraryText: TextView
     private lateinit var libraryProgressIndicator: LinearProgressIndicator
     private lateinit var libraryRecyclerView: RecyclerView
@@ -36,6 +45,7 @@ class LauncherActivity : AppCompatActivity() {
     private var currentGamesFolderUri: String? = null
     private var currentLibraryEntries: List<GameLibraryEntry> = emptyList()
     private var libraryScanGeneration = 0
+    private var librarySettingsDialog: AlertDialog? = null
     private var launchInProgress = false
 
     private val importIplLauncher = registerForActivityResult(OpenDocument()) { uri ->
@@ -66,6 +76,7 @@ class LauncherActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         setContentView(R.layout.activity_launcher)
 
         store = BootstrapStore(this)
@@ -78,10 +89,10 @@ class LauncherActivity : AppCompatActivity() {
 
         wizardContainer = findViewById(R.id.wizardContainer)
         libraryContainer = findViewById(R.id.libraryContainer)
+        librarySettingsButton = findViewById(R.id.librarySettingsButton)
         iplValueText = findViewById(R.id.iplValueText)
         cdbValueText = findViewById(R.id.cdbValueText)
         gamesFolderValueText = findViewById(R.id.gamesFolderValueText)
-        libraryFolderValueText = findViewById(R.id.libraryFolderValueText)
         emptyLibraryText = findViewById(R.id.emptyLibraryText)
         libraryProgressIndicator = findViewById(R.id.libraryProgressIndicator)
         libraryRecyclerView = findViewById(R.id.libraryRecyclerView)
@@ -101,17 +112,39 @@ class LauncherActivity : AppCompatActivity() {
         findViewById<MaterialButton>(R.id.chooseGamesFolderButton).setOnClickListener {
             gamesFolderLauncher.launch(null)
         }
-        findViewById<MaterialButton>(R.id.libraryChangeGamesFolderButton).setOnClickListener {
-            gamesFolderLauncher.launch(null)
+        librarySettingsButton.setOnClickListener {
+            showLibrarySettingsDialog()
         }
-        findViewById<MaterialButton>(R.id.libraryImportIplButton).setOnClickListener {
-            importIplLauncher.launch(arrayOf("*/*"))
+
+        // Adjust header padding dynamically for status bar height and camera cutout.
+        val headerContainer = findViewById<android.view.View>(R.id.headerContainer)
+        val headerBasePaddingStart = headerContainer.paddingStart
+        val headerBasePaddingTop = headerContainer.paddingTop
+        val headerBasePaddingEnd = headerContainer.paddingEnd
+        ViewCompat.setOnApplyWindowInsetsListener(headerContainer) { v, insets ->
+            val systemBars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            v.updatePaddingRelative(
+                start = headerBasePaddingStart + systemBars.left,
+                top = headerBasePaddingTop + systemBars.top,
+                end = headerBasePaddingEnd + systemBars.right
+            )
+            insets
         }
-        findViewById<MaterialButton>(R.id.libraryImportCdbButton).setOnClickListener {
-            importCdbLauncher.launch(arrayOf("*/*"))
+
+        // Adjust bottom padding of scrollable containers for the navigation bar.
+        val wizardBasePaddingBottom = wizardContainer.paddingBottom
+        val libraryBasePaddingBottom = libraryContainer.paddingBottom
+        ViewCompat.setOnApplyWindowInsetsListener(wizardContainer) { v, insets ->
+            val bottom = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
+            v.updatePadding(bottom = wizardBasePaddingBottom + bottom)
+            insets
         }
-        findViewById<MaterialButton>(R.id.libraryRefreshButton).setOnClickListener {
-            refreshUi(forceRescan = true)
+        ViewCompat.setOnApplyWindowInsetsListener(libraryContainer) { v, insets ->
+            val bottom = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
+            v.updatePadding(bottom = libraryBasePaddingBottom + bottom)
+            insets
         }
 
         refreshUi(forceRescan = true)
@@ -120,6 +153,11 @@ class LauncherActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         refreshUi(forceRescan = false)
+    }
+
+    override fun onPause() {
+        librarySettingsDialog?.dismiss()
+        super.onPause()
     }
 
     private fun importDocument(
@@ -150,12 +188,13 @@ class LauncherActivity : AppCompatActivity() {
         cdbValueText.text = selection.cdbPath?.let(::fileLabel) ?: getString(R.string.not_set_optional)
         val folderLabel = gamesFolderUri?.let(::folderLabel) ?: getString(R.string.not_set)
         gamesFolderValueText.text = folderLabel
-        libraryFolderValueText.text = folderLabel
 
         wizardContainer.isVisible = !setupComplete
         libraryContainer.isVisible = setupComplete
+        librarySettingsButton.isVisible = setupComplete
 
         if (!setupComplete) {
+            librarySettingsDialog?.dismiss()
             currentGamesFolderUri = null
             currentLibraryEntries = emptyList()
             libraryAdapter.submitList(emptyList())
@@ -167,6 +206,66 @@ class LauncherActivity : AppCompatActivity() {
         if (forceRescan || currentGamesFolderUri != gamesFolderUri || currentLibraryEntries.isEmpty()) {
             refreshLibrary(requireNotNull(gamesFolderUri))
         }
+    }
+
+    private fun showLibrarySettingsDialog() {
+        if (!libraryContainer.isVisible || isFinishing || isDestroyed || librarySettingsDialog?.isShowing == true) {
+            return
+        }
+
+        val content = LayoutInflater.from(this).inflate(R.layout.dialog_library_settings, null, false)
+
+        // Aspect ratio chips
+        val aspectGroup = content.findViewById<com.google.android.material.chip.ChipGroup>(R.id.aspectRatioChipGroup)
+        when (store.loadAspectRatio()) {
+            BootstrapStore.ASPECT_16_9 -> aspectGroup.check(R.id.aspectChip16x9)
+            BootstrapStore.ASPECT_STRETCH -> aspectGroup.check(R.id.aspectChipStretch)
+            else -> aspectGroup.check(R.id.aspectChip4x3)
+        }
+        aspectGroup.setOnCheckedStateChangeListener { _, checkedIds ->
+            val value = when (checkedIds.firstOrNull()) {
+                R.id.aspectChip16x9 -> BootstrapStore.ASPECT_16_9
+                R.id.aspectChipStretch -> BootstrapStore.ASPECT_STRETCH
+                else -> BootstrapStore.ASPECT_4_3
+            }
+            store.saveAspectRatio(value)
+        }
+
+        // Texture filter chips
+        val filterGroup = content.findViewById<com.google.android.material.chip.ChipGroup>(R.id.textureFilterChipGroup)
+        when (store.loadTextureFilter()) {
+            BootstrapStore.FILTER_BILINEAR -> filterGroup.check(R.id.filterChipSmooth)
+            else -> filterGroup.check(R.id.filterChipSharp)
+        }
+        filterGroup.setOnCheckedStateChangeListener { _, checkedIds ->
+            val value = when (checkedIds.firstOrNull()) {
+                R.id.filterChipSmooth -> BootstrapStore.FILTER_BILINEAR
+                else -> BootstrapStore.FILTER_NEAREST
+            }
+            store.saveTextureFilter(value)
+        }
+
+        val dialog = MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_NeonSaturn_LibrarySettingsDialog)
+            .setView(content)
+            .setCancelable(true)
+            .create()
+
+        content.findViewById<MaterialButton>(R.id.refreshLibraryButton).setOnClickListener {
+            dialog.dismiss()
+            refreshUi(forceRescan = true)
+        }
+        content.findViewById<MaterialButton>(R.id.redoSetupButton).setOnClickListener {
+            dialog.dismiss()
+            store.clearSetup()
+            refreshUi(forceRescan = false)
+        }
+
+        dialog.setOnDismissListener {
+            librarySettingsDialog = null
+        }
+
+        librarySettingsDialog = dialog
+        dialog.show()
     }
 
     private fun refreshLibrary(gamesFolderUri: String) {
@@ -246,7 +345,11 @@ class LauncherActivity : AppCompatActivity() {
                 }
 
                 result.onSuccess { (launchSelection, gameControllerDbPath) ->
-                    startActivity(EmulatorActivity.createIntent(this, launchSelection, paths, gameControllerDbPath))
+                    startActivity(EmulatorActivity.createIntent(
+                        this, launchSelection, paths, gameControllerDbPath,
+                        aspectRatio = store.loadAspectRatio(),
+                        textureFilter = store.loadTextureFilter()
+                    ))
                 }.onFailure { error ->
                     Toast.makeText(
                         this,
