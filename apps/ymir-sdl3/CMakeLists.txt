@@ -10,6 +10,8 @@ add_executable(ymir-sdl3
     src/app/cmdline_opts.hpp
     src/app/display.hpp
     src/app/message.hpp
+    src/app/on_screen_controls.cpp
+    src/app/on_screen_controls.hpp
     src/app/profile.cpp
     src/app/profile.hpp
     src/app/rewind_buffer.cpp

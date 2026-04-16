@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -45,6 +46,16 @@ struct ActionResult {
     bool success = false;
     std::string message;
 };
+
+constexpr std::uint32_t kTouchButtonA = 1u << 0u;
+constexpr std::uint32_t kTouchButtonB = 1u << 1u;
+constexpr std::uint32_t kTouchButtonC = 1u << 2u;
+constexpr std::uint32_t kTouchButtonX = 1u << 3u;
+constexpr std::uint32_t kTouchButtonY = 1u << 4u;
+constexpr std::uint32_t kTouchButtonZ = 1u << 5u;
+constexpr std::uint32_t kTouchButtonL = 1u << 6u;
+constexpr std::uint32_t kTouchButtonR = 1u << 7u;
+constexpr std::uint32_t kTouchButtonStart = 1u << 8u;
 
 std::mutex g_activeAppMutex;
 EmulatorApp *g_activeApp = nullptr;
@@ -111,6 +122,27 @@ void RequestQuickActionsDialog() {
     }
 
     env->DeleteLocalRef(activityClass);
+}
+
+[[nodiscard]] bool IsButtonPressed(Button buttons, Button button) {
+    return static_cast<std::uint16_t>(buttons & button) == 0;
+}
+
+[[nodiscard]] float ClampAnalog(float value) {
+    return std::clamp(value, -1.0f, 1.0f);
+}
+
+[[nodiscard]] float ApplyDeadZone(float value, float deadZone = 0.12f) {
+    return std::abs(value) < deadZone ? 0.0f : ClampAnalog(value);
+}
+
+[[nodiscard]] std::uint8_t FloatToAnalogAxis(float value) {
+    const float clamped = ClampAnalog(value);
+    return static_cast<std::uint8_t>(std::lround((clamped + 1.0f) * 127.5f));
+}
+
+[[nodiscard]] float StrongerAnalogValue(float lhs, float rhs) {
+    return std::abs(rhs) > std::abs(lhs) ? rhs : lhs;
 }
 
 } // namespace
@@ -215,6 +247,27 @@ public:
         m_running = false;
     }
 
+    void SetTouchControls(std::uint32_t buttonMask, int dpadX, int dpadY, float analogX, float analogY) {
+        std::scoped_lock lock{m_inputMutex};
+
+        m_touchButtons = Button::Default;
+        SetButtonState(m_touchButtons, Button::A, (buttonMask & kTouchButtonA) != 0);
+        SetButtonState(m_touchButtons, Button::B, (buttonMask & kTouchButtonB) != 0);
+        SetButtonState(m_touchButtons, Button::C, (buttonMask & kTouchButtonC) != 0);
+        SetButtonState(m_touchButtons, Button::X, (buttonMask & kTouchButtonX) != 0);
+        SetButtonState(m_touchButtons, Button::Y, (buttonMask & kTouchButtonY) != 0);
+        SetButtonState(m_touchButtons, Button::Z, (buttonMask & kTouchButtonZ) != 0);
+        SetButtonState(m_touchButtons, Button::L, (buttonMask & kTouchButtonL) != 0);
+        SetButtonState(m_touchButtons, Button::R, (buttonMask & kTouchButtonR) != 0);
+        SetButtonState(m_touchButtons, Button::Start, (buttonMask & kTouchButtonStart) != 0);
+
+        m_touchDpadX = std::clamp(dpadX, -1, 1);
+        m_touchDpadY = std::clamp(dpadY, -1, 1);
+        m_touchAnalogX = ClampAnalog(analogX);
+        m_touchAnalogY = ClampAnalog(analogY);
+        RebuildTouchDirections();
+    }
+
     int Run() {
         SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
 
@@ -292,6 +345,7 @@ private:
     SDL_Gamepad *m_gamepad = nullptr;
     SDL_JoystickID m_gamepadId = 0;
     std::mutex m_coreMutex{};
+    std::mutex m_inputMutex{};
 
     std::vector<std::uint32_t> m_framebuffer;
     std::uint32_t m_frameWidth = 320;
@@ -303,15 +357,18 @@ private:
     std::atomic_bool m_paused = false;
     bool m_audioStarted = false;
 
-    Button m_buttons = Button::Default;
-    bool m_dpadUp = false;
-    bool m_dpadDown = false;
-    bool m_dpadLeft = false;
-    bool m_dpadRight = false;
-    bool m_stickUp = false;
-    bool m_stickDown = false;
-    bool m_stickLeft = false;
-    bool m_stickRight = false;
+    Button m_physicalButtons = Button::Default;
+    Button m_touchButtons = Button::Default;
+    bool m_physicalDpadUp = false;
+    bool m_physicalDpadDown = false;
+    bool m_physicalDpadLeft = false;
+    bool m_physicalDpadRight = false;
+    float m_physicalStickX = 0.0f;
+    float m_physicalStickY = 0.0f;
+    int m_touchDpadX = 0;
+    int m_touchDpadY = 0;
+    float m_touchAnalogX = 0.0f;
+    float m_touchAnalogY = 0.0f;
 
     std::filesystem::path StateDirectory() const {
         return std::filesystem::path{m_config.dataRoot} / "state";
@@ -436,7 +493,7 @@ private:
 
         m_saturn.SMPC.GetPeripheralPort1().SetPeripheralReportCallback(
             util::MakeClassMemberOptionalCallback<&EmulatorApp::OnPeripheralReport>(this));
-        m_saturn.SMPC.GetPeripheralPort1().ConnectControlPad();
+        m_saturn.SMPC.GetPeripheralPort1().ConnectAnalogPad();
 
         const auto iplLoadResult = util::LoadIPLROM(m_config.iplPath, m_saturn);
         if (!iplLoadResult.succeeded) {
@@ -552,20 +609,21 @@ private:
     }
 
     void HandleKeyboard(SDL_Scancode scancode, bool pressed) {
+        std::scoped_lock lock{m_inputMutex};
         switch (scancode) {
-        case SDL_SCANCODE_UP: m_dpadUp = pressed; RebuildDirections(); break;
-        case SDL_SCANCODE_DOWN: m_dpadDown = pressed; RebuildDirections(); break;
-        case SDL_SCANCODE_LEFT: m_dpadLeft = pressed; RebuildDirections(); break;
-        case SDL_SCANCODE_RIGHT: m_dpadRight = pressed; RebuildDirections(); break;
-        case SDL_SCANCODE_RETURN: SetButtonState(Button::Start, pressed); break;
-        case SDL_SCANCODE_Z: SetButtonState(Button::A, pressed); break;
-        case SDL_SCANCODE_X: SetButtonState(Button::B, pressed); break;
-        case SDL_SCANCODE_C: SetButtonState(Button::C, pressed); break;
-        case SDL_SCANCODE_A: SetButtonState(Button::X, pressed); break;
-        case SDL_SCANCODE_S: SetButtonState(Button::Y, pressed); break;
-        case SDL_SCANCODE_D: SetButtonState(Button::Z, pressed); break;
-        case SDL_SCANCODE_Q: SetButtonState(Button::L, pressed); break;
-        case SDL_SCANCODE_W: SetButtonState(Button::R, pressed); break;
+        case SDL_SCANCODE_UP: m_physicalDpadUp = pressed; RebuildPhysicalDirections(); break;
+        case SDL_SCANCODE_DOWN: m_physicalDpadDown = pressed; RebuildPhysicalDirections(); break;
+        case SDL_SCANCODE_LEFT: m_physicalDpadLeft = pressed; RebuildPhysicalDirections(); break;
+        case SDL_SCANCODE_RIGHT: m_physicalDpadRight = pressed; RebuildPhysicalDirections(); break;
+        case SDL_SCANCODE_RETURN: SetButtonState(m_physicalButtons, Button::Start, pressed); break;
+        case SDL_SCANCODE_Z: SetButtonState(m_physicalButtons, Button::A, pressed); break;
+        case SDL_SCANCODE_X: SetButtonState(m_physicalButtons, Button::B, pressed); break;
+        case SDL_SCANCODE_C: SetButtonState(m_physicalButtons, Button::C, pressed); break;
+        case SDL_SCANCODE_A: SetButtonState(m_physicalButtons, Button::X, pressed); break;
+        case SDL_SCANCODE_S: SetButtonState(m_physicalButtons, Button::Y, pressed); break;
+        case SDL_SCANCODE_D: SetButtonState(m_physicalButtons, Button::Z, pressed); break;
+        case SDL_SCANCODE_Q: SetButtonState(m_physicalButtons, Button::L, pressed); break;
+        case SDL_SCANCODE_W: SetButtonState(m_physicalButtons, Button::R, pressed); break;
         default:
             break;
         }
@@ -575,22 +633,21 @@ private:
         const float value =
             event.gaxis.value < 0 ? event.gaxis.value / 32768.0f : event.gaxis.value / 32767.0f;
 
+        std::scoped_lock lock{m_inputMutex};
         switch (static_cast<SDL_GamepadAxis>(event.gaxis.axis)) {
         case SDL_GAMEPAD_AXIS_LEFTX:
-            m_stickLeft = value <= -0.45f;
-            m_stickRight = value >= 0.45f;
-            RebuildDirections();
+            m_physicalStickX = ApplyDeadZone(value);
+            RebuildPhysicalDirections();
             break;
         case SDL_GAMEPAD_AXIS_LEFTY:
-            m_stickUp = value <= -0.45f;
-            m_stickDown = value >= 0.45f;
-            RebuildDirections();
+            m_physicalStickY = ApplyDeadZone(value);
+            RebuildPhysicalDirections();
             break;
         case SDL_GAMEPAD_AXIS_LEFT_TRIGGER:
-            SetButtonState(Button::C, value >= 0.5f);
+            SetButtonState(m_physicalButtons, Button::C, value >= 0.5f);
             break;
         case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER:
-            SetButtonState(Button::Z, value >= 0.5f);
+            SetButtonState(m_physicalButtons, Button::Z, value >= 0.5f);
             break;
         default:
             break;
@@ -598,47 +655,61 @@ private:
     }
 
     void HandleGamepadButton(std::uint8_t button, bool pressed) {
+        std::scoped_lock lock{m_inputMutex};
         switch (static_cast<SDL_GamepadButton>(button)) {
-        case SDL_GAMEPAD_BUTTON_SOUTH: SetButtonState(Button::A, pressed); break;
-        case SDL_GAMEPAD_BUTTON_EAST: SetButtonState(Button::B, pressed); break;
-        case SDL_GAMEPAD_BUTTON_WEST: SetButtonState(Button::X, pressed); break;
-        case SDL_GAMEPAD_BUTTON_NORTH: SetButtonState(Button::Y, pressed); break;
-        case SDL_GAMEPAD_BUTTON_START: SetButtonState(Button::Start, pressed); break;
-        case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: SetButtonState(Button::L, pressed); break;
-        case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: SetButtonState(Button::R, pressed); break;
-        case SDL_GAMEPAD_BUTTON_DPAD_UP: m_dpadUp = pressed; RebuildDirections(); break;
-        case SDL_GAMEPAD_BUTTON_DPAD_DOWN: m_dpadDown = pressed; RebuildDirections(); break;
-        case SDL_GAMEPAD_BUTTON_DPAD_LEFT: m_dpadLeft = pressed; RebuildDirections(); break;
-        case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: m_dpadRight = pressed; RebuildDirections(); break;
+        case SDL_GAMEPAD_BUTTON_SOUTH: SetButtonState(m_physicalButtons, Button::A, pressed); break;
+        case SDL_GAMEPAD_BUTTON_EAST: SetButtonState(m_physicalButtons, Button::B, pressed); break;
+        case SDL_GAMEPAD_BUTTON_WEST: SetButtonState(m_physicalButtons, Button::X, pressed); break;
+        case SDL_GAMEPAD_BUTTON_NORTH: SetButtonState(m_physicalButtons, Button::Y, pressed); break;
+        case SDL_GAMEPAD_BUTTON_START: SetButtonState(m_physicalButtons, Button::Start, pressed); break;
+        case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: SetButtonState(m_physicalButtons, Button::L, pressed); break;
+        case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: SetButtonState(m_physicalButtons, Button::R, pressed); break;
+        case SDL_GAMEPAD_BUTTON_DPAD_UP: m_physicalDpadUp = pressed; RebuildPhysicalDirections(); break;
+        case SDL_GAMEPAD_BUTTON_DPAD_DOWN: m_physicalDpadDown = pressed; RebuildPhysicalDirections(); break;
+        case SDL_GAMEPAD_BUTTON_DPAD_LEFT: m_physicalDpadLeft = pressed; RebuildPhysicalDirections(); break;
+        case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: m_physicalDpadRight = pressed; RebuildPhysicalDirections(); break;
         default:
             break;
         }
     }
 
     void ResetInputs() {
-        m_buttons = Button::Default;
-        m_dpadUp = false;
-        m_dpadDown = false;
-        m_dpadLeft = false;
-        m_dpadRight = false;
-        m_stickUp = false;
-        m_stickDown = false;
-        m_stickLeft = false;
-        m_stickRight = false;
+        std::scoped_lock lock{m_inputMutex};
+        m_physicalButtons = Button::Default;
+        m_touchButtons = Button::Default;
+        m_physicalDpadUp = false;
+        m_physicalDpadDown = false;
+        m_physicalDpadLeft = false;
+        m_physicalDpadRight = false;
+        m_physicalStickX = 0.0f;
+        m_physicalStickY = 0.0f;
+        m_touchDpadX = 0;
+        m_touchDpadY = 0;
+        m_touchAnalogX = 0.0f;
+        m_touchAnalogY = 0.0f;
     }
 
-    void RebuildDirections() {
-        SetButtonState(Button::Up, m_dpadUp || m_stickUp);
-        SetButtonState(Button::Down, m_dpadDown || m_stickDown);
-        SetButtonState(Button::Left, m_dpadLeft || m_stickLeft);
-        SetButtonState(Button::Right, m_dpadRight || m_stickRight);
+    void RebuildPhysicalDirections() {
+        static constexpr float kDirectionThreshold = 0.45f;
+        SetButtonState(m_physicalButtons, Button::Up, m_physicalDpadUp || m_physicalStickY <= -kDirectionThreshold);
+        SetButtonState(m_physicalButtons, Button::Down, m_physicalDpadDown || m_physicalStickY >= kDirectionThreshold);
+        SetButtonState(m_physicalButtons, Button::Left, m_physicalDpadLeft || m_physicalStickX <= -kDirectionThreshold);
+        SetButtonState(m_physicalButtons, Button::Right, m_physicalDpadRight || m_physicalStickX >= kDirectionThreshold);
     }
 
-    void SetButtonState(Button button, bool pressed) {
+    void RebuildTouchDirections() {
+        static constexpr float kDirectionThreshold = 0.45f;
+        SetButtonState(m_touchButtons, Button::Up, m_touchDpadY < 0 || m_touchAnalogY <= -kDirectionThreshold);
+        SetButtonState(m_touchButtons, Button::Down, m_touchDpadY > 0 || m_touchAnalogY >= kDirectionThreshold);
+        SetButtonState(m_touchButtons, Button::Left, m_touchDpadX < 0 || m_touchAnalogX <= -kDirectionThreshold);
+        SetButtonState(m_touchButtons, Button::Right, m_touchDpadX > 0 || m_touchAnalogX >= kDirectionThreshold);
+    }
+
+    void SetButtonState(Button &buttonMask, Button button, bool pressed) {
         if (pressed) {
-            m_buttons &= ~button;
+            buttonMask &= ~button;
         } else {
-            m_buttons |= button;
+            buttonMask |= button;
         }
     }
 
@@ -666,8 +737,21 @@ private:
     }
 
     void OnPeripheralReport(ymir::peripheral::PeripheralReport &report) {
-        if (report.type == ymir::peripheral::PeripheralType::ControlPad) {
-            report.report.controlPad.buttons = m_buttons;
+        std::scoped_lock lock{m_inputMutex};
+        const Button combinedButtons = m_physicalButtons & m_touchButtons;
+
+        if (report.type == ymir::peripheral::PeripheralType::AnalogPad) {
+            const float analogX = StrongerAnalogValue(m_physicalStickX, m_touchAnalogX);
+            const float analogY = StrongerAnalogValue(m_physicalStickY, m_touchAnalogY);
+
+            report.report.analogPad.buttons = combinedButtons;
+            report.report.analogPad.analog = true;
+            report.report.analogPad.x = FloatToAnalogAxis(analogX);
+            report.report.analogPad.y = FloatToAnalogAxis(analogY);
+            report.report.analogPad.l = IsButtonPressed(combinedButtons, Button::L) ? 0xFF : 0x00;
+            report.report.analogPad.r = IsButtonPressed(combinedButtons, Button::R) ? 0xFF : 0x00;
+        } else if (report.type == ymir::peripheral::PeripheralType::ControlPad) {
+            report.report.controlPad.buttons = combinedButtons;
         }
     }
 
@@ -815,6 +899,25 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_izzy2lost_neonsaturn_EmulatorActivity_nativeExitEmulator(JNIEnv *, jobject) {
     if (auto *app = GetActiveApp(); app != nullptr) {
         app->RequestStop();
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_izzy2lost_neonsaturn_EmulatorActivity_nativeUpdateTouchControls(
+    JNIEnv *,
+    jobject,
+    jint buttonMask,
+    jint dpadX,
+    jint dpadY,
+    jfloat analogX,
+    jfloat analogY) {
+    if (auto *app = GetActiveApp(); app != nullptr) {
+        app->SetTouchControls(
+            static_cast<std::uint32_t>(buttonMask),
+            static_cast<int>(dpadX),
+            static_cast<int>(dpadY),
+            static_cast<float>(analogX),
+            static_cast<float>(analogY));
     }
 }
 

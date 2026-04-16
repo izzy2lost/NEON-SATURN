@@ -245,6 +245,13 @@ class LauncherActivity : AppCompatActivity() {
             store.saveTextureFilter(value)
         }
 
+        val touchControlsSwitch =
+            content.findViewById<com.google.android.material.materialswitch.MaterialSwitch>(R.id.touchControlsSwitch)
+        touchControlsSwitch.isChecked = store.loadTouchControlsEnabled()
+        touchControlsSwitch.setOnCheckedChangeListener { _, isChecked ->
+            store.saveTouchControlsEnabled(isChecked)
+        }
+
         val dialog = MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_NeonSaturn_LibrarySettingsDialog)
             .setView(content)
             .setCancelable(true)
@@ -258,6 +265,10 @@ class LauncherActivity : AppCompatActivity() {
             dialog.dismiss()
             store.clearSetup()
             refreshUi(forceRescan = false)
+        }
+        content.findViewById<MaterialButton>(R.id.editTouchControlsButton).setOnClickListener {
+            dialog.dismiss()
+            startActivity(Intent(this, TouchControlsEditorActivity::class.java))
         }
 
         dialog.setOnDismissListener {

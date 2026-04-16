@@ -75,6 +75,15 @@ private:
     uint32 m_systemMousePeripheral;
     std::set<uint32> m_validPeripheralsForMouseCapture;
 
+    struct OnScreenPointer {
+        sint64 id = 0;
+        uint8 control = 0;
+        float x = 0.0f;
+        float y = 0.0f;
+    };
+    std::vector<OnScreenPointer> m_onScreenPointers;
+    bool m_onScreenMenuDown = false;
+
     struct Screenshot {
         std::vector<uint32> fb;
         uint32 fbWidth, fbHeight;
@@ -106,6 +115,11 @@ private:
     void RebindInputs();
     void UpdateInputs(double timeDelta);
     void DrawInputs(ImDrawList *drawList);
+    void UpdateOnScreenControls();
+    void ResetOnScreenControls();
+    bool HandleOnScreenPointerDown(sint64 pointerId, float x, float y);
+    bool HandleOnScreenPointerMove(sint64 pointerId, float x, float y);
+    bool HandleOnScreenPointerUp(sint64 pointerId);
 
     bool CaptureMouse(uint32 id, uint32 port);
     bool ReleaseMouse(uint32 id);

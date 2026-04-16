@@ -446,6 +446,30 @@ struct Settings {
             util::Observable<float> analogToDigitalSensitivity;
         } gamepad;
 
+        struct OnScreenControls {
+            struct Control {
+                std::array<float, 2> position{};
+            };
+
+            bool enabled;
+            uint32 port;
+            float opacity;
+            float scale;
+
+            Control dpad;
+            Control analogStick;
+            Control a;
+            Control b;
+            Control c;
+            Control x;
+            Control y;
+            Control z;
+            Control l;
+            Control r;
+            Control start;
+            Control menu;
+        } onScreenControls;
+
     } input;
 
     struct Video {

@@ -17,6 +17,11 @@
             android:theme="@style/Theme.NeonSaturn.Emulator" />
 
         <activity
+            android:name=".TouchControlsEditorActivity"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape" />
+
+        <activity
             android:name=".LauncherActivity"
             android:exported="true">
             <intent-filter>
@@ -27,4 +32,3 @@
     </application>
 
 </manifest>
-

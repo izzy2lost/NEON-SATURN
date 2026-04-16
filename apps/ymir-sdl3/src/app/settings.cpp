@@ -1,5 +1,6 @@
 #include "settings.hpp"
 
+#include <app/on_screen_controls.hpp>
 #include <app/shared_context.hpp>
 
 #include <app/events/emu_event_factory.hpp>
@@ -1042,6 +1043,12 @@ void Settings::ResetToDefaults() {
     input.gamepad.rsDeadzone = 0.15f;
     input.gamepad.analogToDigitalSensitivity = 0.20f;
 
+    input.onScreenControls.enabled = false;
+    input.onScreenControls.port = 0;
+    input.onScreenControls.opacity = 0.85f;
+    input.onScreenControls.scale = 1.0f;
+    on_screen_controls::ResetLayout(input.onScreenControls);
+
     video.graphicsBackend = gfx::Backend::Default;
     video.forceIntegerScaling = false;
     video.forceAspectRatio = true;
@@ -1522,6 +1529,34 @@ SettingsLoadResult Settings::Load(const std::filesystem::path &path) {
             Parse(tblInput, "GamepadRSDeadzone", input.gamepad.rsDeadzone);
             Parse(tblInput, "GamepadAnalogToDigitalSensitivity", input.gamepad.analogToDigitalSensitivity);
         }
+
+        if (auto tblOnScreenControls = tblInput["OnScreenControls"]) {
+            auto &controls = input.onScreenControls;
+
+            auto parseControl = [&](const char *name, Settings::Input::OnScreenControls::Control &control) {
+                if (auto tblControl = tblOnScreenControls[name]) {
+                    Parse(tblControl, "Position", control.position);
+                }
+            };
+
+            Parse(tblOnScreenControls, "Enabled", controls.enabled);
+            Parse(tblOnScreenControls, "Port", controls.port, 0u, 0u, 1u);
+            Parse(tblOnScreenControls, "Opacity", controls.opacity, 0.85f, 0.10f, 1.00f);
+            Parse(tblOnScreenControls, "Scale", controls.scale, 1.00f, 0.60f, 1.80f);
+
+            parseControl("DPad", controls.dpad);
+            parseControl("AnalogStick", controls.analogStick);
+            parseControl("A", controls.a);
+            parseControl("B", controls.b);
+            parseControl("C", controls.c);
+            parseControl("X", controls.x);
+            parseControl("Y", controls.y);
+            parseControl("Z", controls.z);
+            parseControl("L", controls.l);
+            parseControl("R", controls.r);
+            parseControl("Start", controls.start);
+            parseControl("Menu", controls.menu);
+        }
     }
 
     if (auto tblVideo = data["Video"]) {
@@ -1943,6 +1978,24 @@ SettingsSaveResult Settings::Save() {
                 {"LSDeadzone", input.gamepad.lsDeadzone.Get()},
                 {"RSDeadzone", input.gamepad.rsDeadzone.Get()},
                 {"AnalogToDigitalSensitivity", input.gamepad.analogToDigitalSensitivity.Get()},
+            }}},
+            {"OnScreenControls", toml::table{{
+                {"Enabled", input.onScreenControls.enabled},
+                {"Port", input.onScreenControls.port},
+                {"Opacity", input.onScreenControls.opacity},
+                {"Scale", input.onScreenControls.scale},
+                {"DPad", toml::table{{{"Position", ToTOML(input.onScreenControls.dpad.position)}}}},
+                {"AnalogStick", toml::table{{{"Position", ToTOML(input.onScreenControls.analogStick.position)}}}},
+                {"A", toml::table{{{"Position", ToTOML(input.onScreenControls.a.position)}}}},
+                {"B", toml::table{{{"Position", ToTOML(input.onScreenControls.b.position)}}}},
+                {"C", toml::table{{{"Position", ToTOML(input.onScreenControls.c.position)}}}},
+                {"X", toml::table{{{"Position", ToTOML(input.onScreenControls.x.position)}}}},
+                {"Y", toml::table{{{"Position", ToTOML(input.onScreenControls.y.position)}}}},
+                {"Z", toml::table{{{"Position", ToTOML(input.onScreenControls.z.position)}}}},
+                {"L", toml::table{{{"Position", ToTOML(input.onScreenControls.l.position)}}}},
+                {"R", toml::table{{{"Position", ToTOML(input.onScreenControls.r.position)}}}},
+                {"Start", toml::table{{{"Position", ToTOML(input.onScreenControls.start.position)}}}},
+                {"Menu", toml::table{{{"Position", ToTOML(input.onScreenControls.menu.position)}}}},
             }}},
         }}},
 

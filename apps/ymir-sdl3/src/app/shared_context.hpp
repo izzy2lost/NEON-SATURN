@@ -359,8 +359,13 @@ struct SharedContext {
 
     struct ControlPadInput {
         ymir::peripheral::Button buttons = ymir::peripheral::Button::Default;
+        ymir::peripheral::Button onScreenButtons = ymir::peripheral::Button::Default;
 
         std::unordered_map<input::InputElement, Input2D> dpad2DInputs;
+
+        [[nodiscard]] ymir::peripheral::Button GetCombinedButtons() const {
+            return buttons & onScreenButtons;
+        }
 
         void UpdateDPad(float sensitivity) {
             using Button = ymir::peripheral::Button;
@@ -386,9 +391,11 @@ struct SharedContext {
 
     struct AnalogPadInput {
         ymir::peripheral::Button buttons = ymir::peripheral::Button::Default;
+        ymir::peripheral::Button onScreenButtons = ymir::peripheral::Button::Default;
 
         float x = 0.0f, y = 0.0f; // analog stick: -1.0f (left/up) to 1.0f (down/right)
         float l = 0.0f, r = 0.0f; // analog triggers: 0.0f (released) to 1.0f (pressed)
+        float onScreenX = 0.0f, onScreenY = 0.0f;
         bool analogMode = true;
 
         std::unordered_map<input::InputElement, Input2D> dpad2DInputs;
@@ -445,6 +452,18 @@ struct SharedContext {
             // Clamp to 0.0..1.0
             l = std::clamp(l, 0.0f, 1.0f);
             r = std::clamp(r, 0.0f, 1.0f);
+        }
+
+        [[nodiscard]] ymir::peripheral::Button GetCombinedButtons() const {
+            return buttons & onScreenButtons;
+        }
+
+        [[nodiscard]] float GetCombinedX() const {
+            return std::clamp(x + onScreenX, -1.0f, 1.0f);
+        }
+
+        [[nodiscard]] float GetCombinedY() const {
+            return std::clamp(y + onScreenY, -1.0f, 1.0f);
         }
     };
 

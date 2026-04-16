@@ -9,6 +9,9 @@ public:
     InputSettingsView(SharedContext &context);
 
     void Display();
+
+private:
+    int m_selectedOnScreenControl = -1;
 };
 
 } // namespace app::ui

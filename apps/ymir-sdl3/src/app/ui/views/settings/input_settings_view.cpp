@@ -1,6 +1,7 @@
 #include "input_settings_view.hpp"
 
 #include <app/events/gui_event_factory.hpp>
+#include <app/on_screen_controls.hpp>
 
 #include <app/ui/widgets/common_widgets.hpp>
 #include <app/ui/widgets/peripheral_widgets.hpp>
@@ -8,6 +9,8 @@
 #include <app/input/input_utils.hpp>
 
 #include <SDL3/SDL_misc.h>
+
+#include <algorithm>
 
 using namespace ymir;
 
@@ -177,6 +180,142 @@ void InputSettingsView::Display() {
 
         ImGui::EndTable();
     }
+
+    // -------------------------------------------------------------------------
+
+    ImGui::PushFont(m_context.fonts.sansSerif.bold, m_context.fontSizes.large);
+    ImGui::SeparatorText("On-screen controls");
+    ImGui::PopFont();
+
+    auto &onScreenControls = settings.onScreenControls;
+
+    MakeDirty(ImGui::Checkbox("Enable on-screen controls", &onScreenControls.enabled));
+
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Target port");
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Port 1##on_screen_port", onScreenControls.port == 0)) {
+        onScreenControls.port = 0;
+        MakeDirty();
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Port 2##on_screen_port", onScreenControls.port == 1)) {
+        onScreenControls.port = 1;
+        MakeDirty();
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(selected port: %s)", peripheral::GetPeripheralName(settings.ports[onScreenControls.port].type).data());
+
+    float opacity = onScreenControls.opacity * 100.0f;
+    ImGui::SetNextItemWidth(280.0f * m_context.displayScale);
+    if (MakeDirty(ImGui::SliderFloat("Opacity##on_screen_controls", &opacity, 10.0f, 100.0f, "%.0f%%",
+                                     ImGuiSliderFlags_AlwaysClamp))) {
+        onScreenControls.opacity = opacity / 100.0f;
+    }
+
+    float controlScale = onScreenControls.scale * 100.0f;
+    ImGui::SetNextItemWidth(280.0f * m_context.displayScale);
+    if (MakeDirty(ImGui::SliderFloat("Scale##on_screen_controls", &controlScale, 60.0f, 180.0f, "%.0f%%",
+                                     ImGuiSliderFlags_AlwaysClamp))) {
+        onScreenControls.scale = controlScale / 100.0f;
+    }
+
+    ImGui::TextWrapped(
+        "Drag controls around the preview to place them. The analog stick always works as digital directions too, and "
+        "its full analog range is used when the selected port is configured as a Saturn 3D Control Pad.");
+
+    if (ImGui::Button("Reset layout##on_screen_controls")) {
+        on_screen_controls::ResetLayout(onScreenControls);
+        m_selectedOnScreenControl = -1;
+        MakeDirty();
+    }
+    ImGui::SameLine();
+    if (m_selectedOnScreenControl >= 0) {
+        ImGui::Text("Selected: %s",
+                    on_screen_controls::GetName(
+                        static_cast<on_screen_controls::ControlID>(m_selectedOnScreenControl)));
+    } else {
+        ImGui::TextUnformatted("Selected: none");
+    }
+
+    const ImVec2 canvasSize{
+        std::max(420.0f * m_context.displayScale, ImGui::GetContentRegionAvail().x),
+        340.0f * m_context.displayScale,
+    };
+    const ImVec2 canvasPos = ImGui::GetCursorScreenPos();
+
+    ImGui::InvisibleButton("##on_screen_controls_canvas", canvasSize);
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+        m_selectedOnScreenControl = -1;
+    }
+
+    auto *previewDrawList = ImGui::GetWindowDrawList();
+    const ImVec2 canvasMin = canvasPos;
+    const ImVec2 canvasMax{canvasPos.x + canvasSize.x, canvasPos.y + canvasSize.y};
+    previewDrawList->AddRectFilled(canvasMin, canvasMax, IM_COL32(24, 26, 31, 220), 16.0f * m_context.displayScale);
+    previewDrawList->AddRectFilled(
+        ImVec2(canvasMin.x + 14.0f * m_context.displayScale, canvasMin.y + 14.0f * m_context.displayScale),
+        ImVec2(canvasMax.x - 14.0f * m_context.displayScale, canvasMax.y - 14.0f * m_context.displayScale),
+        IM_COL32(214, 214, 216, 42), 14.0f * m_context.displayScale);
+    for (int i = 0; i < 10; ++i) {
+        const float x = canvasMin.x + (canvasSize.x / 10.0f) * i;
+        previewDrawList->AddLine(ImVec2(x, canvasMin.y), ImVec2(x, canvasMax.y), IM_COL32(255, 255, 255, 8),
+                                 1.0f * m_context.displayScale);
+    }
+    for (int i = 0; i < 6; ++i) {
+        const float y = canvasMin.y + (canvasSize.y / 6.0f) * i;
+        previewDrawList->AddLine(ImVec2(canvasMin.x, y), ImVec2(canvasMax.x, y), IM_COL32(255, 255, 255, 8),
+                                 1.0f * m_context.displayScale);
+    }
+
+    const float previewPadding = 18.0f * m_context.displayScale;
+    const on_screen_controls::Viewport previewViewport{
+        .pos = {canvasMin.x + previewPadding, canvasMin.y + previewPadding},
+        .size = {canvasSize.x - previewPadding * 2.0f, canvasSize.y - previewPadding * 2.0f},
+    };
+    const auto geometry =
+        on_screen_controls::BuildGeometry(onScreenControls, previewViewport, m_context.displayScale);
+
+    previewDrawList->PushClipRect(canvasMin, canvasMax, true);
+    for (auto id : on_screen_controls::kControlIDs) {
+        const auto index = on_screen_controls::ToIndex(id);
+        const auto &g = geometry[index];
+
+        ImGui::PushID(static_cast<int>(index));
+        if (g.shape == on_screen_controls::Geometry::Shape::Circle) {
+            ImGui::SetCursorScreenPos(ImVec2(g.center.x - g.radius, g.center.y - g.radius));
+            ImGui::InvisibleButton("##on_screen_control", ImVec2(g.radius * 2.0f, g.radius * 2.0f));
+        } else {
+            ImGui::SetCursorScreenPos(ImVec2(g.center.x - g.halfSize.x, g.center.y - g.halfSize.y));
+            ImGui::InvisibleButton("##on_screen_control", ImVec2(g.halfSize.x * 2.0f, g.halfSize.y * 2.0f));
+        }
+
+        if (ImGui::IsItemActivated()) {
+            m_selectedOnScreenControl = static_cast<int>(id);
+        }
+        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+            auto &control = on_screen_controls::GetControl(onScreenControls, id);
+            std::array<float, 2> nextPosition{
+                (ImGui::GetIO().MousePos.x - previewViewport.pos.x) / previewViewport.size.x,
+                (ImGui::GetIO().MousePos.y - previewViewport.pos.y) / previewViewport.size.y,
+            };
+            nextPosition = on_screen_controls::ClampNormalizedPosition(onScreenControls, id, previewViewport,
+                                                                       m_context.displayScale, nextPosition);
+            if (control.position != nextPosition) {
+                control.position = nextPosition;
+                MakeDirty();
+            }
+        }
+        ImGui::PopID();
+    }
+
+    on_screen_controls::VisualState previewVisuals{};
+    if (m_selectedOnScreenControl >= 0) {
+        previewVisuals.highlighted =
+            static_cast<on_screen_controls::ControlID>(m_selectedOnScreenControl);
+    }
+    on_screen_controls::Draw(previewDrawList, m_context, onScreenControls, previewViewport, previewVisuals, 1.0f);
+    previewDrawList->PopClipRect();
 
     auto *drawList = ImGui::GetWindowDrawList();
 

@@ -23,6 +23,9 @@
     <string name="settings_texture_filter">Texture Filtering</string>
     <string name="settings_filter_sharp">Sharp</string>
     <string name="settings_filter_smooth">Smooth</string>
+    <string name="settings_touch_controls">Touch Controls</string>
+    <string name="settings_touch_controls_enabled">Show Saturn-style on-screen controls during gameplay</string>
+    <string name="settings_edit_touch_controls">Edit Touch Controls Layout</string>
     <string name="settings_redo_setup">Redo Setup</string>
     <string name="library_empty">No supported Saturn games were found in the selected folder yet.</string>
     <string name="library_scan_error_inline">Unable to scan the selected folder: %1$s</string>
@@ -42,4 +45,8 @@
     <string name="validation_missing_disc">Choose a Saturn game from the library first.</string>
     <string name="validation_missing_selected_disc">The selected game could not be staged for launch.</string>
     <string name="validation_missing_companion_disc_files">This disc format needs its companion track files. Make sure the full disc set exists in the selected games folder.</string>
+    <string name="touch_controls_editor_title">Touch Controls Layout</string>
+    <string name="touch_controls_editor_summary">Drag the on-screen Saturn controls where you want them. Changes save immediately and show up in the Android emulator overlay.</string>
+    <string name="touch_controls_reset">Reset Layout</string>
+    <string name="touch_controls_done">Done</string>
 </resources>

@@ -69,6 +69,49 @@ class BootstrapStore(context: Context) {
     fun loadTextureFilter(): String =
         preferences.getString(KEY_TEXTURE_FILTER, FILTER_NEAREST) ?: FILTER_NEAREST
 
+    fun saveTouchControlsEnabled(enabled: Boolean) {
+        preferences.edit().putBoolean(KEY_TOUCH_CONTROLS_ENABLED, enabled).apply()
+    }
+
+    fun loadTouchControlsEnabled(): Boolean =
+        preferences.getBoolean(KEY_TOUCH_CONTROLS_ENABLED, true)
+
+    fun loadTouchControlsLayout(): TouchControlsLayout =
+        TouchControlsLayout(
+            TouchControlId.values().associateWith { controlId ->
+                val defaultPlacement = TouchControlsLayout.DEFAULT.placementFor(controlId)
+                TouchControlPlacement(
+                    x = preferences.getFloat(
+                        "${KEY_TOUCH_CONTROLS_POSITION_PREFIX}${controlId.preferenceKey}_x",
+                        defaultPlacement.x,
+                    ),
+                    y = preferences.getFloat(
+                        "${KEY_TOUCH_CONTROLS_POSITION_PREFIX}${controlId.preferenceKey}_y",
+                        defaultPlacement.y,
+                    ),
+                )
+            }
+        )
+
+    fun saveTouchControlsLayout(layout: TouchControlsLayout) {
+        preferences.edit().apply {
+            TouchControlId.values().forEach { controlId ->
+                val placement = layout.placementFor(controlId)
+                putFloat("${KEY_TOUCH_CONTROLS_POSITION_PREFIX}${controlId.preferenceKey}_x", placement.x)
+                putFloat("${KEY_TOUCH_CONTROLS_POSITION_PREFIX}${controlId.preferenceKey}_y", placement.y)
+            }
+        }.apply()
+    }
+
+    fun resetTouchControlsLayout() {
+        preferences.edit().apply {
+            TouchControlId.values().forEach { controlId ->
+                remove("${KEY_TOUCH_CONTROLS_POSITION_PREFIX}${controlId.preferenceKey}_x")
+                remove("${KEY_TOUCH_CONTROLS_POSITION_PREFIX}${controlId.preferenceKey}_y")
+            }
+        }.apply()
+    }
+
     fun migratePaths(fromRoot: File, toRoot: File) {
         val current = load()
         val migrated = StoredLaunchSelection(
@@ -103,5 +146,7 @@ class BootstrapStore(context: Context) {
         private const val KEY_GAMES_FOLDER_URI = "games_folder_uri"
         private const val KEY_ASPECT_RATIO = "aspect_ratio"
         private const val KEY_TEXTURE_FILTER = "texture_filter"
+        private const val KEY_TOUCH_CONTROLS_ENABLED = "touch_controls_enabled"
+        private const val KEY_TOUCH_CONTROLS_POSITION_PREFIX = "touch_controls_position_"
     }
 }

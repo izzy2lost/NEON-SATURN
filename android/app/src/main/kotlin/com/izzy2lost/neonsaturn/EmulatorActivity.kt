@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.LayoutInflater
+import android.view.ViewGroup
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -13,19 +14,25 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import org.libsdl.app.SDLActivity
 
 class EmulatorActivity : SDLActivity() {
+    private lateinit var store: BootstrapStore
     private var quickActionsDialog: AlertDialog? = null
+    private var touchControlsView: TouchControlsView? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        store = BootstrapStore(this)
         updateCurrentInstance(this)
+        refreshTouchControlsOverlay()
     }
 
     override fun onResume() {
         super.onResume()
         updateCurrentInstance(this)
+        refreshTouchControlsOverlay()
     }
 
     override fun onPause() {
+        suspendTouchControls()
         if (quickActionsDialog?.isShowing == true) {
             quickActionsDialog?.dismiss()
         }
@@ -36,6 +43,7 @@ class EmulatorActivity : SDLActivity() {
         if (quickActionsDialog?.isShowing == true) {
             quickActionsDialog?.dismiss()
         }
+        removeTouchControlsOverlay()
         if (currentInstance === this) {
             updateCurrentInstance(null)
         }
@@ -83,6 +91,7 @@ class EmulatorActivity : SDLActivity() {
         }
 
         nativeSetPaused(true)
+        suspendTouchControls()
 
         val content = LayoutInflater.from(this).inflate(R.layout.dialog_quick_actions, null, false)
         content.findViewById<TextView>(R.id.quickActionsSubtitleText).text =
@@ -118,6 +127,7 @@ class EmulatorActivity : SDLActivity() {
             quickActionsDialog = null
             if (resumeOnDismiss) {
                 nativeSetPaused(false)
+                resumeTouchControls()
             }
         }
 
@@ -133,10 +143,79 @@ class EmulatorActivity : SDLActivity() {
             else -> false
         }
 
+    private fun refreshTouchControlsOverlay() {
+        if (!store.loadTouchControlsEnabled()) {
+            removeTouchControlsOverlay()
+            pushTouchControlsState(0, 0, 0, 0f, 0f)
+            return
+        }
+
+        val overlay = touchControlsView ?: TouchControlsView(this).also { view ->
+            view.interactionMode = TouchControlsView.InteractionMode.PLAY
+            view.onStateChanged = { state ->
+                pushTouchControlsState(
+                    state.buttonMask,
+                    state.dpadX,
+                    state.dpadY,
+                    state.analogX,
+                    state.analogY,
+                )
+            }
+            view.onMenuPressed = {
+                showQuickActionsDialog()
+            }
+            addContentView(
+                view,
+                ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                ),
+            )
+            touchControlsView = view
+        }
+
+        overlay.touchControlsLayout = store.loadTouchControlsLayout()
+        overlay.inputSuspended = quickActionsDialog?.isShowing == true
+    }
+
+    private fun removeTouchControlsOverlay() {
+        touchControlsView?.resetRuntimeState()
+        (touchControlsView?.parent as? ViewGroup)?.removeView(touchControlsView)
+        touchControlsView = null
+    }
+
+    private fun suspendTouchControls() {
+        touchControlsView?.inputSuspended = true
+        pushTouchControlsState(0, 0, 0, 0f, 0f)
+    }
+
+    private fun resumeTouchControls() {
+        touchControlsView?.inputSuspended = false
+    }
+
+    private fun pushTouchControlsState(
+        buttonMask: Int,
+        dpadX: Int,
+        dpadY: Int,
+        analogX: Float,
+        analogY: Float,
+    ) {
+        runCatching {
+            nativeUpdateTouchControls(buttonMask, dpadX, dpadY, analogX, analogY)
+        }
+    }
+
     private external fun nativeSetPaused(paused: Boolean)
     private external fun nativeSaveState(slotIndex: Int): String
     private external fun nativeLoadState(slotIndex: Int): String
     private external fun nativeExitEmulator()
+    private external fun nativeUpdateTouchControls(
+        buttonMask: Int,
+        dpadX: Int,
+        dpadY: Int,
+        analogX: Float,
+        analogY: Float,
+    )
 
     companion object {
         @Volatile

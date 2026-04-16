@@ -78,8 +78,11 @@
 #include "app.hpp"
 
 #include "actions.hpp"
+#include "on_screen_controls.hpp"
 
+#include <algorithm>
 #include <cstddef>
+#include <limits>
 #include <ymir/ymir.hpp>
 
 #include <ymir/sys/saturn.hpp>
@@ -150,6 +153,34 @@ using clk = std::chrono::steady_clock;
 using MidiPortType = app::Settings::Audio::MidiPort::Type;
 
 namespace app {
+
+inline constexpr sint64 kMouseOverlayPointerId = std::numeric_limits<sint64>::min();
+
+static ymir::peripheral::Button ToOnScreenButton(on_screen_controls::ControlID id) {
+    using Button = ymir::peripheral::Button;
+    switch (id) {
+    case on_screen_controls::ControlID::A: return Button::A;
+    case on_screen_controls::ControlID::B: return Button::B;
+    case on_screen_controls::ControlID::C: return Button::C;
+    case on_screen_controls::ControlID::X: return Button::X;
+    case on_screen_controls::ControlID::Y: return Button::Y;
+    case on_screen_controls::ControlID::Z: return Button::Z;
+    case on_screen_controls::ControlID::L: return Button::L;
+    case on_screen_controls::ControlID::R: return Button::R;
+    case on_screen_controls::ControlID::Start: return Button::Start;
+    default: return Button::None;
+    }
+}
+
+static on_screen_controls::Viewport GetOnScreenViewport(const SharedContext &context) {
+    return {
+        .pos = {
+            context.screen.dCenterX - context.screen.dSizeX * 0.5f,
+            context.screen.dCenterY - context.screen.dSizeY * 0.5f,
+        },
+        .size = {context.screen.dSizeX, context.screen.dSizeY},
+    };
+}
 
 template <typename... TArgs>
 static void ShowStartupFailure(fmt::format_string<TArgs...> fmt, TArgs &&...args) {
@@ -2242,6 +2273,16 @@ void App::RunEmulator() {
                 break;
             case SDL_EVENT_MOUSE_BUTTON_DOWN: [[fallthrough]];
             case SDL_EVENT_MOUSE_BUTTON_UP:
+                if (evt.button.which != SDL_PEN_MOUSEID && evt.button.which != SDL_TOUCH_MOUSEID &&
+                    evt.button.button == SDL_BUTTON_LEFT) {
+                    const bool handled = evt.button.down
+                                             ? HandleOnScreenPointerDown(kMouseOverlayPointerId, evt.button.x,
+                                                                        evt.button.y)
+                                             : HandleOnScreenPointerUp(kMouseOverlayPointerId);
+                    if (handled) {
+                        break;
+                    }
+                }
                 if (!io.WantCaptureMouse) {
                     if (!IsMouseCaptured() && !HasValidPeripheralsForMouseCapture() &&
                         settings.video.doubleClickToFullScreen && evt.button.clicks % 2 == 0 && evt.button.down &&
@@ -2265,11 +2306,15 @@ void App::RunEmulator() {
                 }
                 break;
             case SDL_EVENT_MOUSE_MOTION:
-                if (evt.button.which != SDL_PEN_MOUSEID && evt.button.which != SDL_TOUCH_MOUSEID) {
+                if (evt.motion.which != SDL_PEN_MOUSEID && evt.motion.which != SDL_TOUCH_MOUSEID &&
+                    HandleOnScreenPointerMove(kMouseOverlayPointerId, evt.motion.x, evt.motion.y)) {
+                    break;
+                }
+                if (evt.motion.which != SDL_PEN_MOUSEID && evt.motion.which != SDL_TOUCH_MOUSEID) {
                     if (!io.WantCaptureMouse || inputContext.IsCapturing()) {
-                        inputContext.ProcessPrimitive(evt.button.which, input::MouseAxis2D::MouseRelative,
+                        inputContext.ProcessPrimitive(evt.motion.which, input::MouseAxis2D::MouseRelative,
                                                       evt.motion.xrel, evt.motion.yrel);
-                        inputContext.ProcessPrimitive(evt.button.which, input::MouseAxis2D::MouseAbsolute, evt.motion.x,
+                        inputContext.ProcessPrimitive(evt.motion.which, input::MouseAxis2D::MouseAbsolute, evt.motion.x,
                                                       evt.motion.y);
                     }
                 }
@@ -2352,6 +2397,24 @@ void App::RunEmulator() {
                 // evt.gsensor.which;
                 // evt.gsensor.sensor;
                 // evt.gsensor.data;
+                break;
+
+            case SDL_EVENT_FINGER_DOWN: {
+                int ww = 0;
+                int wh = 0;
+                SDL_GetWindowSize(screen.window, &ww, &wh);
+                (void)HandleOnScreenPointerDown(evt.tfinger.fingerID, evt.tfinger.x * ww, evt.tfinger.y * wh);
+                break;
+            }
+            case SDL_EVENT_FINGER_MOTION: {
+                int ww = 0;
+                int wh = 0;
+                SDL_GetWindowSize(screen.window, &ww, &wh);
+                (void)HandleOnScreenPointerMove(evt.tfinger.fingerID, evt.tfinger.x * ww, evt.tfinger.y * wh);
+                break;
+            }
+            case SDL_EVENT_FINGER_UP:
+                (void)HandleOnScreenPointerUp(evt.tfinger.fingerID);
                 break;
 
             case SDL_EVENT_QUIT: goto end_loop; break;
@@ -4412,6 +4475,8 @@ void App::UpdateInputs(double timeDelta) {
     float sRight = sLeft + sWidth;
     float sBottom = sTop + sHeight;
 
+    UpdateOnScreenControls();
+
     for (uint32 portIndex = 0; portIndex < 2; ++portIndex) {
         auto &config = settings.input.ports[portIndex];
 
@@ -4430,9 +4495,162 @@ void App::UpdateInputs(double timeDelta) {
     }
 }
 
+void App::UpdateOnScreenControls() {
+    using Button = ymir::peripheral::Button;
+    using ControlID = on_screen_controls::ControlID;
+
+    for (uint32 port = 0; port < 2; ++port) {
+        m_context.controlPadInputs[port].onScreenButtons = Button::Default;
+        m_context.analogPadInputs[port].onScreenButtons = Button::Default;
+        m_context.analogPadInputs[port].onScreenX = 0.0f;
+        m_context.analogPadInputs[port].onScreenY = 0.0f;
+    }
+
+    const auto &controls = m_settings.input.onScreenControls;
+    if (!controls.enabled) {
+        m_onScreenPointers.clear();
+        m_onScreenMenuDown = false;
+        return;
+    }
+
+    const auto viewport = GetOnScreenViewport(m_context);
+    if (!viewport.IsValid()) {
+        m_onScreenMenuDown = false;
+        return;
+    }
+
+    const auto geometry = on_screen_controls::BuildGeometry(controls, viewport, m_context.displayScale);
+
+    Button buttons = Button::Default;
+    ImVec2 dpad{};
+    ImVec2 analog{};
+    bool menuDown = false;
+
+    for (const auto &pointer : m_onScreenPointers) {
+        if (pointer.control >= on_screen_controls::kControlCount) {
+            continue;
+        }
+
+        const ControlID id = static_cast<ControlID>(pointer.control);
+        const auto &g = geometry[on_screen_controls::ToIndex(id)];
+
+        if (const Button button = ToOnScreenButton(id); button != Button::None) {
+            buttons &= ~button;
+        }
+
+        if (id == ControlID::DPad) {
+            const ImVec2 value = on_screen_controls::EvaluateDPadVector(g, {pointer.x, pointer.y});
+            dpad.x = std::clamp(dpad.x + value.x, -1.0f, 1.0f);
+            dpad.y = std::clamp(dpad.y + value.y, -1.0f, 1.0f);
+        } else if (id == ControlID::AnalogStick) {
+            const ImVec2 value = on_screen_controls::EvaluateAnalogVector(g, {pointer.x, pointer.y});
+            analog.x = std::clamp(analog.x + value.x, -1.0f, 1.0f);
+            analog.y = std::clamp(analog.y + value.y, -1.0f, 1.0f);
+        } else if (id == ControlID::Menu) {
+            menuDown = true;
+        }
+    }
+
+    if (dpad.x < 0.0f) {
+        buttons &= ~Button::Left;
+    } else if (dpad.x > 0.0f) {
+        buttons &= ~Button::Right;
+    }
+    if (dpad.y < 0.0f) {
+        buttons &= ~Button::Up;
+    } else if (dpad.y > 0.0f) {
+        buttons &= ~Button::Down;
+    }
+
+    buttons &= ~input::AnalogToDigital2DAxis(analog.x, analog.y, m_settings.input.gamepad.analogToDigitalSensitivity,
+                                             Button::Right, Button::Left, Button::Down, Button::Up);
+
+    const uint32 port = std::min(controls.port, 1u);
+    m_context.controlPadInputs[port].onScreenButtons = buttons;
+    m_context.analogPadInputs[port].onScreenButtons = buttons;
+    m_context.analogPadInputs[port].onScreenX = analog.x;
+    m_context.analogPadInputs[port].onScreenY = analog.y;
+
+    if (menuDown && !m_onScreenMenuDown) {
+        m_context.EnqueueEvent(events::gui::OpenSettings(ui::SettingsTab::Input));
+    }
+    m_onScreenMenuDown = menuDown;
+}
+
+void App::ResetOnScreenControls() {
+    using Button = ymir::peripheral::Button;
+
+    m_onScreenPointers.clear();
+    m_onScreenMenuDown = false;
+
+    for (uint32 port = 0; port < 2; ++port) {
+        m_context.controlPadInputs[port].onScreenButtons = Button::Default;
+        m_context.analogPadInputs[port].onScreenButtons = Button::Default;
+        m_context.analogPadInputs[port].onScreenX = 0.0f;
+        m_context.analogPadInputs[port].onScreenY = 0.0f;
+    }
+}
+
+bool App::HandleOnScreenPointerDown(sint64 pointerId, float x, float y) {
+    const auto &controls = m_settings.input.onScreenControls;
+    if (!controls.enabled) {
+        return false;
+    }
+
+    if (pointerId == kMouseOverlayPointerId && ImGui::GetIO().WantCaptureMouse) {
+        return false;
+    }
+
+    const auto viewport = GetOnScreenViewport(m_context);
+    if (!viewport.IsValid()) {
+        return false;
+    }
+
+    const auto geometry = on_screen_controls::BuildGeometry(controls, viewport, m_context.displayScale);
+    const auto hit = on_screen_controls::HitTest(geometry, {x, y});
+    if (!hit.has_value()) {
+        return false;
+    }
+
+    const auto newEnd = std::remove_if(m_onScreenPointers.begin(), m_onScreenPointers.end(),
+                                       [&](const OnScreenPointer &pointer) { return pointer.id == pointerId; });
+    m_onScreenPointers.erase(newEnd, m_onScreenPointers.end());
+    m_onScreenPointers.push_back({
+        .id = pointerId,
+        .control = static_cast<uint8>(*hit),
+        .x = x,
+        .y = y,
+    });
+    UpdateOnScreenControls();
+    return true;
+}
+
+bool App::HandleOnScreenPointerMove(sint64 pointerId, float x, float y) {
+    for (auto &pointer : m_onScreenPointers) {
+        if (pointer.id == pointerId) {
+            pointer.x = x;
+            pointer.y = y;
+            UpdateOnScreenControls();
+            return true;
+        }
+    }
+    return false;
+}
+
+bool App::HandleOnScreenPointerUp(sint64 pointerId) {
+    const auto newEnd = std::remove_if(m_onScreenPointers.begin(), m_onScreenPointers.end(),
+                                       [&](const OnScreenPointer &pointer) { return pointer.id == pointerId; });
+    if (newEnd == m_onScreenPointers.end()) {
+        return false;
+    }
+
+    m_onScreenPointers.erase(newEnd, m_onScreenPointers.end());
+    UpdateOnScreenControls();
+    return true;
+}
+
 void App::DrawInputs(ImDrawList *drawList) {
     const auto &settings = m_settings;
-    const auto &screen = m_context.screen;
 
     for (uint32 portIndex = 0; portIndex < 2; ++portIndex) {
         const auto &config = settings.input.ports[portIndex];
@@ -4454,6 +4672,32 @@ void App::DrawInputs(ImDrawList *drawList) {
             };
             ui::widgets::Crosshair(drawList, params, {input.posX, input.posY});
         }
+    }
+
+    const auto &controls = settings.input.onScreenControls;
+    const auto viewport = GetOnScreenViewport(m_context);
+    if (controls.enabled && viewport.IsValid()) {
+        on_screen_controls::VisualState visuals{};
+        const auto geometry = on_screen_controls::BuildGeometry(controls, viewport, m_context.displayScale);
+        for (const auto &pointer : m_onScreenPointers) {
+            if (pointer.control >= on_screen_controls::kControlCount) {
+                continue;
+            }
+            const auto id = static_cast<on_screen_controls::ControlID>(pointer.control);
+            visuals.active[on_screen_controls::ToIndex(id)] = true;
+            if (id == on_screen_controls::ControlID::DPad) {
+                const ImVec2 value =
+                    on_screen_controls::EvaluateDPadVector(geometry[on_screen_controls::ToIndex(id)], {pointer.x, pointer.y});
+                visuals.dpad.x = std::clamp(visuals.dpad.x + value.x, -1.0f, 1.0f);
+                visuals.dpad.y = std::clamp(visuals.dpad.y + value.y, -1.0f, 1.0f);
+            } else if (id == on_screen_controls::ControlID::AnalogStick) {
+                const ImVec2 value = on_screen_controls::EvaluateAnalogVector(
+                    geometry[on_screen_controls::ToIndex(id)], {pointer.x, pointer.y});
+                visuals.analogStick.x = std::clamp(visuals.analogStick.x + value.x, -1.0f, 1.0f);
+                visuals.analogStick.y = std::clamp(visuals.analogStick.y + value.y, -1.0f, 1.0f);
+            }
+        }
+        on_screen_controls::Draw(drawList, m_context, controls, viewport, visuals);
     }
 }
 
@@ -5064,16 +5308,16 @@ void App::ReadPeripheral(ymir::peripheral::PeripheralReport &report) {
     // TODO: this is the appropriate location to capture inputs for a movie recording
     switch (report.type) {
     case ymir::peripheral::PeripheralType::ControlPad:
-        report.report.controlPad.buttons = m_context.controlPadInputs[port - 1].buttons;
+        report.report.controlPad.buttons = m_context.controlPadInputs[port - 1].GetCombinedButtons();
         break;
     case ymir::peripheral::PeripheralType::AnalogPad: //
     {
         auto &specificReport = report.report.analogPad;
         const auto &inputs = m_context.analogPadInputs[port - 1];
-        specificReport.buttons = inputs.buttons;
+        specificReport.buttons = inputs.GetCombinedButtons();
         specificReport.analog = inputs.analogMode;
-        specificReport.x = std::clamp(inputs.x * 128.0f + 128.0f, 0.0f, 255.0f);
-        specificReport.y = std::clamp(inputs.y * 128.0f + 128.0f, 0.0f, 255.0f);
+        specificReport.x = std::clamp(inputs.GetCombinedX() * 128.0f + 128.0f, 0.0f, 255.0f);
+        specificReport.y = std::clamp(inputs.GetCombinedY() * 128.0f + 128.0f, 0.0f, 255.0f);
         specificReport.l = inputs.l * 255.0f;
         specificReport.r = inputs.r * 255.0f;
         break;

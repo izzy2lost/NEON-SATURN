@@ -88,6 +88,28 @@
                 android:text="@string/settings_filter_smooth" />
         </com.google.android.material.chip.ChipGroup>
 
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_touch_controls"
+            android:textAppearance="?attr/textAppearanceLabelLarge" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/touchControlsSwitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/settings_touch_controls_enabled" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/editTouchControlsButton"
+            style="@style/Widget.Material3.Button.TonalButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/settings_edit_touch_controls" />
+
         <!-- Divider -->
         <View
             android:layout_width="match_parent"
