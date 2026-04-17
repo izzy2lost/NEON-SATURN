@@ -1,5 +1,6 @@
 package com.izzy2lost.neonsaturn
 
+import android.content.res.Configuration
 import android.os.Bundle
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.button.MaterialButton
@@ -15,15 +16,29 @@ class TouchControlsEditorActivity : AppCompatActivity() {
         store = BootstrapStore(this)
         editorView = findViewById(R.id.touchControlsEditorView)
 
+        val isPortrait = resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
         editorView.interactionMode = TouchControlsView.InteractionMode.EDIT
-        editorView.touchControlsLayout = store.loadTouchControlsLayout()
+        editorView.touchControlsLayout = if (isPortrait) {
+            store.loadTouchControlsLayoutPortrait()
+        } else {
+            store.loadTouchControlsLayout()
+        }
         editorView.onLayoutChanged = { layout ->
-            store.saveTouchControlsLayout(layout)
+            if (isPortrait) {
+                store.saveTouchControlsLayoutPortrait(layout)
+            } else {
+                store.saveTouchControlsLayout(layout)
+            }
         }
 
         findViewById<MaterialButton>(R.id.resetTouchControlsButton).setOnClickListener {
-            store.resetTouchControlsLayout()
-            editorView.touchControlsLayout = store.loadTouchControlsLayout()
+            if (isPortrait) {
+                store.resetTouchControlsLayoutPortrait()
+                editorView.touchControlsLayout = store.loadTouchControlsLayoutPortrait()
+            } else {
+                store.resetTouchControlsLayout()
+                editorView.touchControlsLayout = store.loadTouchControlsLayout()
+            }
         }
 
         findViewById<MaterialButton>(R.id.doneTouchControlsButton).setOnClickListener {

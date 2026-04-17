@@ -33,20 +33,37 @@ data class TouchControlsLayout(
         copy(placements = placements + (controlId to placement))
 
     companion object {
+        val DEFAULT_PORTRAIT = TouchControlsLayout(
+            mapOf(
+                TouchControlId.DPAD to TouchControlPlacement(0.18f, 0.65f),
+                TouchControlId.ANALOG to TouchControlPlacement(0.25f, 0.82f),
+                TouchControlId.START to TouchControlPlacement(0.50f, 0.93f),
+                TouchControlId.MENU to TouchControlPlacement(0.50f, 0.07f),
+                TouchControlId.A to TouchControlPlacement(0.55f, 0.78f),
+                TouchControlId.B to TouchControlPlacement(0.73f, 0.78f),
+                TouchControlId.C to TouchControlPlacement(0.91f, 0.78f),
+                TouchControlId.X to TouchControlPlacement(0.55f, 0.63f),
+                TouchControlId.Y to TouchControlPlacement(0.73f, 0.63f),
+                TouchControlId.Z to TouchControlPlacement(0.91f, 0.63f),
+                TouchControlId.L to TouchControlPlacement(0.17f, 0.06f),
+                TouchControlId.R to TouchControlPlacement(0.83f, 0.06f),
+            )
+        )
+
         val DEFAULT = TouchControlsLayout(
             mapOf(
-                TouchControlId.DPAD to TouchControlPlacement(0.17f, 0.72f),
-                TouchControlId.ANALOG to TouchControlPlacement(0.34f, 0.82f),
-                TouchControlId.START to TouchControlPlacement(0.50f, 0.81f),
-                TouchControlId.MENU to TouchControlPlacement(0.59f, 0.66f),
-                TouchControlId.A to TouchControlPlacement(0.73f, 0.77f),
-                TouchControlId.B to TouchControlPlacement(0.81f, 0.67f),
-                TouchControlId.C to TouchControlPlacement(0.91f, 0.58f),
-                TouchControlId.X to TouchControlPlacement(0.68f, 0.57f),
-                TouchControlId.Y to TouchControlPlacement(0.77f, 0.49f),
-                TouchControlId.Z to TouchControlPlacement(0.86f, 0.41f),
-                TouchControlId.L to TouchControlPlacement(0.17f, 0.17f),
-                TouchControlId.R to TouchControlPlacement(0.83f, 0.17f),
+                TouchControlId.DPAD to TouchControlPlacement(0.12f, 0.75f),
+                TouchControlId.ANALOG to TouchControlPlacement(0.28f, 0.86f),
+                TouchControlId.START to TouchControlPlacement(0.50f, 0.93f),
+                TouchControlId.MENU to TouchControlPlacement(0.50f, 0.07f),
+                TouchControlId.A to TouchControlPlacement(0.78f, 0.82f),
+                TouchControlId.B to TouchControlPlacement(0.86f, 0.80f),
+                TouchControlId.C to TouchControlPlacement(0.94f, 0.80f),
+                TouchControlId.X to TouchControlPlacement(0.78f, 0.64f),
+                TouchControlId.Y to TouchControlPlacement(0.86f, 0.62f),
+                TouchControlId.Z to TouchControlPlacement(0.94f, 0.62f),
+                TouchControlId.L to TouchControlPlacement(0.13f, 0.15f),
+                TouchControlId.R to TouchControlPlacement(0.87f, 0.15f),
             )
         )
     }

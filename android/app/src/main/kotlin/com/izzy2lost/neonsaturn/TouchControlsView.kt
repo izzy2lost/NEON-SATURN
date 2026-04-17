@@ -333,12 +333,17 @@ class TouchControlsView @JvmOverloads constructor(
     }
 
     private fun drawEditorGuide(canvas: Canvas) {
-        val margin = 20f * density
-        val screenWidth = width - (margin * 2f)
-        val screenHeight = minOf(screenWidth / (4f / 3f), height - (margin * 4f))
-        val left = (width - screenWidth) / 2f
-        val top = (height - screenHeight) / 2f
-        tempRect.set(left, top, left + screenWidth, top + screenHeight)
+        if (width > height) {
+            // Landscape: game fills full height at 4:3, centered horizontally
+            val gameWidth = height * (4f / 3f)
+            val left = ((width - gameWidth) / 2f).coerceAtLeast(0f)
+            val right = (left + gameWidth).coerceAtMost(width.toFloat())
+            tempRect.set(left, 0f, right, height.toFloat())
+        } else {
+            // Portrait: game fills full width at 4:3, anchored at the top
+            val gameHeight = width * (3f / 4f)
+            tempRect.set(0f, 0f, width.toFloat(), gameHeight)
+        }
         canvas.drawRoundRect(tempRect, 24f * density, 24f * density, guideFillPaint)
         canvas.drawRoundRect(tempRect, 24f * density, 24f * density, guidePaint)
 

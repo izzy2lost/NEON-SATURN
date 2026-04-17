@@ -77,37 +77,53 @@ class BootstrapStore(context: Context) {
         preferences.getBoolean(KEY_TOUCH_CONTROLS_ENABLED, true)
 
     fun loadTouchControlsLayout(): TouchControlsLayout =
+        loadTouchControlsLayoutWithDefaults(KEY_TOUCH_CONTROLS_POSITION_PREFIX, TouchControlsLayout.DEFAULT)
+
+    fun saveTouchControlsLayout(layout: TouchControlsLayout) {
+        saveTouchControlsLayoutWithPrefix(KEY_TOUCH_CONTROLS_POSITION_PREFIX, layout)
+    }
+
+    fun resetTouchControlsLayout() {
+        resetTouchControlsLayoutWithPrefix(KEY_TOUCH_CONTROLS_POSITION_PREFIX)
+    }
+
+    fun loadTouchControlsLayoutPortrait(): TouchControlsLayout =
+        loadTouchControlsLayoutWithDefaults(KEY_TOUCH_CONTROLS_PORTRAIT_PREFIX, TouchControlsLayout.DEFAULT_PORTRAIT)
+
+    fun saveTouchControlsLayoutPortrait(layout: TouchControlsLayout) {
+        saveTouchControlsLayoutWithPrefix(KEY_TOUCH_CONTROLS_PORTRAIT_PREFIX, layout)
+    }
+
+    fun resetTouchControlsLayoutPortrait() {
+        resetTouchControlsLayoutWithPrefix(KEY_TOUCH_CONTROLS_PORTRAIT_PREFIX)
+    }
+
+    private fun loadTouchControlsLayoutWithDefaults(prefix: String, defaults: TouchControlsLayout): TouchControlsLayout =
         TouchControlsLayout(
             TouchControlId.values().associateWith { controlId ->
-                val defaultPlacement = TouchControlsLayout.DEFAULT.placementFor(controlId)
+                val defaultPlacement = defaults.placementFor(controlId)
                 TouchControlPlacement(
-                    x = preferences.getFloat(
-                        "${KEY_TOUCH_CONTROLS_POSITION_PREFIX}${controlId.preferenceKey}_x",
-                        defaultPlacement.x,
-                    ),
-                    y = preferences.getFloat(
-                        "${KEY_TOUCH_CONTROLS_POSITION_PREFIX}${controlId.preferenceKey}_y",
-                        defaultPlacement.y,
-                    ),
+                    x = preferences.getFloat("${prefix}${controlId.preferenceKey}_x", defaultPlacement.x),
+                    y = preferences.getFloat("${prefix}${controlId.preferenceKey}_y", defaultPlacement.y),
                 )
             }
         )
 
-    fun saveTouchControlsLayout(layout: TouchControlsLayout) {
+    private fun saveTouchControlsLayoutWithPrefix(prefix: String, layout: TouchControlsLayout) {
         preferences.edit().apply {
             TouchControlId.values().forEach { controlId ->
                 val placement = layout.placementFor(controlId)
-                putFloat("${KEY_TOUCH_CONTROLS_POSITION_PREFIX}${controlId.preferenceKey}_x", placement.x)
-                putFloat("${KEY_TOUCH_CONTROLS_POSITION_PREFIX}${controlId.preferenceKey}_y", placement.y)
+                putFloat("${prefix}${controlId.preferenceKey}_x", placement.x)
+                putFloat("${prefix}${controlId.preferenceKey}_y", placement.y)
             }
         }.apply()
     }
 
-    fun resetTouchControlsLayout() {
+    private fun resetTouchControlsLayoutWithPrefix(prefix: String) {
         preferences.edit().apply {
             TouchControlId.values().forEach { controlId ->
-                remove("${KEY_TOUCH_CONTROLS_POSITION_PREFIX}${controlId.preferenceKey}_x")
-                remove("${KEY_TOUCH_CONTROLS_POSITION_PREFIX}${controlId.preferenceKey}_y")
+                remove("${prefix}${controlId.preferenceKey}_x")
+                remove("${prefix}${controlId.preferenceKey}_y")
             }
         }.apply()
     }
@@ -148,5 +164,6 @@ class BootstrapStore(context: Context) {
         private const val KEY_TEXTURE_FILTER = "texture_filter"
         private const val KEY_TOUCH_CONTROLS_ENABLED = "touch_controls_enabled"
         private const val KEY_TOUCH_CONTROLS_POSITION_PREFIX = "touch_controls_position_"
+        private const val KEY_TOUCH_CONTROLS_PORTRAIT_PREFIX = "touch_controls_portrait_position_"
     }
 }

@@ -2,6 +2,7 @@ package com.izzy2lost.neonsaturn
 
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.LayoutInflater
@@ -28,6 +29,11 @@ class EmulatorActivity : SDLActivity() {
     override fun onResume() {
         super.onResume()
         updateCurrentInstance(this)
+        refreshTouchControlsOverlay()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
         refreshTouchControlsOverlay()
     }
 
@@ -174,7 +180,12 @@ class EmulatorActivity : SDLActivity() {
             touchControlsView = view
         }
 
-        overlay.touchControlsLayout = store.loadTouchControlsLayout()
+        val isPortrait = resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
+        overlay.touchControlsLayout = if (isPortrait) {
+            store.loadTouchControlsLayoutPortrait()
+        } else {
+            store.loadTouchControlsLayout()
+        }
         overlay.inputSuspended = quickActionsDialog?.isShowing == true
     }
 
