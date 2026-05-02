@@ -9,7 +9,7 @@
         <item name="android:windowBackground">@color/neon_saturn_bg</item>
     </style>
 
-    <style name="Theme.NeonSaturn.Emulator" parent="Theme.Material3.DayNight.NoActionBar">
+    <style name="Theme.NeonSaturn.Emulator" parent="Theme.NeonSaturn">
         <item name="android:windowFullscreen">true</item>
         <item name="android:windowBackground">@android:color/black</item>
     </style>
