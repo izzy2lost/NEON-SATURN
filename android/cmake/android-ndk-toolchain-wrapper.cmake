@@ -19,7 +19,7 @@ else()
             string(REPLACE "sdk.dir=" "" _neonsaturn_sdk_dir "${_neonsaturn_sdk_line}")
             string(REPLACE "\\:" ":" _neonsaturn_sdk_dir "${_neonsaturn_sdk_dir}")
             string(REPLACE "\\\\" "\\" _neonsaturn_sdk_dir "${_neonsaturn_sdk_dir}")
-            set(_neonsaturn_candidate_ndk "${_neonsaturn_sdk_dir}/ndk/29.0.14206865")
+            set(_neonsaturn_candidate_ndk "${_neonsaturn_sdk_dir}/ndk/30.0.14904198")
 
             if(EXISTS "${_neonsaturn_candidate_ndk}/build/cmake/android.toolchain.cmake")
                 set(_neonsaturn_ndk "${_neonsaturn_candidate_ndk}")
@@ -29,7 +29,7 @@ else()
 endif()
 
 if(_neonsaturn_ndk STREQUAL "")
-    message(FATAL_ERROR "Unable to locate Android NDK 29.0.14206865. Set ANDROID_NDK_HOME or update android/local.properties.")
+    message(FATAL_ERROR "Unable to locate Android NDK 30.0.14904198. Set ANDROID_NDK_HOME or update android/local.properties.")
 endif()
 
 set(ANDROID_NDK_HOME "${_neonsaturn_ndk}" CACHE PATH "" FORCE)

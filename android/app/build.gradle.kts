@@ -23,7 +23,7 @@ val sdkRoot =
         ?: "/home/izzy-kauffman/Android/Sdk"
 
 val ndkToolchainFile =
-    file("$sdkRoot/ndk/29.0.14206865/build/cmake/android.toolchain.cmake").invariantSeparatorsPath
+    file("$sdkRoot/ndk/30.0.14904198/build/cmake/android.toolchain.cmake").invariantSeparatorsPath
 val vcpkgToolchainFile =
     file("${rootProject.projectDir.parentFile.resolve("vcpkg/scripts/buildsystems/vcpkg.cmake").path}")
         .invariantSeparatorsPath
@@ -33,7 +33,7 @@ android {
     namespace = "com.izzy2lost.neonsaturn"
     compileSdk = 36
     buildToolsVersion = "36.1.0"
-    ndkVersion = "29.0.14206865"
+    ndkVersion = "30.0.14904198"
 
     defaultConfig {
         applicationId = "com.izzy2lost.neonsaturn"
