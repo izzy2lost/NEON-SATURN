@@ -69,20 +69,24 @@ class CoverFlowAdapter(
             titleText.text = entry.title
             val url = CoverArtManager.coverUrl(entry.title, coverMode)
 
-            coverImage.load(url, imageLoader) {
-                crossfade(true)
-                memoryCachePolicy(CachePolicy.ENABLED)
-                diskCachePolicy(CachePolicy.ENABLED)
-                placeholder(R.drawable.ic_cover_placeholder)
-                error(R.drawable.ic_cover_placeholder)
-            }
-
-            // Load same URL into reflection; Coil serves from memory cache immediately
-            reflectionImage.load(url, imageLoader) {
-                memoryCachePolicy(CachePolicy.ENABLED)
-                diskCachePolicy(CachePolicy.ENABLED)
-                placeholder(R.drawable.ic_cover_placeholder)
-                error(R.drawable.ic_cover_placeholder)
+            if (url != null) {
+                coverImage.load(url, imageLoader) {
+                    crossfade(true)
+                    memoryCachePolicy(CachePolicy.ENABLED)
+                    diskCachePolicy(CachePolicy.ENABLED)
+                    placeholder(R.drawable.ic_cover_placeholder)
+                    error(R.drawable.ic_cover_placeholder)
+                }
+                // Same URL into reflection — Coil serves from memory cache immediately
+                reflectionImage.load(url, imageLoader) {
+                    memoryCachePolicy(CachePolicy.ENABLED)
+                    diskCachePolicy(CachePolicy.ENABLED)
+                    placeholder(R.drawable.ic_cover_placeholder)
+                    error(R.drawable.ic_cover_placeholder)
+                }
+            } else {
+                coverImage.setImageResource(R.drawable.ic_cover_placeholder)
+                reflectionImage.setImageResource(R.drawable.ic_cover_placeholder)
             }
 
             itemView.setOnClickListener { onGameSelected(entry) }

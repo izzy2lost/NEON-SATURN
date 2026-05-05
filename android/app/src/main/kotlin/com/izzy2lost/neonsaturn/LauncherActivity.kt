@@ -611,6 +611,14 @@ class LauncherActivity : AppCompatActivity() {
             libraryRecyclerView.post {
                 coverFlowTransformer.applyTransforms(libraryRecyclerView)
             }
+
+            // Download the cover index; when ready, rebind all visible items so covers appear
+            CoverArtManager.ensureIndexLoaded(mode) {
+                coverFlowAdapter?.notifyDataSetChanged()
+                libraryRecyclerView.post {
+                    coverFlowTransformer.applyTransforms(libraryRecyclerView)
+                }
+            }
         }
     }
 
