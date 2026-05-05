@@ -63,6 +63,12 @@ TestData{
             .vcellScrollOffset = 0,
         },
     }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
+    }},
     // Vertical cell scroll increment
     0,
     // Rotation coefficient accesses
@@ -104,6 +110,12 @@ TestData{
         // NBG3
         {},
     }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
+    }},
     // Vertical cell scroll increment
     0,
     // Rotation coefficient accesses
@@ -143,6 +155,12 @@ TestData{
         // NBG2
         {},
         // NBG3
+        {},
+    }},
+    {{
+        // RBG0
+        {},
+        // RBG1
         {},
     }},
     // Vertical cell scroll increment
@@ -204,6 +222,12 @@ TestData{
             .vcellScrollOffset = 0,
         },
         // NBG3
+        {},
+    }},
+    {{
+        // RBG0
+        {},
+        // RBG1
         {},
     }},
     // Vertical cell scroll increment
@@ -277,6 +301,12 @@ TestData{
             .vcellScrollOffset = 0,
         },
     }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
+    }},
     // Vertical cell scroll increment
     0,
     // Rotation coefficient accesses
@@ -338,6 +368,12 @@ TestData{
         // NBG3
         {},
     }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
+    }},
     // Vertical cell scroll increment
     0,
     // Rotation coefficient accesses
@@ -387,6 +423,12 @@ TestData{
         // NBG2
         {},
         // NBG3
+        {},
+    }},
+    {{
+        // RBG0
+        {},
+        // RBG1
         {},
     }},
     // Vertical cell scroll increment
@@ -440,6 +482,12 @@ TestData{
         // NBG3
         {},
     }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
+    }},
     // Vertical cell scroll increment
     0,
     // Rotation coefficient accesses
@@ -479,6 +527,12 @@ TestData{
         // NBG2
         {},
         // NBG3
+        {},
+    }},
+    {{
+        // RBG0
+        {},
+        // RBG1
         {},
     }},
     // Vertical cell scroll increment
@@ -522,6 +576,12 @@ TestData{
         // NBG3
         {},
     }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
+    }},
     // Vertical cell scroll increment
     0,
     // Rotation coefficient accesses
@@ -563,6 +623,12 @@ TestData{
         // NBG3
         {},
     }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
+    }},
     // Vertical cell scroll increment
     0,
     // Rotation coefficient accesses
@@ -602,6 +668,12 @@ TestData{
         // NBG2
         {},
         // NBG3
+        {},
+    }},
+    {{
+        // RBG0
+        {},
+        // RBG1
         {},
     }},
     // Vertical cell scroll increment
@@ -655,6 +727,12 @@ TestData{
         // NBG3
         {},
     }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
+    }},
     // Vertical cell scroll increment
     0,
     // Rotation coefficient accesses
@@ -694,6 +772,12 @@ TestData{
         // NBG2
         {},
         // NBG3
+        {},
+    }},
+    {{
+        // RBG0
+        {},
+        // RBG1
         {},
     }},
     // Vertical cell scroll increment
@@ -737,6 +821,12 @@ TestData{
         // NBG3
         {},
     }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
+    }},
     // Vertical cell scroll increment
     0,
     // Rotation coefficient accesses
@@ -776,6 +866,12 @@ TestData{
         // NBG2
         {},
         // NBG3
+        {},
+    }},
+    {{
+        // RBG0
+        {},
+        // RBG1
         {},
     }},
     // Vertical cell scroll increment
@@ -829,6 +925,12 @@ TestData{
         // NBG3
         {},
     }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
+    }},
     // Vertical cell scroll increment
     0,
     // Rotation coefficient accesses
@@ -878,6 +980,12 @@ TestData{
         // NBG2
         {},
         // NBG3
+        {},
+    }},
+    {{
+        // RBG0
+        {},
+        // RBG1
         {},
     }},
     // Vertical cell scroll increment
@@ -941,6 +1049,12 @@ TestData{
         // NBG3
         {},
     }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
+    }},
     // Vertical cell scroll increment
     0,
     // Rotation coefficient accesses
@@ -1002,6 +1116,12 @@ TestData{
         // NBG3
         {},
     }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
+    }},
     // Vertical cell scroll increment
     8,
     // Rotation coefficient accesses
@@ -1053,6 +1173,12 @@ TestData{
         // NBG3
         {},
     }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
+    }},
     // Vertical cell scroll increment
     0,
     // Rotation coefficient accesses
@@ -1102,6 +1228,12 @@ TestData{
         // NBG2
         {},
         // NBG3
+        {},
+    }},
+    {{
+        // RBG0
+        {},
+        // RBG1
         {},
     }},
     // Vertical cell scroll increment
@@ -1175,6 +1307,12 @@ TestData{
             .vcellScrollOffset = 0,
         },
     }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
+    }},
     // Vertical cell scroll increment
     0,
     // Rotation coefficient accesses
@@ -1226,6 +1364,12 @@ TestData{
         // NBG3
         {},
     }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
+    }},
     // Vertical cell scroll increment
     0,
     // Rotation coefficient accesses
@@ -1275,6 +1419,12 @@ TestData{
         // NBG2
         {},
         // NBG3
+        {},
+    }},
+    {{
+        // RBG0
+        {},
+        // RBG1
         {},
     }},
     // Vertical cell scroll increment
@@ -1348,6 +1498,12 @@ TestData{
             .vcellScrollOffset = 0,
         },
     }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
+    }},
     // Vertical cell scroll increment
     0,
     // Rotation coefficient accesses
@@ -1418,6 +1574,12 @@ TestData{
             .vcellScrollRepeat = false,
             .vcellScrollOffset = 0,
         },
+    }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
     }},
     // Vertical cell scroll increment
     0,
@@ -1490,6 +1652,12 @@ TestData{
             .vcellScrollOffset = 0,
         },
     }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
+    }},
     // Vertical cell scroll increment
     0,
     // Rotation coefficient accesses
@@ -1549,6 +1717,12 @@ TestData{
             .vcellScrollOffset = 0,
         },
         // NBG3
+        {},
+    }},
+    {{
+        // RBG0
+        {},
+        // RBG1
         {},
     }},
     // Vertical cell scroll increment
@@ -1622,6 +1796,12 @@ TestData{
             .vcellScrollOffset = 0,
         },
     }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
+    }},
     // Vertical cell scroll increment
     0,
     // Rotation coefficient accesses
@@ -1682,6 +1862,12 @@ TestData{
             .vcellScrollRepeat = false,
             .vcellScrollOffset = 0,
         },
+    }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
     }},
     // Vertical cell scroll increment
     0,
@@ -1754,6 +1940,12 @@ TestData{
             .vcellScrollOffset = 0,
         },
     }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
+    }},
     // Vertical cell scroll increment
     0,
     // Rotation coefficient accesses
@@ -1805,6 +1997,12 @@ TestData{
         // NBG3
         {},
     }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
+    }},
     // Vertical cell scroll increment
     4,
     // Rotation coefficient accesses
@@ -1846,8 +2044,180 @@ TestData{
         // NBG3
         {},
     }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
+    }},
     // Vertical cell scroll increment
     4,
+    // Rotation coefficient accesses
+    {false, false, false, false},
+},
+
+TestData{
+    "Sonic 3D Blast :: Rusty Ruins :: Mixed valid/invalid scroll CP accesses in low-res modes don't cause delay if there are enough valid accesses",
+    0x44556677, // 010,012 CYCA0L/U  CP0 CP0 CP1 CP1 CP2 CP2 CP3 CP3
+    0x44556677, // 014,016 CYCA1L/U  CP0 CP0 CP1 CP1 CP2 CP2 CP3 CP3
+    0x66554477, // 018,01A CYCB0L/U  CP2 CP2 CP1 CP1 CP0 CP0 CP3 CP3
+    0x01EE23EE, // 01C,01E CYCB1L/U  PN0 PN1 SH2 SH2 PN2 PN3 SH2 SH2
+    0x1300, // 00E RAMCTL  A0/A1, B0/B1, no rotparams
+    0x8000, // 000 TVMD    lo-res
+    0x000F, // 020 BGON    NBG0, NBG1, NBG2, NBG3
+    0x1010, // 028 CHCTLA  NBG0 = pal256 scroll 1x1   NBG1 = pal256 scroll 1x1
+    0x0002, // 02A CHCTLB  NBG2 = pal256 scroll 1x1   NBG3 = pal16 scroll 1x1
+    0x0000, // 098 ZMCTL   NBG0 = 1x reduction        NBG1 = 1x reduction
+    0x0000, // 09A SCRCTL  NBG0 =                     NBG1 =
+
+    // Expected
+    {{
+        // NBG0
+        {
+            .check = true,
+            .bitmap = false,
+            .patNameAccess = {false, false, false, true},
+            .charPatAccess = {true, true, true, false},
+            .charPatDelay = {false, false, false, false},
+            .vramDataOffset = {0, 0, 0, 0},
+            .vcellScrollDelay = false,
+            .vcellScrollRepeat = false,
+            .vcellScrollOffset = 0,
+        },
+        // NBG1
+        {
+            .check = true,
+            .bitmap = false,
+            .patNameAccess = {false, false, false, true},
+            .charPatAccess = {true, true, true, false},
+            .charPatDelay = {false, false, false, false},
+            .vramDataOffset = {0, 0, 0, 0},
+            .vcellScrollDelay = false,
+            .vcellScrollRepeat = false,
+            .vcellScrollOffset = 0,
+        },
+        // NBG2
+        {
+            .check = true,
+            .bitmap = false,
+            .patNameAccess = {false, false, false, true},
+            .charPatAccess = {true, true, true, false},
+            .charPatDelay = {false, false, false, false},
+            .vramDataOffset = {0, 0, 0, 0},
+            .vcellScrollDelay = false,
+            .vcellScrollRepeat = false,
+            .vcellScrollOffset = 0,
+        },
+        // NBG3
+        {
+            .check = true,
+            .bitmap = false,
+            .patNameAccess = {false, false, false, true},
+            .charPatAccess = {true, true, true, false},
+            .charPatDelay = {true, true, true, true},
+            .vramDataOffset = {0, 0, 0, 0},
+            .vcellScrollDelay = false,
+            .vcellScrollRepeat = false,
+            .vcellScrollOffset = 0,
+        },
+    }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
+    }},
+    // Vertical cell scroll increment
+    0,
+    // Rotation coefficient accesses
+    {false, false, false, false},
+},
+
+TestData{
+    "Gale Racer :: In-game :: Basic RBG0/RBG1 access checks",
+    0xFFFFFFFF, // 010,012 CYCA0L/U  -   -   -   -   -   -   -   -
+    0xFFFFFFFF, // 014,016 CYCA1L/U  -   -   -   -   -   -   -   -
+    0xFFFFFFFF, // 018,01A CYCB0L/U  -   -   -   -   -   -   -   -
+    0xFFFFFFFF, // 01C,01E CYCB1L/U  -   -   -   -   -   -   -   -
+    0x1303, // 00E RAMCTL  A0/A1, B0/B1, rot: A0=charpat
+    0x8000, // 000 TVMD    lo-res
+    0x0030, // 020 BGON    RBG0, RBG1
+    0x0011, // 028 CHCTLA
+    0x1200, // 02A CHCTLB
+    0x0000, // 098 ZMCTL
+    0x0000, // 09A SCRCTL
+
+    // Expected
+    {{
+        // NBG0
+        {},
+        // NBG1
+        {},
+        // NBG2
+        {},
+        // NBG3
+        {},
+    }},
+    {{
+        // RBG0
+        {
+            .check = true,
+            .bitmap = true,
+            .patNameAccess = {false, false, false, false},
+            .charPatAccess = {true, false, false, false},
+        },
+        // RBG1
+        {
+            .check = true,
+            .bitmap = false,
+            .patNameAccess = {false, false, false, true},
+            .charPatAccess = {false, false, true, false},
+        },
+    }},
+    // Vertical cell scroll increment
+    0,
+    // Rotation coefficient accesses
+    {false, false, false, false},
+},
+
+TestData{
+    "MechWarrior 2 :: Title screen and main menu :: Basic RBG1 only",
+    0xFFFFFFFF, // 010,012 CYCA0L/U  -   -   -   -   -   -   -   -
+    0xFFFFFFFF, // 014,016 CYCA1L/U  -   -   -   -   -   -   -   -
+    0xFFFFFFFF, // 018,01A CYCB0L/U  -   -   -   -   -   -   -   -
+    0xFFFFFFFF, // 01C,01E CYCB1L/U  -   -   -   -   -   -   -   -
+    0x230E, // 00E RAMCTL  A0/A1, B0/B1, rot: A0=patname A1=charpat
+    0x8000, // 000 TVMD    lo-res
+    0x0020, // 020 BGON    RBG1
+    0x0010, // 028 CHCTLA
+    0x1000, // 02A CHCTLB
+    0x0000, // 098 ZMCTL
+    0x0000, // 09A SCRCTL
+
+    // Expected
+    {{
+        // NBG0
+        {},
+        // NBG1
+        {},
+        // NBG2
+        {},
+        // NBG3
+        {},
+    }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {
+            .check = true,
+            .bitmap = false,
+            .patNameAccess = {false, false, false, true},
+            .charPatAccess = {false, false, true, false},
+        },
+    }},
+    // Vertical cell scroll increment
+    0,
     // Rotation coefficient accesses
     {false, false, false, false},
 },

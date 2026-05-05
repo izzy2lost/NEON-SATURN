@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(Ymir VERSION 0.3.0)
+project(Ymir VERSION 0.3.2)
 
 include(cmake/CMakeRC.cmake)
 include(cmake/CopyRuntimeDLLs.cmake)
@@ -12,7 +12,6 @@ include(cmake/TargetConditionalSources.cmake)
 ## Determine if this is a top-level build or included as a subproject
 string(COMPARE EQUAL "${CMAKE_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}" is_top_level)
 
-option(Ymir_INCLUDE_PACKAGING "Include packaging rules for Ymir" "${is_top_level}")
 option(Ymir_DEV_BUILD "Mark as a development build" ON)
 option(Ymir_EXTRA_INLINING "Enable more aggressive inlining (slows down build!)" "${is_top_level}")
 option(Ymir_ENABLE_TESTS "Enable tests for Ymir" "${is_top_level}")
@@ -24,6 +23,14 @@ option(Ymir_ENABLE_DEV_ASSERTIONS "Enable development-time assertions" OFF)
 option(Ymir_ENABLE_IMGUI_DEMO "Enable ImGui demo window" ON)
 option(Ymir_ENABLE_UPDATE_CHECKS "Enable update checks" ON)
 
+## Feature flags
+## If ON, all feature flags will be enabled by default
+## All feature flags can be selectively overridden
+option(Ymir_FEATUREFLAG_DEFAULT "Enable all feature flags by default" ${Ymir_DEV_BUILD})
+
+## Selectively enable in-development features
+option(Ymir_FF_VIRTUA_GUN "Enable Virtua Gun peripheral" ${Ymir_FEATUREFLAG_DEFAULT})
+
 if (Ymir_DEV_BUILD)
     message(STATUS "Ymir: Development build")
 else ()
@@ -32,6 +39,9 @@ endif ()
 message(STATUS "Ymir: Devlog ${Ymir_ENABLE_DEVLOG}")
 message(STATUS "Ymir: Extra inlining ${Ymir_EXTRA_INLINING}")
 message(STATUS "Ymir: Update checks ${Ymir_ENABLE_UPDATE_CHECKS}")
+
+message(STATUS "Ymir: Feature flags:")
+message(STATUS "- Virtua Gun: ${Ymir_FF_VIRTUA_GUN}")
 
 # Create Universal Binary on MacOS
 #if (APPLE)
@@ -110,11 +120,6 @@ ymir_configure_pgo()
 ## Include project libraries and apps
 add_subdirectory(libs)
 add_subdirectory(apps)
-
-## Include the install rules if the user wanted them (included by default when top-level)
-if (Ymir_INCLUDE_PACKAGING)
-    add_subdirectory(packaging)
-endif ()
 
 ## Include the unit tests if the user wanted them (included by default when top-level)
 if (Ymir_ENABLE_TESTS)

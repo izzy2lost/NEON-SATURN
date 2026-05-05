@@ -36,7 +36,7 @@ static const std::unordered_map<std::string_view, GameInfo> kGameInfosByCode = {
     {"610636008",  {.flags = Cart_DRAM8Mbit}}, // "Tech Saturn 1997.6 (Japan)
     {"T-3108G",    {.flags = Cart_DRAM8Mbit}}, // The King of Fighters '96 (Japan)
     {"T-3121G",    {.flags = Cart_DRAM8Mbit}}, // The King of Fighters '97 (Japan)
-    {"T-1515G",    {.flags = Cart_DRAM8Mbit}}, // Waku Waku 7 (Japan)
+    {"T-1515G",    {.flags = Cart_DRAM8Mbit | ForceSH2Cache}}, // Waku Waku 7 (Japan)
 
     {"T-1245G", {.flags = Cart_DRAM32Mbit}}, // Dungeons and Dragons Collection (Japan)
     {"T-1248G", {.flags = Cart_DRAM32Mbit}}, // Final Fight Revenge (Japan)
@@ -52,10 +52,12 @@ static const std::unordered_map<std::string_view, GameInfo> kGameInfosByCode = {
 
     {"GS-9019",    {.flags = ForceSH2Cache}}, // Astal (Japan)
     {"MK-81019",   {.flags = ForceSH2Cache}}, // Astal (USA)
+    {"MK-81501",   {.flags = ForceSH2Cache}}, // Baku Baku Animal - World Zookeeper Contest (Europe)
     {"GS-9172",    {.flags = ForceSH2Cache}}, // Chisato Moritaka - Watarase Bashi & Lala Sunshine (Japan) (Disc 1)
     {"MK-81304",   {.flags = ForceSH2Cache | RelaxedVDP2BitmapCPAccessChecks}}, // Dark Savior (USA, Europe)
     {"T-22101G",   {.flags = ForceSH2Cache | RelaxedVDP2BitmapCPAccessChecks}}, // Dark Savior (Japan)
     {"T-13305G",   {.flags = ForceSH2Cache}}, // Dragon Ball Z - Idainaru Dragon Ball Densetsu (Japan)
+    {"T-7604G",    {.flags = ForceSH2Cache}}, // Emit Vol. 3 - Watashi ni Sayonara o (Japan) -- can be removed when SH-2 and bus timings are improved
     {"T-6002G",    {.flags = ForceSH2Cache}}, // Metal Fighter Miku (Japan)
     {"T-5013H",    {.flags = ForceSH2Cache}}, // Soviet Strike (Europe, France, Germany, USA)
     {"T-10621G",   {.flags = ForceSH2Cache}}, // Soviet Strike (Japan)
@@ -68,7 +70,11 @@ static const std::unordered_map<std::string_view, GameInfo> kGameInfosByCode = {
     {"T-7029H-50", {.flags = StallVDP1OnVRAMWrites}}, // Mega Man X3 (Europe)
     {"T-1210G",    {.flags = StallVDP1OnVRAMWrites}}, // Rockman X3 (Japan)
 
-    {"T-9513G", {.flags = SlowVDP1}}, // Jikkyou Oshaberi Parodius - Forever with Me (Japan)
+    {"T-24904G", {.flags = SlowVDP1}}, // Fishing Koushien II (Japan)
+    {"T-20002G", {.flags = SlowVDP1}}, // Funky Fantasy (Japan) -- slow FMVs
+    {"T-9513G",  {.flags = SlowVDP1}}, // Jikkyou Oshaberi Parodius - Forever with Me (Japan)
+
+    {"T-32201G", {.flags = SkipEmptyVDP1Table}}, // Sekai no Shasou kara - I Swiss-hen - Alps Tozantetsudou no Tabi (Japan)
 
     {"T-27901G",  {.flags = RelaxedVDP2BitmapCPAccessChecks}}, // Lunar - Silver Star Story (Japan)
     {"ST-27901G", {.flags = RelaxedVDP2BitmapCPAccessChecks}}, // Lunar - Silver Star Story (Japan) (Demo)
