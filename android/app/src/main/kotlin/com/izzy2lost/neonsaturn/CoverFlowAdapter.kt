@@ -25,6 +25,17 @@ class CoverFlowAdapter(
         notifyDataSetChanged()
     }
 
+    /**
+     * Position aligned with entry index 0, near the middle of the virtual range.
+     * Scroll the RecyclerView here after submitList so the user can wrap in
+     * either direction without practically reaching an edge.
+     */
+    fun centerStartPosition(): Int {
+        if (entries.isEmpty()) return 0
+        val mid = Int.MAX_VALUE / 2
+        return mid - (mid % entries.size)
+    }
+
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): CoverViewHolder {
         val view = LayoutInflater.from(parent.context)
             .inflate(R.layout.item_cover_flow, parent, false)
@@ -32,10 +43,11 @@ class CoverFlowAdapter(
     }
 
     override fun onBindViewHolder(holder: CoverViewHolder, position: Int) {
-        holder.bind(entries[position], coverMode, imageLoader, onGameSelected)
+        val entry = entries[position % entries.size]
+        holder.bind(entry, coverMode, imageLoader, onGameSelected)
     }
 
-    override fun getItemCount(): Int = entries.size
+    override fun getItemCount(): Int = if (entries.isEmpty()) 0 else Int.MAX_VALUE
 
     class CoverViewHolder(itemView: View, coverMode: Int) : RecyclerView.ViewHolder(itemView) {
         private val coverImage: ImageView = itemView.findViewById(R.id.coverImage)
@@ -98,8 +110,11 @@ class CoverFlowAdapter(
                     error(placeholderRes)
                 }
             } else {
-                coverImage.setImageResource(placeholderRes)
-                reflectionImage.setImageResource(placeholderRes)
+                // Route through Coil so any in-flight request from a recycled
+                // holder is cancelled — otherwise the previous game's cover
+                // can land on top of the placeholder after recycle.
+                coverImage.load(placeholderRes, imageLoader)
+                reflectionImage.load(placeholderRes, imageLoader)
             }
 
             itemView.setOnClickListener { onGameSelected(entry) }

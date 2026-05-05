@@ -344,6 +344,11 @@ class LauncherActivity : AppCompatActivity() {
                         libraryAdapter.submitList(entries)
                     } else {
                         coverFlowAdapter?.submitList(entries)
+                        coverFlowAdapter?.let { cfa ->
+                            if (entries.isNotEmpty()) {
+                                libraryRecyclerView.scrollToPosition(cfa.centerStartPosition())
+                            }
+                        }
                         libraryRecyclerView.post {
                             coverFlowTransformer.applyTransforms(libraryRecyclerView)
                         }
@@ -612,6 +617,9 @@ class LauncherActivity : AppCompatActivity() {
             libraryRecyclerView.addOnScrollListener(coverFlowTransformer)
 
             cfa.submitList(currentLibraryEntries)
+            if (currentLibraryEntries.isNotEmpty()) {
+                libraryRecyclerView.scrollToPosition(cfa.centerStartPosition())
+            }
 
             libraryRecyclerView.post {
                 coverFlowTransformer.applyTransforms(libraryRecyclerView)
