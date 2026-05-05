@@ -47,16 +47,25 @@ class CoverFlowAdapter(
             // NA boxes are portrait (787×1208), Japan jewel cases are near-square (709×694)
             val coverHeightDp = if (coverMode == BootstrapStore.VIEW_MODE_NA_COVERS) 228 else 146
             val reflHeightDp = if (coverMode == BootstrapStore.VIEW_MODE_NA_COVERS) 68 else 44
+            val coverHeightPx = (coverHeightDp * density).toInt()
+            val reflHeightPx = (reflHeightDp * density).toInt()
 
             coverImage.layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                (coverHeightDp * density).toInt()
+                coverHeightPx
             )
+
+            // Reflection: ImageView matches the cover's full height so the bitmap is
+            // sized identically to the cover (fitCenter). The parent FrameLayout is
+            // shorter (reflHeightPx) and clips — so only the cover's bottom slice
+            // shows once we flip with scaleY=-1.
+            val reflParent = reflectionImage.parent as android.view.View
+            reflParent.layoutParams = reflParent.layoutParams.also { it.height = reflHeightPx }
             reflectionImage.layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
-                (reflHeightDp * density).toInt()
+                coverHeightPx,
+                android.view.Gravity.TOP
             )
-            // Flip reflection upside-down around its own center
             reflectionImage.scaleY = -1f
         }
 

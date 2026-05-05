@@ -18,8 +18,9 @@ import androidx.core.view.isVisible
 import androidx.core.view.updatePadding
 import androidx.core.view.updatePaddingRelative
 import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.LinearSnapHelper
+import androidx.recyclerview.widget.PagerSnapHelper
 import androidx.recyclerview.widget.RecyclerView
+import androidx.recyclerview.widget.SnapHelper
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.chip.ChipGroup
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -54,7 +55,7 @@ class LauncherActivity : AppCompatActivity() {
     private var currentViewMode = BootstrapStore.VIEW_MODE_LIST
     private var coverFlowAdapter: CoverFlowAdapter? = null
     private val coverFlowTransformer = CoverFlowScrollTransformer()
-    private var snapHelper: LinearSnapHelper? = null
+    private var snapHelper: SnapHelper? = null
 
     private val importIplLauncher = registerForActivityResult(OpenDocument()) { uri ->
         uri ?: return@registerForActivityResult
@@ -592,6 +593,9 @@ class LauncherActivity : AppCompatActivity() {
                 LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false)
             libraryRecyclerView.adapter = cfa
             libraryRecyclerView.clipToPadding = false
+            // Let transformed/translated neighbors render without being clipped at recycler edges.
+            libraryRecyclerView.clipChildren = false
+            (libraryRecyclerView.parent as? android.view.ViewGroup)?.clipChildren = false
 
             // Center first/last item horizontally — compute padding once width is known
             libraryRecyclerView.post {
@@ -600,7 +604,8 @@ class LauncherActivity : AppCompatActivity() {
                 libraryRecyclerView.setPadding(hPad, 0, hPad, 0)
             }
 
-            val snap = LinearSnapHelper()
+            // PagerSnapHelper: snaps one cover at a time, centered — the right feel for coverflow.
+            val snap = PagerSnapHelper()
             snap.attachToRecyclerView(libraryRecyclerView)
             snapHelper = snap
 
