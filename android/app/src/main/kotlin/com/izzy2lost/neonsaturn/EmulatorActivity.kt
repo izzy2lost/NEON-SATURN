@@ -127,6 +127,7 @@ class EmulatorActivity : SDLActivity() {
             resumeOnDismiss = false
             nativeExitEmulator()
             dialog.dismiss()
+            finish()
         }
 
         dialog.setOnDismissListener {

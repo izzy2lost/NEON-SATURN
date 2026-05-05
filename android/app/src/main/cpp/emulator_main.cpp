@@ -176,11 +176,11 @@ public:
         try {
             std::scoped_lock lock{m_coreMutex};
 
-            ymir::savestate::SaveState state{};
-            m_saturn.SaveState(state);
+            auto state = std::make_unique<ymir::savestate::SaveState>();
+            m_saturn.SaveState(*state);
 
             std::error_code error{};
-            const auto gameStatesPath = SaveStatesDirectory(state.discHash);
+            const auto gameStatesPath = SaveStatesDirectory(state->discHash);
             std::filesystem::create_directories(gameStatesPath, error);
             if (error) {
                 return {.success = false, .message = "Could not prepare save state storage"};
@@ -193,8 +193,8 @@ public:
             }
 
             cereal::PortableBinaryOutputArchive archive{out};
-            archive(state);
-            return {.success = true, .message = "State 1 saved"};
+            archive(*state);
+            return {.success = true, .message = "State " + std::to_string(slotIndex) + " saved"};
         } catch (const cereal::Exception &e) {
             return {.success = false, .message = std::string{"Save failed: "} + e.what()};
         } catch (const std::exception &e) {
@@ -219,20 +219,20 @@ public:
                 return {.success = false, .message = "State 1 is empty"};
             }
 
-            ymir::savestate::SaveState state{};
+            auto state = std::make_unique<ymir::savestate::SaveState>();
             cereal::PortableBinaryInputArchive archive{in};
-            archive(state);
+            archive(*state);
 
-            if (!state.ValidateDiscHash(discHash)) {
+            if (!state->ValidateDiscHash(discHash)) {
                 return {.success = false, .message = "That state belongs to a different game"};
             }
 
-            if (!m_saturn.LoadState(state, true)) {
+            if (!m_saturn.LoadState(*state, true)) {
                 return {.success = false, .message = "Could not load that state"};
             }
 
             ResetInputs();
-            return {.success = true, .message = "State 1 loaded"};
+            return {.success = true, .message = "State " + std::to_string(slotIndex) + " loaded"};
         } catch (const cereal::Exception &e) {
             return {.success = false, .message = std::string{"Load failed: "} + e.what()};
         } catch (const std::exception &e) {
@@ -245,6 +245,9 @@ public:
     void RequestStop() {
         ResetInputs();
         m_running = false;
+        SDL_Event quit_event{};
+        quit_event.type = SDL_EVENT_QUIT;
+        SDL_PushEvent(&quit_event);
     }
 
     void SetTouchControls(std::uint32_t buttonMask, int dpadX, int dpadY, float analogX, float analogY) {
