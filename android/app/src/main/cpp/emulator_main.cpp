@@ -745,7 +745,7 @@ private:
             const float analogY = StrongerAnalogValue(m_physicalStickY, m_touchAnalogY);
 
             report.report.analogPad.buttons = combinedButtons;
-            report.report.analogPad.analog = true;
+            report.report.analogPad.analog = (std::abs(analogX) > 0.01f || std::abs(analogY) > 0.01f);
             report.report.analogPad.x = FloatToAnalogAxis(analogX);
             report.report.analogPad.y = FloatToAnalogAxis(analogY);
             report.report.analogPad.l = IsButtonPressed(combinedButtons, Button::L) ? 0xFF : 0x00;
