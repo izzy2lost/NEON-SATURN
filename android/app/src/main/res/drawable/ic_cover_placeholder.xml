@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="150dp"
+    android:height="210dp"
+    android:viewportWidth="150"
+    android:viewportHeight="210">
+
+    <!-- Box outline -->
+    <path
+        android:fillColor="#1A4ED8FF"
+        android:strokeColor="#4ED8FF"
+        android:strokeWidth="2"
+        android:pathData="M12,12 L138,12 L138,198 L12,198 Z" />
+
+    <!-- Saturn ring icon (decorative) -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#4ED8FF"
+        android:strokeWidth="3"
+        android:pathData="M75,90 m-22,0 a22,22 0 1,0 44,0 a22,22 0 1,0 -44,0" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#4ED8FF"
+        android:strokeWidth="2"
+        android:pathData="M44,90 Q75,66 106,90" />
+
+    <!-- "?" text approximated as lines -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#2A7A99"
+        android:strokeWidth="1.5"
+        android:pathData="M68,130 L82,130" />
+
+    <!-- Label bar at bottom -->
+    <path
+        android:fillColor="#0D4A5A"
+        android:pathData="M12,174 L138,174 L138,198 L12,198 Z" />
+
+</vector>

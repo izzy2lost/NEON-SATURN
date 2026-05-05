@@ -110,6 +110,43 @@
             android:layout_marginTop="8dp"
             android:text="@string/settings_edit_touch_controls" />
 
+        <!-- Cover Art -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="20dp"
+            android:background="?attr/colorOutlineVariant" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/covers_section_title"
+            android:textAppearance="?attr/textAppearanceLabelLarge" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/covers_github_note"
+            android:textAppearance="?attr/textAppearanceBodySmall" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/downloadCoversButton"
+            style="@style/Widget.Material3.Button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="@string/covers_download_all" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/clearCoverCacheButton"
+            style="@style/Widget.Material3.Button.TonalButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/covers_clear_cache" />
+
         <!-- Divider -->
         <View
             android:layout_width="match_parent"

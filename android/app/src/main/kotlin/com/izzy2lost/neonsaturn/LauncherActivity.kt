@@ -18,8 +18,10 @@ import androidx.core.view.isVisible
 import androidx.core.view.updatePadding
 import androidx.core.view.updatePaddingRelative
 import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.LinearSnapHelper
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.chip.ChipGroup
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.progressindicator.LinearProgressIndicator
 import java.io.File
@@ -41,12 +43,18 @@ class LauncherActivity : AppCompatActivity() {
     private lateinit var emptyLibraryText: TextView
     private lateinit var libraryProgressIndicator: LinearProgressIndicator
     private lateinit var libraryRecyclerView: RecyclerView
+    private lateinit var viewModeChipGroup: ChipGroup
 
     private var currentGamesFolderUri: String? = null
     private var currentLibraryEntries: List<GameLibraryEntry> = emptyList()
     private var libraryScanGeneration = 0
     private var librarySettingsDialog: AlertDialog? = null
     private var launchInProgress = false
+
+    private var currentViewMode = BootstrapStore.VIEW_MODE_LIST
+    private var coverFlowAdapter: CoverFlowAdapter? = null
+    private val coverFlowTransformer = CoverFlowScrollTransformer()
+    private var snapHelper: LinearSnapHelper? = null
 
     private val importIplLauncher = registerForActivityResult(OpenDocument()) { uri ->
         uri ?: return@registerForActivityResult
@@ -96,9 +104,24 @@ class LauncherActivity : AppCompatActivity() {
         emptyLibraryText = findViewById(R.id.emptyLibraryText)
         libraryProgressIndicator = findViewById(R.id.libraryProgressIndicator)
         libraryRecyclerView = findViewById(R.id.libraryRecyclerView)
+        viewModeChipGroup = findViewById(R.id.viewModeChipGroup)
 
-        libraryRecyclerView.layoutManager = LinearLayoutManager(this)
-        libraryRecyclerView.adapter = libraryAdapter
+        currentViewMode = store.loadLibraryViewMode()
+        applyChipSelection(currentViewMode)
+        applyViewMode(currentViewMode)
+
+        viewModeChipGroup.setOnCheckedStateChangeListener { _, checkedIds ->
+            val mode = when (checkedIds.firstOrNull()) {
+                R.id.chipViewNACovers -> BootstrapStore.VIEW_MODE_NA_COVERS
+                R.id.chipViewJapanCovers -> BootstrapStore.VIEW_MODE_JAPAN_COVERS
+                else -> BootstrapStore.VIEW_MODE_LIST
+            }
+            if (mode != currentViewMode) {
+                currentViewMode = mode
+                store.saveLibraryViewMode(mode)
+                applyViewMode(mode)
+            }
+        }
 
         findViewById<TextView>(R.id.storageHintText).text =
             getString(R.string.storage_hint, paths.root.absolutePath)
@@ -257,6 +280,23 @@ class LauncherActivity : AppCompatActivity() {
             .setCancelable(true)
             .create()
 
+        content.findViewById<MaterialButton>(R.id.downloadCoversButton).setOnClickListener {
+            val mode = currentViewMode
+            if (mode == BootstrapStore.VIEW_MODE_LIST) {
+                Toast.makeText(this, "Switch to NA Boxes or Japan view first", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            dialog.dismiss()
+            CoverArtManager.prefetchAll(this, currentLibraryEntries, mode, paths)
+            Toast.makeText(this, getString(R.string.covers_downloading), Toast.LENGTH_LONG).show()
+        }
+
+        content.findViewById<MaterialButton>(R.id.clearCoverCacheButton).setOnClickListener {
+            dialog.dismiss()
+            CoverArtManager.clearCache(paths)
+            Toast.makeText(this, getString(R.string.covers_cache_cleared), Toast.LENGTH_SHORT).show()
+        }
+
         content.findViewById<MaterialButton>(R.id.refreshLibraryButton).setOnClickListener {
             dialog.dismiss()
             refreshUi(forceRescan = true)
@@ -299,12 +339,20 @@ class LauncherActivity : AppCompatActivity() {
 
                 result.onSuccess { entries ->
                     currentLibraryEntries = entries
-                    libraryAdapter.submitList(entries)
+                    if (currentViewMode == BootstrapStore.VIEW_MODE_LIST) {
+                        libraryAdapter.submitList(entries)
+                    } else {
+                        coverFlowAdapter?.submitList(entries)
+                        libraryRecyclerView.post {
+                            coverFlowTransformer.applyTransforms(libraryRecyclerView)
+                        }
+                    }
                     emptyLibraryText.isVisible = entries.isEmpty()
                     emptyLibraryText.text = getString(R.string.library_empty)
                 }.onFailure { error ->
                     currentLibraryEntries = emptyList()
                     libraryAdapter.submitList(emptyList())
+                    coverFlowAdapter?.submitList(emptyList())
                     emptyLibraryText.isVisible = true
                     emptyLibraryText.text = getString(
                         R.string.library_scan_error_inline,
@@ -508,6 +556,62 @@ class LauncherActivity : AppCompatActivity() {
                     candidate != file &&
                     candidate.extension.lowercase(Locale.ROOT) in companionExtensions
             } == true
+    }
+
+    private fun applyChipSelection(mode: Int) {
+        viewModeChipGroup.check(
+            when (mode) {
+                BootstrapStore.VIEW_MODE_NA_COVERS -> R.id.chipViewNACovers
+                BootstrapStore.VIEW_MODE_JAPAN_COVERS -> R.id.chipViewJapanCovers
+                else -> R.id.chipViewList
+            }
+        )
+    }
+
+    private fun applyViewMode(mode: Int) {
+        // Detach coverflow helpers from previous mode
+        snapHelper?.attachToRecyclerView(null)
+        snapHelper = null
+        libraryRecyclerView.removeOnScrollListener(coverFlowTransformer)
+
+        val density = resources.displayMetrics.density
+        val px24 = (24 * density).toInt()
+
+        if (mode == BootstrapStore.VIEW_MODE_LIST) {
+            libraryRecyclerView.layoutManager = LinearLayoutManager(this)
+            libraryRecyclerView.adapter = libraryAdapter
+            libraryRecyclerView.setPadding(px24, 0, px24, px24)
+            libraryRecyclerView.clipToPadding = false
+            libraryAdapter.submitList(currentLibraryEntries)
+        } else {
+            val il = CoverArtManager.imageLoader(this, paths)
+            val cfa = CoverFlowAdapter(::launchGame, mode, il)
+            coverFlowAdapter = cfa
+
+            libraryRecyclerView.layoutManager =
+                LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false)
+            libraryRecyclerView.adapter = cfa
+            libraryRecyclerView.clipToPadding = false
+
+            // Center first/last item horizontally — compute padding once width is known
+            libraryRecyclerView.post {
+                val itemWidthPx = (160 * density).toInt()
+                val hPad = ((libraryRecyclerView.width - itemWidthPx) / 2).coerceAtLeast(0)
+                libraryRecyclerView.setPadding(hPad, 0, hPad, 0)
+            }
+
+            val snap = LinearSnapHelper()
+            snap.attachToRecyclerView(libraryRecyclerView)
+            snapHelper = snap
+
+            libraryRecyclerView.addOnScrollListener(coverFlowTransformer)
+
+            cfa.submitList(currentLibraryEntries)
+
+            libraryRecyclerView.post {
+                coverFlowTransformer.applyTransforms(libraryRecyclerView)
+            }
+        }
     }
 
     private companion object {

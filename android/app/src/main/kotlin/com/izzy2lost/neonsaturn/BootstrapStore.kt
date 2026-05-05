@@ -69,6 +69,13 @@ class BootstrapStore(context: Context) {
     fun loadTextureFilter(): String =
         preferences.getString(KEY_TEXTURE_FILTER, FILTER_NEAREST) ?: FILTER_NEAREST
 
+    fun saveLibraryViewMode(mode: Int) {
+        preferences.edit().putInt(KEY_LIBRARY_VIEW_MODE, mode).apply()
+    }
+
+    fun loadLibraryViewMode(): Int =
+        preferences.getInt(KEY_LIBRARY_VIEW_MODE, VIEW_MODE_LIST)
+
     fun saveTouchControlsEnabled(enabled: Boolean) {
         preferences.edit().putBoolean(KEY_TOUCH_CONTROLS_ENABLED, enabled).apply()
     }
@@ -162,6 +169,11 @@ class BootstrapStore(context: Context) {
         private const val KEY_GAMES_FOLDER_URI = "games_folder_uri"
         private const val KEY_ASPECT_RATIO = "aspect_ratio"
         private const val KEY_TEXTURE_FILTER = "texture_filter"
+        const val VIEW_MODE_LIST = 0
+        const val VIEW_MODE_NA_COVERS = 1
+        const val VIEW_MODE_JAPAN_COVERS = 2
+
+        private const val KEY_LIBRARY_VIEW_MODE = "library_view_mode"
         private const val KEY_TOUCH_CONTROLS_ENABLED = "touch_controls_enabled"
         private const val KEY_TOUCH_CONTROLS_POSITION_PREFIX = "touch_controls_position_"
         private const val KEY_TOUCH_CONTROLS_PORTRAIT_PREFIX = "touch_controls_portrait_position_"

@@ -49,4 +49,14 @@
     <string name="touch_controls_editor_summary">Drag the on-screen Saturn controls where you want them. Changes save immediately and show up in the Android emulator overlay.</string>
     <string name="touch_controls_reset">Reset Layout</string>
     <string name="touch_controls_done">Done</string>
+    <string name="view_mode_list">List</string>
+    <string name="view_mode_na_covers">NA Boxes</string>
+    <string name="view_mode_japan_covers">Japan</string>
+    <string name="covers_section_title">Cover Art</string>
+    <string name="covers_download_all">Download All Covers</string>
+    <string name="covers_downloading">Downloading covers in background…</string>
+    <string name="covers_download_done">Cover download complete</string>
+    <string name="covers_github_note">Covers are fetched from GitHub. Tap to download all at once, or they load automatically when browsing.</string>
+    <string name="covers_clear_cache">Clear Cover Cache</string>
+    <string name="covers_cache_cleared">Cover cache cleared</string>
 </resources>

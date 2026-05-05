@@ -199,20 +199,62 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:orientation="vertical"
-            android:paddingStart="24dp"
-            android:paddingTop="0dp"
-            android:paddingEnd="24dp"
             android:paddingBottom="24dp"
             android:visibility="gone">
+
+            <!-- View mode selector — List / NA Boxes / Japan -->
+            <HorizontalScrollView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingStart="24dp"
+                android:paddingEnd="24dp"
+                android:scrollbars="none"
+                android:fadeScrollbars="true">
+
+                <com.google.android.material.chip.ChipGroup
+                    android:id="@+id/viewModeChipGroup"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:layout_marginBottom="4dp"
+                    app:singleSelection="true"
+                    app:selectionRequired="true">
+
+                    <com.google.android.material.chip.Chip
+                        android:id="@+id/chipViewList"
+                        style="@style/Widget.Material3.Chip.Filter"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/view_mode_list" />
+
+                    <com.google.android.material.chip.Chip
+                        android:id="@+id/chipViewNACovers"
+                        style="@style/Widget.Material3.Chip.Filter"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/view_mode_na_covers" />
+
+                    <com.google.android.material.chip.Chip
+                        android:id="@+id/chipViewJapanCovers"
+                        style="@style/Widget.Material3.Chip.Filter"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/view_mode_japan_covers" />
+
+                </com.google.android.material.chip.ChipGroup>
+            </HorizontalScrollView>
 
             <TextView
                 android:id="@+id/emptyLibraryText"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:paddingStart="24dp"
+                android:paddingEnd="24dp"
                 android:text="@string/library_empty"
                 android:textAppearance="?attr/textAppearanceBodyLarge"
                 android:visibility="gone" />
 
+            <!-- Single RecyclerView — switches between list and coverflow via LayoutManager/adapter -->
             <androidx.recyclerview.widget.RecyclerView
                 android:id="@+id/libraryRecyclerView"
                 android:layout_width="match_parent"
@@ -220,6 +262,8 @@
                 android:layout_marginTop="4dp"
                 android:layout_weight="1"
                 android:clipToPadding="false"
+                android:paddingStart="24dp"
+                android:paddingEnd="24dp"
                 android:paddingBottom="24dp" />
         </LinearLayout>
     </FrameLayout>
