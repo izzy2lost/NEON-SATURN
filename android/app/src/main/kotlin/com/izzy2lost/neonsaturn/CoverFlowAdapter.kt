@@ -77,25 +77,29 @@ class CoverFlowAdapter(
         ) {
             titleText.text = entry.title
             val url = CoverArtManager.coverUrl(entry.title, coverMode)
+            val placeholderRes = if (coverMode == BootstrapStore.VIEW_MODE_NA_COVERS)
+                R.drawable.ic_cover_placeholder_na
+            else
+                R.drawable.ic_cover_placeholder_japan
 
             if (url != null) {
                 coverImage.load(url, imageLoader) {
                     crossfade(true)
                     memoryCachePolicy(CachePolicy.ENABLED)
                     diskCachePolicy(CachePolicy.ENABLED)
-                    placeholder(R.drawable.ic_cover_placeholder)
-                    error(R.drawable.ic_cover_placeholder)
+                    placeholder(placeholderRes)
+                    error(placeholderRes)
                 }
                 // Same URL into reflection — Coil serves from memory cache immediately
                 reflectionImage.load(url, imageLoader) {
                     memoryCachePolicy(CachePolicy.ENABLED)
                     diskCachePolicy(CachePolicy.ENABLED)
-                    placeholder(R.drawable.ic_cover_placeholder)
-                    error(R.drawable.ic_cover_placeholder)
+                    placeholder(placeholderRes)
+                    error(placeholderRes)
                 }
             } else {
-                coverImage.setImageResource(R.drawable.ic_cover_placeholder)
-                reflectionImage.setImageResource(R.drawable.ic_cover_placeholder)
+                coverImage.setImageResource(placeholderRes)
+                reflectionImage.setImageResource(placeholderRes)
             }
 
             itemView.setOnClickListener { onGameSelected(entry) }
