@@ -10,20 +10,34 @@
         android:id="@+id/headerContainer"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:paddingStart="0dp"
+        android:paddingStart="4dp"
         android:paddingTop="0dp"
         android:paddingEnd="12dp"
         android:paddingBottom="0dp">
 
         <ImageView
             android:id="@+id/headerAppIcon"
-            android:layout_width="136dp"
-            android:layout_height="136dp"
+            android:layout_width="72dp"
+            android:layout_height="72dp"
             android:layout_gravity="center"
             android:adjustViewBounds="true"
             android:contentDescription="@null"
             android:scaleType="fitCenter"
             android:src="@drawable/ic_header_saturn" />
+
+        <!-- Single cycling view-mode toggle — start/left side -->
+        <ImageButton
+            android:id="@+id/viewModeToggleButton"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_gravity="start|center_vertical"
+            android:layout_marginStart="16dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/view_mode_list"
+            android:padding="6dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/list_24px"
+            android:visibility="gone" />
 
         <ImageButton
             android:id="@+id/librarySettingsButton"
@@ -201,48 +215,6 @@
             android:orientation="vertical"
             android:paddingBottom="24dp"
             android:visibility="gone">
-
-            <!-- View mode selector — List / NA Boxes / Japan -->
-            <HorizontalScrollView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:paddingStart="24dp"
-                android:paddingEnd="24dp"
-                android:scrollbars="none"
-                android:fadeScrollbars="true">
-
-                <com.google.android.material.chip.ChipGroup
-                    android:id="@+id/viewModeChipGroup"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:layout_marginBottom="4dp"
-                    app:singleSelection="true"
-                    app:selectionRequired="true">
-
-                    <com.google.android.material.chip.Chip
-                        android:id="@+id/chipViewList"
-                        style="@style/Widget.Material3.Chip.Filter"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="@string/view_mode_list" />
-
-                    <com.google.android.material.chip.Chip
-                        android:id="@+id/chipViewNACovers"
-                        style="@style/Widget.Material3.Chip.Filter"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="@string/view_mode_na_covers" />
-
-                    <com.google.android.material.chip.Chip
-                        android:id="@+id/chipViewJapanCovers"
-                        style="@style/Widget.Material3.Chip.Filter"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="@string/view_mode_japan_covers" />
-
-                </com.google.android.material.chip.ChipGroup>
-            </HorizontalScrollView>
 
             <TextView
                 android:id="@+id/emptyLibraryText"

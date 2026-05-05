@@ -22,7 +22,6 @@ import androidx.recyclerview.widget.PagerSnapHelper
 import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.SnapHelper
 import com.google.android.material.button.MaterialButton
-import com.google.android.material.chip.ChipGroup
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.progressindicator.LinearProgressIndicator
 import java.io.File
@@ -44,7 +43,7 @@ class LauncherActivity : AppCompatActivity() {
     private lateinit var emptyLibraryText: TextView
     private lateinit var libraryProgressIndicator: LinearProgressIndicator
     private lateinit var libraryRecyclerView: RecyclerView
-    private lateinit var viewModeChipGroup: ChipGroup
+    private lateinit var viewModeToggleButton: ImageButton
 
     private var currentGamesFolderUri: String? = null
     private var currentLibraryEntries: List<GameLibraryEntry> = emptyList()
@@ -105,23 +104,22 @@ class LauncherActivity : AppCompatActivity() {
         emptyLibraryText = findViewById(R.id.emptyLibraryText)
         libraryProgressIndicator = findViewById(R.id.libraryProgressIndicator)
         libraryRecyclerView = findViewById(R.id.libraryRecyclerView)
-        viewModeChipGroup = findViewById(R.id.viewModeChipGroup)
+        viewModeToggleButton = findViewById(R.id.viewModeToggleButton)
 
         currentViewMode = store.loadLibraryViewMode()
-        applyChipSelection(currentViewMode)
+        applyToggleIcon(currentViewMode)
         applyViewMode(currentViewMode)
 
-        viewModeChipGroup.setOnCheckedStateChangeListener { _, checkedIds ->
-            val mode = when (checkedIds.firstOrNull()) {
-                R.id.chipViewNACovers -> BootstrapStore.VIEW_MODE_NA_COVERS
-                R.id.chipViewJapanCovers -> BootstrapStore.VIEW_MODE_JAPAN_COVERS
-                else -> BootstrapStore.VIEW_MODE_LIST
+        viewModeToggleButton.setOnClickListener {
+            val next = when (currentViewMode) {
+                BootstrapStore.VIEW_MODE_LIST       -> BootstrapStore.VIEW_MODE_NA_COVERS
+                BootstrapStore.VIEW_MODE_NA_COVERS  -> BootstrapStore.VIEW_MODE_JAPAN_COVERS
+                else                               -> BootstrapStore.VIEW_MODE_LIST
             }
-            if (mode != currentViewMode) {
-                currentViewMode = mode
-                store.saveLibraryViewMode(mode)
-                applyViewMode(mode)
-            }
+            currentViewMode = next
+            store.saveLibraryViewMode(next)
+            applyToggleIcon(next)
+            applyViewMode(next)
         }
 
         findViewById<TextView>(R.id.storageHintText).text =
@@ -216,6 +214,7 @@ class LauncherActivity : AppCompatActivity() {
         wizardContainer.isVisible = !setupComplete
         libraryContainer.isVisible = setupComplete
         librarySettingsButton.isVisible = setupComplete
+        viewModeToggleButton.isVisible = setupComplete
 
         if (!setupComplete) {
             librarySettingsDialog?.dismiss()
@@ -564,14 +563,38 @@ class LauncherActivity : AppCompatActivity() {
             } == true
     }
 
-    private fun applyChipSelection(mode: Int) {
-        viewModeChipGroup.check(
-            when (mode) {
-                BootstrapStore.VIEW_MODE_NA_COVERS -> R.id.chipViewNACovers
-                BootstrapStore.VIEW_MODE_JAPAN_COVERS -> R.id.chipViewJapanCovers
-                else -> R.id.chipViewList
-            }
-        )
+    private fun applyToggleIcon(mode: Int) {
+        val (iconRes, descRes, useTint) = when (mode) {
+            BootstrapStore.VIEW_MODE_NA_COVERS    -> Triple(R.drawable.coverflow_box,        R.string.view_mode_na_covers,    false)
+            BootstrapStore.VIEW_MODE_JAPAN_COVERS -> Triple(R.drawable.coverflow_jewel_case, R.string.view_mode_japan_covers, false)
+            else                                  -> Triple(R.drawable.list_24px,            R.string.view_mode_list,         true)
+        }
+        viewModeToggleButton.contentDescription = getString(descRes)
+        if (useTint) {
+            viewModeToggleButton.setImageResource(iconRes)
+            viewModeToggleButton.imageTintList = android.content.res.ColorStateList.valueOf(
+                com.google.android.material.color.MaterialColors.getColor(
+                    viewModeToggleButton, com.google.android.material.R.attr.colorOnSurface
+                )
+            )
+        } else {
+            // Complex coverflow vectors collapse into a solid blob when scaled
+            // straight to ~36px. Rasterize at native (300dp) size, then let
+            // the ImageButton downscale that bitmap with bilinear filtering.
+            viewModeToggleButton.imageTintList = null
+            viewModeToggleButton.setImageBitmap(rasterizeVector(iconRes))
+        }
+    }
+
+    private fun rasterizeVector(@androidx.annotation.DrawableRes res: Int): android.graphics.Bitmap {
+        val drawable = androidx.appcompat.content.res.AppCompatResources.getDrawable(this, res)!!
+        val w = drawable.intrinsicWidth.coerceAtLeast(1)
+        val h = drawable.intrinsicHeight.coerceAtLeast(1)
+        val bitmap = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(bitmap)
+        drawable.setBounds(0, 0, w, h)
+        drawable.draw(canvas)
+        return bitmap
     }
 
     private fun applyViewMode(mode: Int) {
@@ -582,8 +605,13 @@ class LauncherActivity : AppCompatActivity() {
 
         val density = resources.displayMetrics.density
         val px24 = (24 * density).toInt()
+        val coverflowTopPaddingPx = resources.getDimensionPixelSize(R.dimen.coverflow_top_padding)
 
         if (mode == BootstrapStore.VIEW_MODE_LIST) {
+            // Restore default clipping so list items don't render under the header
+            libraryRecyclerView.clipChildren = true
+            (libraryRecyclerView.parent as? android.view.ViewGroup)?.clipChildren = true
+
             libraryRecyclerView.layoutManager = LinearLayoutManager(this)
             libraryRecyclerView.adapter = libraryAdapter
             libraryRecyclerView.setPadding(px24, 0, px24, px24)
@@ -602,11 +630,13 @@ class LauncherActivity : AppCompatActivity() {
             libraryRecyclerView.clipChildren = false
             (libraryRecyclerView.parent as? android.view.ViewGroup)?.clipChildren = false
 
-            // Center first/last item horizontally — compute padding once width is known
+            // Center first/last item horizontally — compute padding once width is known.
+            // Vertical top padding gives the centered/scaled cover breathing room from
+            // the header (clipToPadding=false lets the cover render up into it).
             libraryRecyclerView.post {
                 val itemWidthPx = (160 * density).toInt()
                 val hPad = ((libraryRecyclerView.width - itemWidthPx) / 2).coerceAtLeast(0)
-                libraryRecyclerView.setPadding(hPad, 0, hPad, 0)
+                libraryRecyclerView.setPadding(hPad, coverflowTopPaddingPx, hPad, 0)
             }
 
             // PagerSnapHelper: snaps one cover at a time, centered — the right feel for coverflow.

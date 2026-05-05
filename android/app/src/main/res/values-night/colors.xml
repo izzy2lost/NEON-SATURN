@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="neon_saturn_bg">#0D1117</color>
+    <color name="neon_saturn_surface">#151B23</color>
+    <color name="neon_saturn_primary">#4ED8FF</color>
+    <color name="neon_saturn_on_primary">#04141B</color>
+</resources>
