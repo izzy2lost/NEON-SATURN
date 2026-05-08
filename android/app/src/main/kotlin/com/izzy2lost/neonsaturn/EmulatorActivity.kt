@@ -88,6 +88,9 @@ class EmulatorActivity : SDLActivity() {
         intent.getStringExtra(EXTRA_GAME_CONTROLLER_DB_PATH)?.let { arguments += "--gamecontrollerdb=$it" }
         intent.getStringExtra(EXTRA_ASPECT_RATIO)?.let { arguments += "--aspect-ratio=$it" }
         intent.getStringExtra(EXTRA_TEXTURE_FILTER)?.let { arguments += "--texture-filter=$it" }
+        arguments += "--resolution-scale=${intent.getIntExtra(EXTRA_RESOLUTION_SCALE, BootstrapStore.RESOLUTION_SCALE_1X)}"
+        arguments += "--deinterlace=${intent.getBooleanExtra(EXTRA_DEINTERLACE, false)}"
+        arguments += "--transparent-meshes=${intent.getBooleanExtra(EXTRA_TRANSPARENT_MESHES, false)}"
         return arguments.toTypedArray()
     }
 
@@ -243,6 +246,12 @@ class EmulatorActivity : SDLActivity() {
             "com.izzy2lost.neonsaturn.extra.ASPECT_RATIO"
         private const val EXTRA_TEXTURE_FILTER =
             "com.izzy2lost.neonsaturn.extra.TEXTURE_FILTER"
+        private const val EXTRA_RESOLUTION_SCALE =
+            "com.izzy2lost.neonsaturn.extra.RESOLUTION_SCALE"
+        private const val EXTRA_DEINTERLACE =
+            "com.izzy2lost.neonsaturn.extra.DEINTERLACE"
+        private const val EXTRA_TRANSPARENT_MESHES =
+            "com.izzy2lost.neonsaturn.extra.TRANSPARENT_MESHES"
 
         fun createIntent(
             context: Context,
@@ -250,7 +259,10 @@ class EmulatorActivity : SDLActivity() {
             paths: NeonSaturnPaths,
             gameControllerDbPath: String? = null,
             aspectRatio: String = BootstrapStore.ASPECT_4_3,
-            textureFilter: String = BootstrapStore.FILTER_NEAREST
+            textureFilter: String = BootstrapStore.FILTER_NEAREST,
+            resolutionScale: Int = BootstrapStore.RESOLUTION_SCALE_1X,
+            deinterlace: Boolean = false,
+            transparentMeshes: Boolean = false
         ): Intent =
             Intent(context, EmulatorActivity::class.java).apply {
                 putExtra(EXTRA_IPL_PATH, selection.iplPath)
@@ -260,6 +272,9 @@ class EmulatorActivity : SDLActivity() {
                 putExtra(EXTRA_GAME_CONTROLLER_DB_PATH, gameControllerDbPath)
                 putExtra(EXTRA_ASPECT_RATIO, aspectRatio)
                 putExtra(EXTRA_TEXTURE_FILTER, textureFilter)
+                putExtra(EXTRA_RESOLUTION_SCALE, resolutionScale)
+                putExtra(EXTRA_DEINTERLACE, deinterlace)
+                putExtra(EXTRA_TRANSPARENT_MESHES, transparentMeshes)
             }
 
         private fun updateCurrentInstance(instance: EmulatorActivity?) {

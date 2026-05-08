@@ -69,6 +69,28 @@ class BootstrapStore(context: Context) {
     fun loadTextureFilter(): String =
         preferences.getString(KEY_TEXTURE_FILTER, FILTER_NEAREST) ?: FILTER_NEAREST
 
+    fun saveResolutionScale(value: Int) {
+        preferences.edit().putInt(KEY_RESOLUTION_SCALE, value.coerceIn(RESOLUTION_SCALE_1X, RESOLUTION_SCALE_8X)).apply()
+    }
+
+    fun loadResolutionScale(): Int =
+        preferences.getInt(KEY_RESOLUTION_SCALE, RESOLUTION_SCALE_1X)
+            .coerceIn(RESOLUTION_SCALE_1X, RESOLUTION_SCALE_8X)
+
+    fun saveDeinterlaceEnabled(enabled: Boolean) {
+        preferences.edit().putBoolean(KEY_DEINTERLACE_ENABLED, enabled).apply()
+    }
+
+    fun loadDeinterlaceEnabled(): Boolean =
+        preferences.getBoolean(KEY_DEINTERLACE_ENABLED, false)
+
+    fun saveTransparentMeshesEnabled(enabled: Boolean) {
+        preferences.edit().putBoolean(KEY_TRANSPARENT_MESHES_ENABLED, enabled).apply()
+    }
+
+    fun loadTransparentMeshesEnabled(): Boolean =
+        preferences.getBoolean(KEY_TRANSPARENT_MESHES_ENABLED, false)
+
     fun saveLibraryViewMode(mode: Int) {
         preferences.edit().putInt(KEY_LIBRARY_VIEW_MODE, mode).apply()
     }
@@ -163,12 +185,24 @@ class BootstrapStore(context: Context) {
         const val FILTER_NEAREST = "nearest"
         const val FILTER_BILINEAR = "bilinear"
 
+        const val RESOLUTION_SCALE_1X = 1
+        const val RESOLUTION_SCALE_2X = 2
+        const val RESOLUTION_SCALE_3X = 3
+        const val RESOLUTION_SCALE_4X = 4
+        const val RESOLUTION_SCALE_5X = 5
+        const val RESOLUTION_SCALE_6X = 6
+        const val RESOLUTION_SCALE_7X = 7
+        const val RESOLUTION_SCALE_8X = 8
+
         private const val KEY_IPL_PATH = "ipl_path"
         private const val KEY_CDB_PATH = "cdb_path"
         private const val KEY_DISC_PATH = "disc_path"
         private const val KEY_GAMES_FOLDER_URI = "games_folder_uri"
         private const val KEY_ASPECT_RATIO = "aspect_ratio"
         private const val KEY_TEXTURE_FILTER = "texture_filter"
+        private const val KEY_RESOLUTION_SCALE = "resolution_scale"
+        private const val KEY_DEINTERLACE_ENABLED = "deinterlace_enabled"
+        private const val KEY_TRANSPARENT_MESHES_ENABLED = "transparent_meshes_enabled"
         const val VIEW_MODE_LIST = 0
         const val VIEW_MODE_NA_COVERS = 1
         const val VIEW_MODE_JAPAN_COVERS = 2

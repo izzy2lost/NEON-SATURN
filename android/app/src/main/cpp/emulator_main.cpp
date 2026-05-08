@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -67,6 +68,21 @@ std::string_view ArgValue(std::string_view argument, std::string_view prefix) {
     return argument.substr(prefix.size());
 }
 
+bool ParseBoolArg(std::string_view value) {
+    return value == "1" || value == "true" || value == "yes" || value == "on";
+}
+
+int ParseResolutionScale(std::string_view value) {
+    int scale = 1;
+    const auto *begin = value.data();
+    const auto *end = begin + value.size();
+    const auto result = std::from_chars(begin, end, scale);
+    if (result.ec != std::errc{}) {
+        return 1;
+    }
+    return std::clamp(scale, 1, 8);
+}
+
 BootstrapConfig BootstrapConfigFromArgs(int argc, char **argv) {
     BootstrapConfig config = GetBootstrapConfig();
     for (int index = 0; index < argc; ++index) {
@@ -85,6 +101,12 @@ BootstrapConfig BootstrapConfigFromArgs(int argc, char **argv) {
             config.aspectRatio.assign(value);
         } else if (const auto value = ArgValue(argument, "--texture-filter="); !value.empty()) {
             config.textureFilter.assign(value);
+        } else if (const auto value = ArgValue(argument, "--resolution-scale="); !value.empty()) {
+            config.resolutionScale = ParseResolutionScale(value);
+        } else if (const auto value = ArgValue(argument, "--deinterlace="); !value.empty()) {
+            config.deinterlace = ParseBoolArg(value);
+        } else if (const auto value = ArgValue(argument, "--transparent-meshes="); !value.empty()) {
+            config.transparentMeshes = ParseBoolArg(value);
         }
     }
     return config;
@@ -345,6 +367,7 @@ private:
     SDL_Window *m_window = nullptr;
     SDL_Renderer *m_renderer = nullptr;
     SDL_Texture *m_texture = nullptr;
+    SDL_Texture *m_displayTexture = nullptr;
     SDL_Gamepad *m_gamepad = nullptr;
     SDL_JoystickID m_gamepadId = 0;
     std::mutex m_coreMutex{};
@@ -355,6 +378,8 @@ private:
     std::uint32_t m_frameHeight = 224;
     std::uint32_t m_textureWidth = 0;
     std::uint32_t m_textureHeight = 0;
+    std::uint32_t m_displayTextureWidth = 0;
+    std::uint32_t m_displayTextureHeight = 0;
     bool m_frameDirty = false;
     std::atomic_bool m_running = true;
     std::atomic_bool m_paused = false;
@@ -485,6 +510,11 @@ private:
             SDL_Log("Failed to activate software renderer");
             return false;
         }
+
+        m_saturn.VDP.SetEnhancements({
+            .deinterlace = m_config.deinterlace,
+            .transparentMeshes = m_config.transparentMeshes,
+        });
 
         m_saturn.VDP.GetRenderer().Callbacks.VDP2ResolutionChanged =
             util::MakeClassMemberOptionalCallback<&EmulatorApp::OnResolutionChanged>(this);
@@ -783,6 +813,68 @@ private:
         return true;
     }
 
+    bool EnsureDisplayTexture(std::uint32_t width, std::uint32_t height, int scale) {
+        if (m_renderer == nullptr || width == 0 || height == 0 || scale <= 1) {
+            return false;
+        }
+
+        const auto scaledWidth = static_cast<std::uint32_t>(width * static_cast<std::uint32_t>(scale));
+        const auto scaledHeight = static_cast<std::uint32_t>(height * static_cast<std::uint32_t>(scale));
+        if (m_displayTexture != nullptr && m_displayTextureWidth == scaledWidth &&
+            m_displayTextureHeight == scaledHeight) {
+            return true;
+        }
+
+        DestroyDisplayTexture();
+        m_displayTexture = SDL_CreateTexture(
+            m_renderer, SDL_PIXELFORMAT_XBGR8888, SDL_TEXTUREACCESS_TARGET, static_cast<int>(scaledWidth),
+            static_cast<int>(scaledHeight));
+        if (m_displayTexture == nullptr) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_RENDER, "SDL_CreateTexture target failed: %s", SDL_GetError());
+            return false;
+        }
+
+        SDL_SetTextureScaleMode(m_displayTexture, SDL_SCALEMODE_LINEAR);
+        m_displayTextureWidth = scaledWidth;
+        m_displayTextureHeight = scaledHeight;
+        return true;
+    }
+
+    SDL_Texture *PreparePresentTexture(SDL_FRect &sourceRect) {
+        const int scale = std::clamp(m_config.resolutionScale, 1, 8);
+        sourceRect = {
+            .x = 0.0f,
+            .y = 0.0f,
+            .w = static_cast<float>(m_frameWidth),
+            .h = static_cast<float>(m_frameHeight),
+        };
+
+        if (scale <= 1 || !EnsureDisplayTexture(m_frameWidth, m_frameHeight, scale)) {
+            return m_texture;
+        }
+
+        SDL_Texture *previousTarget = SDL_GetRenderTarget(m_renderer);
+        if (!SDL_SetRenderTarget(m_renderer, m_displayTexture)) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_RENDER, "SDL_SetRenderTarget failed: %s", SDL_GetError());
+            return m_texture;
+        }
+
+        const SDL_FRect scaledDest{
+            .x = 0.0f,
+            .y = 0.0f,
+            .w = static_cast<float>(m_displayTextureWidth),
+            .h = static_cast<float>(m_displayTextureHeight),
+        };
+        SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 255);
+        SDL_RenderClear(m_renderer);
+        SDL_RenderTexture(m_renderer, m_texture, nullptr, &scaledDest);
+        SDL_SetRenderTarget(m_renderer, previousTarget);
+
+        sourceRect.w = static_cast<float>(m_displayTextureWidth);
+        sourceRect.h = static_cast<float>(m_displayTextureHeight);
+        return m_displayTexture;
+    }
+
     void Present() {
         if (!EnsureTexture(m_frameWidth, m_frameHeight)) {
             m_running = false;
@@ -798,12 +890,18 @@ private:
         SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 255);
         SDL_RenderClear(m_renderer);
         if (m_texture != nullptr) {
+            SDL_FRect sourceRect{};
+            SDL_Texture *presentTexture = PreparePresentTexture(sourceRect);
             if (m_config.aspectRatio == "stretch") {
-                SDL_RenderTexture(m_renderer, m_texture, nullptr, nullptr);
+                SDL_RenderTexture(m_renderer, presentTexture, &sourceRect, nullptr);
             } else {
                 int outW = 0;
                 int outH = 0;
                 SDL_GetRenderOutputSize(m_renderer, &outW, &outH);
+                if (outW <= 0 || outH <= 0) {
+                    SDL_RenderPresent(m_renderer);
+                    return;
+                }
 
                 const float targetAspect = m_config.aspectRatio == "16:9"
                     ? 16.0f / 9.0f
@@ -823,19 +921,29 @@ private:
                     dest.x = 0.0f;
                     dest.y = (static_cast<float>(outH) - dest.h) / 2.0f;
                 }
-                SDL_RenderTexture(m_renderer, m_texture, nullptr, &dest);
+                SDL_RenderTexture(m_renderer, presentTexture, &sourceRect, &dest);
             }
         }
         SDL_RenderPresent(m_renderer);
     }
 
     void DestroyTexture() {
+        DestroyDisplayTexture();
         if (m_texture != nullptr) {
             SDL_DestroyTexture(m_texture);
             m_texture = nullptr;
         }
         m_textureWidth = 0;
         m_textureHeight = 0;
+    }
+
+    void DestroyDisplayTexture() {
+        if (m_displayTexture != nullptr) {
+            SDL_DestroyTexture(m_displayTexture);
+            m_displayTexture = nullptr;
+        }
+        m_displayTextureWidth = 0;
+        m_displayTextureHeight = 0;
     }
 
     void Shutdown() {
