@@ -675,6 +675,7 @@ void AboutWindow::DrawAcknowledgementsTab() {
                            "Elcorsico 28, "
                            "Giovani Avelar, "
                            "Israel Jacquez, "
+                           "James Wood, "
                            "Jeff Greulich, "
                            "Joek, "
                            "Julien P, "

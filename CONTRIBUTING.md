@@ -40,11 +40,24 @@ The issue should explain what you want to see added or improved in Ymir. Provide
 
 Pull requests must explain what they're proposing and the rationale behind changes. Provide links to existing bugs they fix or features they implement if applicable.
 
-You must disclose if the code was generated with AI assistance, from simple code completions to full code generation.
-AI-generated PR descriptions are fine. AI-generated code will be thoroughly scrutizined or outright rejected if it impacts too much code for no good reason.
-Ymir's code is entirely human-written; AI has only been used to acquire knowledge.
-
 Code contributions must follow the code standards and formatting guidelines described below.
+
+### AI usage guidelines
+
+Ymir's code is (to the author's knowledge) entirely human-written; AI has only been used to acquire knowledge.
+
+If you plan to use AI-enabled tools such as agent-enabled IDEs, CLIs, or integrated LLM-based code generation/assistance, please follow these guidelines:
+- Clearly state that you've used such tools in the PR description, and in what way they have assisted you. Don't claim that the work is entirely your own if that is not the case.
+- Prove that you understand what you're doing by taking the time to manually write PR and commit descriptions. LLM-generated descriptions are often too verbose, too broad, too generic, or lack contextual clues to explain the "why" no matter how detailed your prompt is. If you have the time to spend writing an elaborate prompt, you certainly have the time to write the PR description itself.
+- If you're a first-time contributor, resist the urge to ask AI to do the work for you. You're sabotaging yourself by not getting hands-on experience with the project on your own.
+- Keep the scope of the work constrained to something manageable by one person. If you can't explain what the PR does without the help of AI because it's too big or complex, chances are it's also too big and complex for maintainers to review and reason about.
+- Conversely, if the work is small enough that you could do it by hand, *do it by hand*. It's the perfect learning opportunity and shows you are actively interested in contributing to the project.
+
+Failing to follow these guidelines will likely get your PR closed.
+
+I'd love to apply a zero-tolerance policy, but that is simply infeasible. LLMs are a reality and lots of people use them; this isn't going to change.
+These usage guidelines instead promote self-improvement, prevent AIs from running the show, and should result in more productive discussions and contributions.
+With that said, there should be no situation where AI assistance is *needed*.
 
 ### Coding guidelines
 

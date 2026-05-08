@@ -208,7 +208,6 @@ void CDBlock::OnDiscLoaded() {
 }
 
 void CDBlock::OnDiscEjected() {
-    m_status.statusCode = kStatusCodeNoDisc;
     m_status.frameAddress = 0xFFFFFF;
     m_status.flags = 0xF;
     m_status.repeatCount = 0xF;
@@ -217,7 +216,7 @@ void CDBlock::OnDiscEjected() {
     m_status.index = 0xFF;
 
     m_fsState.Reset();
-    SetInterrupt(kHIRQ_DCHG | kHIRQ_EFLS);
+    OpenTray();
 
     devlog::debug<grp::base>("Ejected disc");
 }
@@ -227,6 +226,7 @@ void CDBlock::OpenTray() {
         // TODO: stay in Busy status while disc stops spinning
         m_status.statusCode = kStatusCodeOpen;
         m_discAuthStatus = 0;
+        m_targetDriveCycles = kDriveCyclesNotPlaying;
 
         SetInterrupt(kHIRQ_DCHG | kHIRQ_EFLS);
 
@@ -965,7 +965,7 @@ void CDBlock::ProcessDriveState() {
 
     if (m_readyForPeriodicReports && !m_processingCommand) {
         // HACK to ensure the system detects the absence of a disc properly
-        if (m_disc.sessions.empty()) {
+        if (m_disc.sessions.empty() && GetStatusCode() != kStatusCodeOpen) {
             m_status.statusCode = kStatusCodeNoDisc;
             m_targetDriveCycles = kDriveCyclesNotPlaying;
         }

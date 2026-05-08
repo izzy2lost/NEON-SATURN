@@ -89,6 +89,7 @@ private:
         uint32 fbWidth, fbHeight;
         uint32 fbScaleX, fbScaleY;
         int ssScale;
+        Settings::Video::DisplayRotation rotation;
         std::chrono::system_clock::time_point timestamp;
     };
 

@@ -2629,6 +2629,7 @@ void App::RunEmulator() {
                 ss.fbScaleX = screen.scaleX;
                 ss.fbScaleY = screen.scaleY;
                 ss.ssScale = settings.general.screenshotScale;
+                ss.rotation = settings.video.rotation;
                 ss.timestamp = std::chrono::system_clock::now();
                 {
                     std::unique_lock lock{m_screenshotQueueMtx};
@@ -4119,14 +4120,54 @@ void App::ScreenshotThread() {
                 fmt::format("{}-{:%Y%m%d}T{:%H%M%S}.{}.png", m_context.GetGameFileName(), localNow, localNow, fracTime);
 
             const int ssScale = ss.ssScale;
-            const uint32 ssScaleX = ssScale * ss.fbScaleX;
-            const uint32 ssScaleY = ssScale * ss.fbScaleY;
-            const uint32 ssWidth = ss.fbWidth * ssScaleX;
-            const uint32 ssHeight = ss.fbHeight * ssScaleY;
+            uint32 ssScaleX = ssScale * ss.fbScaleX;
+            uint32 ssScaleY = ssScale * ss.fbScaleY;
+            uint32 ssWidth = ss.fbWidth * ssScaleX;
+            uint32 ssHeight = ss.fbHeight * ssScaleY;
+
+            // Rotate based on display rotation setting
+            std::vector<uint32> rotatedFB{};
+            using Rot = Settings::Video::DisplayRotation;
+            if (ss.rotation != Rot::Normal) {
+                rotatedFB.resize(ss.fbWidth * ss.fbHeight);
+            }
+            if (ss.rotation == Rot::_90CW || ss.rotation == Rot::_90CCW) {
+                std::swap(ssWidth, ssHeight);
+                std::swap(ssScaleX, ssScaleY);
+                std::swap(ss.fbWidth, ss.fbHeight);
+            }
+            switch (ss.rotation) {
+            case Rot::Normal: break;
+            case Rot::_90CW:
+                for (uint32 y = 0; y < ss.fbHeight; ++y) {
+                    for (uint32 x = 0; x < ss.fbWidth; ++x) {
+                        rotatedFB[x + y * ss.fbWidth] = ss.fb[y + (ss.fbWidth - 1 - x) * ss.fbHeight];
+                    }
+                }
+                break;
+            case Rot::_180:
+                for (uint32 y = 0; y < ss.fbHeight; ++y) {
+                    for (uint32 x = 0; x < ss.fbWidth; ++x) {
+                        rotatedFB[x + y * ss.fbWidth] =
+                            ss.fb[(ss.fbWidth - 1 - x) + (ss.fbHeight - 1 - y) * ss.fbWidth];
+                    }
+                }
+                break;
+            case Rot::_90CCW:
+                for (uint32 y = 0; y < ss.fbHeight; ++y) {
+                    for (uint32 x = 0; x < ss.fbWidth; ++x) {
+                        rotatedFB[x + y * ss.fbWidth] = ss.fb[(ss.fbHeight - 1 - y) + x * ss.fbHeight];
+                    }
+                }
+                break;
+            }
+            if (ss.rotation != Rot::Normal) {
+                ss.fb.swap(rotatedFB);
+            }
+
+            // Scale up with nearest neighbor interpolation
             std::vector<uint32> scaledFB{};
             scaledFB.resize(ssWidth * ssHeight);
-
-            // Nearest neighbor interpolation
             auto &srcFB = ss.fb;
             for (uint32 y = 0; y < ss.fbHeight; ++y) {
                 uint32 *line = &scaledFB[(y * ssScaleY) * ssWidth];
@@ -4141,6 +4182,7 @@ void App::ScreenshotThread() {
                     std::copy_n(line, ssWidth, &line[py * ssWidth]);
                 }
             }
+
             stbi_write_png(fmt::format("{}", screenshotPath).c_str(), ssWidth, ssHeight, 4, scaledFB.data(),
                            ssWidth * sizeof(uint32));
 
@@ -6173,7 +6215,38 @@ void App::InvokeFileDialog(SDL_FileDialogType type, const char *title, void *fil
     SDL_SetBooleanProperty(props, SDL_PROP_FILE_DIALOG_MANY_BOOLEAN, allowMany);
     SDL_SetStringProperty(props, SDL_PROP_FILE_DIALOG_LOCATION_STRING, location);
 
-    SDL_ShowFileDialogWithProperties(type, callback, userdata, props);
+    if (m_settings.video.fullScreen && !m_settings.video.borderlessFullScreen) {
+        devlog::debug<grp::base>("Switching to borderless fullscreen mode before opening file dialog");
+
+        // If in exclusive fullscreen mode, switch to borderless fullscreen mode temporarily
+        SDL_SetWindowFullscreenMode(m_context.screen.window, nullptr);
+        SDL_SetWindowFullscreen(m_context.screen.window, true);
+        SDL_SyncWindow(m_context.screen.window);
+
+        // Pass callback and user data pointer to file dialog properties
+        SDL_SetPointerProperty(props, "ymir.filedialog.callback", (void *)callback);
+        SDL_SetPointerProperty(props, "ymir.filedialog.userdata", userdata);
+
+        SDL_ShowFileDialogWithProperties(
+            type,
+            [](void *userdata, const char *const *filelist, int filter) {
+                auto *app = static_cast<App *>(userdata);
+                SDL_PropertiesID props = app->m_fileDialogProps;
+                auto callback =
+                    (SDL_DialogFileCallback)SDL_GetPointerProperty(props, "ymir.filedialog.callback", nullptr);
+                auto *cbUserdata = SDL_GetPointerProperty(props, "ymir.filedialog.userdata", nullptr);
+
+                callback(cbUserdata, filelist, filter);
+
+                devlog::debug<grp::base>("Restoring exclusive fullscreen mode after closing file dialog");
+
+                // Restore fullscreen mode after processing the callback
+                app->ApplyFullscreenMode();
+            },
+            userdata, props);
+    } else {
+        SDL_ShowFileDialogWithProperties(type, callback, (void *)this, props);
+    }
 }
 
 void App::DrawWindows() {
