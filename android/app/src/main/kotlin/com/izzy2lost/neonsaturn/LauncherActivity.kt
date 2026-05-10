@@ -1,6 +1,7 @@
 package com.izzy2lost.neonsaturn
 
 import android.content.Intent
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Bundle
 import android.view.LayoutInflater
@@ -388,7 +389,15 @@ class LauncherActivity : AppCompatActivity() {
                                 libraryRecyclerView.scrollToPosition(cfa.centerStartPosition())
                             }
                         }
+                        val density = resources.displayMetrics.density
+                        val coverflowTopPaddingPx =
+                            resources.getDimensionPixelSize(R.dimen.coverflow_top_padding)
                         libraryRecyclerView.post {
+                            updateCoverFlowPadding(
+                                currentViewMode,
+                                density,
+                                coverflowTopPaddingPx
+                            )
                             coverFlowTransformer.applyTransforms(libraryRecyclerView)
                         }
                     }
@@ -673,13 +682,10 @@ class LauncherActivity : AppCompatActivity() {
             libraryRecyclerView.clipChildren = false
             (libraryRecyclerView.parent as? android.view.ViewGroup)?.clipChildren = false
 
-            // Center first/last item horizontally — compute padding once width is known.
-            // Vertical top padding gives the centered/scaled cover breathing room from
-            // the header (clipToPadding=false lets the cover render up into it).
+            // Center first/last item horizontally and, in portrait, center the
+            // coverflow vertically once the RecyclerView has its measured size.
             libraryRecyclerView.post {
-                val itemWidthPx = (160 * density).toInt()
-                val hPad = ((libraryRecyclerView.width - itemWidthPx) / 2).coerceAtLeast(0)
-                libraryRecyclerView.setPadding(hPad, coverflowTopPaddingPx, hPad, 0)
+                updateCoverFlowPadding(mode, density, coverflowTopPaddingPx)
             }
 
             // PagerSnapHelper: snaps one cover at a time, centered — the right feel for coverflow.
@@ -708,7 +714,61 @@ class LauncherActivity : AppCompatActivity() {
         }
     }
 
+    private fun updateCoverFlowPadding(mode: Int, density: Float, minTopPaddingPx: Int) {
+        val itemWidthPx = (COVERFLOW_ITEM_WIDTH_DP * density).toInt()
+        val hPad = ((libraryRecyclerView.width - itemWidthPx) / 2).coerceAtLeast(0)
+        val topPad = coverFlowTopPaddingFor(mode, density, minTopPaddingPx)
+        libraryRecyclerView.setPadding(hPad, topPad, hPad, 0)
+    }
+
+    private fun coverFlowTopPaddingFor(mode: Int, density: Float, minTopPaddingPx: Int): Int {
+        if (resources.configuration.orientation != Configuration.ORIENTATION_PORTRAIT) {
+            return minTopPaddingPx
+        }
+
+        val availableHeight = libraryRecyclerView.height
+        if (availableHeight <= 0) return minTopPaddingPx
+
+        val measuredItemHeight = maxVisibleCoverFlowChildHeight()
+        val itemHeight = if (measuredItemHeight > 0) {
+            measuredItemHeight
+        } else {
+            estimatedCoverFlowItemHeightPx(mode, density)
+        }
+        val centeredTopPadding = ((availableHeight - itemHeight) / 2f).toInt()
+        return centeredTopPadding.coerceAtLeast(minTopPaddingPx)
+    }
+
+    private fun maxVisibleCoverFlowChildHeight(): Int {
+        var maxHeight = 0
+        for (i in 0 until libraryRecyclerView.childCount) {
+            maxHeight = maxHeight.coerceAtLeast(libraryRecyclerView.getChildAt(i).height)
+        }
+        return maxHeight
+    }
+
+    private fun estimatedCoverFlowItemHeightPx(mode: Int, density: Float): Int {
+        val coverHeightDp = if (mode == BootstrapStore.VIEW_MODE_NA_COVERS) {
+            COVERFLOW_NA_COVER_HEIGHT_DP
+        } else {
+            COVERFLOW_JAPAN_COVER_HEIGHT_DP
+        }
+        val reflectionHeightDp = if (mode == BootstrapStore.VIEW_MODE_NA_COVERS) {
+            COVERFLOW_NA_REFLECTION_HEIGHT_DP
+        } else {
+            COVERFLOW_JAPAN_REFLECTION_HEIGHT_DP
+        }
+        return ((coverHeightDp + reflectionHeightDp + COVERFLOW_TITLE_SPACE_DP) * density).toInt()
+    }
+
     private companion object {
+        const val COVERFLOW_ITEM_WIDTH_DP = 160
+        const val COVERFLOW_NA_COVER_HEIGHT_DP = 228
+        const val COVERFLOW_JAPAN_COVER_HEIGHT_DP = 146
+        const val COVERFLOW_NA_REFLECTION_HEIGHT_DP = 68
+        const val COVERFLOW_JAPAN_REFLECTION_HEIGHT_DP = 44
+        const val COVERFLOW_TITLE_SPACE_DP = 54
+
         val ROM_EXTENSIONS = setOf("bin", "rom")
         val MULTI_FILE_DISC_DESCRIPTOR_EXTENSIONS = setOf("cue", "ccd", "mds")
     }

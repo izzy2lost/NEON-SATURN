@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Top padding inside the coverflow RecyclerView. In portrait, the centered
-         cover needs comfortable separation from the header; landscape overrides
-         this in values-land/ to push the cover up since vertical space is tight. -->
+    <!-- Minimum top padding inside the coverflow RecyclerView. Portrait computes
+         extra top padding at runtime to center the coverflow vertically; landscape
+         overrides this in values-land/ to push the cover up since space is tight. -->
     <dimen name="coverflow_top_padding">64dp</dimen>
 </resources>
