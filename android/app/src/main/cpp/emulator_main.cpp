@@ -10,6 +10,7 @@
 #include <ymir/hw/vdp/vdp.hpp>
 #include <ymir/media/loader/loader.hpp>
 #include <ymir/sys/saturn.hpp>
+#include <ymir/util/bit_ops.hpp>
 #include <ymir/util/callback.hpp>
 
 #include <SDL3/SDL.h>
@@ -20,6 +21,7 @@
 #include <serdes/cereal_savestate.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <charconv>
@@ -60,6 +62,75 @@ constexpr std::uint32_t kTouchButtonStart = 1u << 8u;
 
 std::mutex g_activeAppMutex;
 EmulatorApp *g_activeApp = nullptr;
+
+// Persistent SMPC data file format, matching apps/ymir-sdl3 PersistenceService.
+// ymir-core no longer does this I/O itself; frontends own the file.
+constexpr std::uint8_t kPersistentSMPCDataVersion = 0x01;
+
+bool LoadPersistentSMPCData(const std::filesystem::path &path, ymir::smpc::PersistentSMPCData &data,
+                            std::error_code &error) {
+    error.clear();
+
+    std::ifstream in{path, std::ios::binary};
+    if (!in) {
+        error.assign(errno, std::generic_category());
+        return false;
+    }
+
+    const int version = in.get();
+    if (version != kPersistentSMPCDataVersion) {
+        return false;
+    }
+    in.seekg(3, std::ios::cur); // skip 3 reserved bytes
+
+    std::array<uint8, 4> smem{};
+    bool ste{};
+    uint64 rtcOffset{};
+    uint64 rtcTimestamp{};
+
+    in.read((char *)smem.data(), sizeof(smem));
+    in.read((char *)&ste, sizeof(ste));
+    in.read((char *)&rtcOffset, sizeof(rtcOffset));
+    in.read((char *)&rtcTimestamp, sizeof(rtcTimestamp));
+    if (!in) {
+        return false;
+    }
+
+    data.SMEM = smem;
+    data.STE = ste;
+    data.rtc.offset = bit::little_endian_swap(rtcOffset);
+    data.rtc.timestamp = bit::little_endian_swap(rtcTimestamp);
+    return true;
+}
+
+bool SavePersistentSMPCData(const std::filesystem::path &path, const ymir::smpc::PersistentSMPCData &data,
+                            std::error_code &error) {
+    error.clear();
+
+    std::ofstream out{path, std::ios::binary};
+    if (!out) {
+        error.assign(errno, std::generic_category());
+        return false;
+    }
+
+    out.put(kPersistentSMPCDataVersion);
+    out.put(0x00); // reserved for future expansion
+    out.put(0x00); // reserved for future expansion
+    out.put(0x00); // reserved for future expansion
+
+    const uint64 rtcOffset = bit::little_endian_swap<uint64>(data.rtc.offset);
+    const uint64 rtcTimestamp = bit::little_endian_swap<uint64>(data.rtc.timestamp);
+
+    out.write((const char *)data.SMEM.data(), sizeof(data.SMEM));
+    out.write((const char *)&data.STE, sizeof(data.STE));
+    out.write((const char *)&rtcOffset, sizeof(rtcOffset));
+    out.write((const char *)&rtcTimestamp, sizeof(rtcTimestamp));
+    if (!out) {
+        error.assign(errno, std::generic_category());
+        return false;
+    }
+    return true;
+}
 
 std::string_view ArgValue(std::string_view argument, std::string_view prefix) {
     if (!argument.starts_with(prefix)) {
@@ -549,8 +620,10 @@ private:
         }
 
         error.clear();
-        m_saturn.SMPC.LoadPersistentDataFrom(StateDirectory() / "smpc.bin", error);
-        if (error && error.value() != ENOENT) {
+        ymir::smpc::PersistentSMPCData smpcData{};
+        if (LoadPersistentSMPCData(StateDirectory() / "smpc.bin", smpcData, error)) {
+            m_saturn.SMPC.LoadPersistentData(smpcData);
+        } else if (error && error.value() != ENOENT) {
             SDL_Log("SMPC persistent load warning: %s", error.message().c_str());
         }
 
@@ -951,8 +1024,9 @@ private:
 
         if (!m_config.dataRoot.empty()) {
             std::error_code error{};
-            m_saturn.SMPC.SavePersistentDataTo(StateDirectory() / "smpc.bin", error);
-            if (error) {
+            ymir::smpc::PersistentSMPCData smpcData{};
+            m_saturn.SMPC.SavePersistentData(smpcData);
+            if (!SavePersistentSMPCData(StateDirectory() / "smpc.bin", smpcData, error) && error) {
                 SDL_Log("SMPC persistent save warning: %s", error.message().c_str());
             }
         }
