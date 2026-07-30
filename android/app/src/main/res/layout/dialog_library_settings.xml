@@ -185,6 +185,27 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
+            android:text="@string/settings_emulation"
+            android:textAppearance="?attr/textAppearanceLabelLarge" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/rewindSwitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/settings_rewind_enabled" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/settings_rewind_note"
+            android:textAppearance="?attr/textAppearanceBodySmall" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
             android:text="@string/settings_touch_controls"
             android:textAppearance="?attr/textAppearanceLabelLarge" />
 

@@ -15,6 +15,7 @@ struct BootstrapConfig {
     int resolutionScale = 1;
     bool deinterlace = false;
     bool transparentMeshes = false;
+    bool rewindEnabled = false;
 };
 
 void SetBootstrapConfig(BootstrapConfig config);

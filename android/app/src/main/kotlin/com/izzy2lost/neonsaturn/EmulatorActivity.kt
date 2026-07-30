@@ -91,6 +91,7 @@ class EmulatorActivity : SDLActivity() {
         arguments += "--resolution-scale=${intent.getIntExtra(EXTRA_RESOLUTION_SCALE, BootstrapStore.RESOLUTION_SCALE_1X)}"
         arguments += "--deinterlace=${intent.getBooleanExtra(EXTRA_DEINTERLACE, false)}"
         arguments += "--transparent-meshes=${intent.getBooleanExtra(EXTRA_TRANSPARENT_MESHES, false)}"
+        arguments += "--rewind=${intent.getBooleanExtra(EXTRA_REWIND_ENABLED, false)}"
         return arguments.toTypedArray()
     }
 
@@ -157,6 +158,7 @@ class EmulatorActivity : SDLActivity() {
         if (!store.loadTouchControlsEnabled()) {
             removeTouchControlsOverlay()
             pushTouchControlsState(0, 0, 0, 0f, 0f)
+            pushSpeedControls(rewind = false, fastForward = false)
             return
         }
 
@@ -170,6 +172,7 @@ class EmulatorActivity : SDLActivity() {
                     state.analogX,
                     state.analogY,
                 )
+                pushSpeedControls(state.rewind, state.fastForward)
             }
             view.onMenuPressed = {
                 showQuickActionsDialog()
@@ -183,6 +186,8 @@ class EmulatorActivity : SDLActivity() {
             )
             touchControlsView = view
         }
+
+        overlay.rewindAvailable = store.loadRewindEnabled()
 
         val isPortrait = resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
         overlay.touchControlsLayout = if (isPortrait) {
@@ -202,6 +207,7 @@ class EmulatorActivity : SDLActivity() {
     private fun suspendTouchControls() {
         touchControlsView?.inputSuspended = true
         pushTouchControlsState(0, 0, 0, 0f, 0f)
+        pushSpeedControls(rewind = false, fastForward = false)
     }
 
     private fun resumeTouchControls() {
@@ -220,7 +226,14 @@ class EmulatorActivity : SDLActivity() {
         }
     }
 
+    private fun pushSpeedControls(rewind: Boolean, fastForward: Boolean) {
+        runCatching {
+            nativeSetSpeedControls(rewind, fastForward)
+        }
+    }
+
     private external fun nativeSetPaused(paused: Boolean)
+    private external fun nativeSetSpeedControls(rewind: Boolean, fastForward: Boolean)
     private external fun nativeSaveState(slotIndex: Int): String
     private external fun nativeLoadState(slotIndex: Int): String
     private external fun nativeExitEmulator()
@@ -252,6 +265,8 @@ class EmulatorActivity : SDLActivity() {
             "com.izzy2lost.neonsaturn.extra.DEINTERLACE"
         private const val EXTRA_TRANSPARENT_MESHES =
             "com.izzy2lost.neonsaturn.extra.TRANSPARENT_MESHES"
+        private const val EXTRA_REWIND_ENABLED =
+            "com.izzy2lost.neonsaturn.extra.REWIND_ENABLED"
 
         fun createIntent(
             context: Context,
@@ -262,7 +277,8 @@ class EmulatorActivity : SDLActivity() {
             textureFilter: String = BootstrapStore.FILTER_NEAREST,
             resolutionScale: Int = BootstrapStore.RESOLUTION_SCALE_1X,
             deinterlace: Boolean = false,
-            transparentMeshes: Boolean = false
+            transparentMeshes: Boolean = false,
+            rewindEnabled: Boolean = false
         ): Intent =
             Intent(context, EmulatorActivity::class.java).apply {
                 putExtra(EXTRA_IPL_PATH, selection.iplPath)
@@ -275,6 +291,7 @@ class EmulatorActivity : SDLActivity() {
                 putExtra(EXTRA_RESOLUTION_SCALE, resolutionScale)
                 putExtra(EXTRA_DEINTERLACE, deinterlace)
                 putExtra(EXTRA_TRANSPARENT_MESHES, transparentMeshes)
+                putExtra(EXTRA_REWIND_ENABLED, rewindEnabled)
             }
 
         private fun updateCurrentInstance(instance: EmulatorActivity?) {

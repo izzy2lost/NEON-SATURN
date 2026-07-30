@@ -1,6 +1,7 @@
 #include "bootstrap.hpp"
 
 #include "audio_system.hpp"
+#include "rewind_buffer.hpp"
 #include "rom_loader.hpp"
 
 #include <ymir/core/hash.hpp>
@@ -178,6 +179,8 @@ BootstrapConfig BootstrapConfigFromArgs(int argc, char **argv) {
             config.deinterlace = ParseBoolArg(value);
         } else if (const auto value = ArgValue(argument, "--transparent-meshes="); !value.empty()) {
             config.transparentMeshes = ParseBoolArg(value);
+        } else if (const auto value = ArgValue(argument, "--rewind="); !value.empty()) {
+            config.rewindEnabled = ParseBoolArg(value);
         }
     }
     return config;
@@ -251,6 +254,7 @@ public:
         }
 
         ResetInputs();
+        SetSpeedControls(false, false);
 
         if (paused) {
             if (m_audioStarted && m_audioSystem.IsRunning()) {
@@ -335,6 +339,8 @@ public:
             }
 
             ResetInputs();
+            // The recorded timeline no longer connects to the state we just jumped to.
+            m_rewindBuffer.Reset();
             return {.success = true, .message = "State " + std::to_string(slotIndex) + " loaded"};
         } catch (const cereal::Exception &e) {
             return {.success = false, .message = std::string{"Load failed: "} + e.what()};
@@ -372,6 +378,18 @@ public:
         m_touchAnalogX = ClampAnalog(analogX);
         m_touchAnalogY = ClampAnalog(analogY);
         RebuildTouchDirections();
+    }
+
+    // Rewind and fast-forward are emulator actions rather than Saturn buttons, so they are
+    // pushed separately from the pad state and read directly by the run loop.
+    void SetSpeedControls(bool rewind, bool fastForward) {
+        m_rewindRequested.store(rewind);
+
+        if (m_fastForward.exchange(fastForward) != fastForward) {
+            // The audio ring buffer is what paces the emulator at 1x; unblocking the
+            // producer is what actually lets frames run ahead.
+            m_audioSystem.SetSync(!fastForward);
+        }
     }
 
     int Run() {
@@ -421,12 +439,15 @@ public:
                 break;
             }
 
-            {
+            // Presentation is vsync-locked, so fast-forward has to emulate several frames
+            // per presented frame rather than simply looping faster.
+            const int frameCount = m_fastForward.load() ? kFastForwardFrames : 1;
+            for (int frame = 0; frame < frameCount; ++frame) {
                 std::scoped_lock lock{m_coreMutex};
                 if (!m_running.load() || m_paused.load()) {
-                    continue;
+                    break;
                 }
-                m_saturn.RunFrame();
+                StepEmulatedFrame();
             }
             Present();
         }
@@ -441,9 +462,20 @@ private:
     static constexpr int kAudioChannels = 2;
     static constexpr std::uint32_t kAudioBufferFrames = 512;
 
+    // Emulated frames per presented frame while fast-forwarding. Presentation stays
+    // vsync-locked, so this is the speed multiplier the device is asked for; slower
+    // hardware simply falls short of it.
+    static constexpr int kFastForwardFrames = 3;
+
+    // 5 seconds of rewind at 60 fps. Every retained frame is an LZ4-compressed XOR delta
+    // of a multi-megabyte save state, so the desktop's 60 second ring would risk hundreds
+    // of megabytes on a phone.
+    static constexpr std::size_t kRewindFrameCapacity = 5 * 60;
+
     BootstrapConfig m_config;
     ymir::Saturn m_saturn{};
     app::AudioSystem m_audioSystem{};
+    app::RewindBuffer m_rewindBuffer{kRewindFrameCapacity};
 
     SDL_Window *m_window = nullptr;
     SDL_Renderer *m_renderer = nullptr;
@@ -464,6 +496,8 @@ private:
     bool m_frameDirty = false;
     std::atomic_bool m_running = true;
     std::atomic_bool m_paused = false;
+    std::atomic_bool m_rewindRequested = false;
+    std::atomic_bool m_fastForward = false;
     bool m_audioStarted = false;
 
     Button m_physicalButtons = Button::Default;
@@ -663,7 +697,42 @@ private:
         }
 
         m_saturn.LoadDisc(std::move(disc));
+
+        if (m_config.rewindEnabled) {
+            m_rewindBuffer.Start();
+        }
         return true;
+    }
+
+    // Mirrors the desktop frontend's rewind stepping. On a successful pop the restored
+    // state is still run for a frame: that is what renders it and advances audio, so each
+    // iteration ends up displaying one frame earlier than the last.
+    void StepEmulatedFrame() {
+        const bool rewindRunning = m_rewindBuffer.IsRunning();
+        const bool rewinding = rewindRunning && m_rewindRequested.load();
+
+        bool runFrame = true;
+        if (rewinding) {
+            if (m_rewindBuffer.PopState()) {
+                if (!m_saturn.LoadState(m_rewindBuffer.NextState)) {
+                    runFrame = false;
+                }
+            } else {
+                // Reached the start of the buffer - hold on the oldest frame.
+                runFrame = false;
+            }
+        }
+
+        if (runFrame) [[likely]] {
+            m_saturn.RunFrame();
+        }
+
+        // Capture only while running forwards, otherwise rewinding would immediately
+        // overwrite the timeline it is walking back through.
+        if (rewindRunning && !rewinding) {
+            m_saturn.SaveState(m_rewindBuffer.NextState);
+            m_rewindBuffer.ProcessState();
+        }
     }
 
     void HandleEvent(const SDL_Event &event) {
@@ -1041,6 +1110,7 @@ private:
 
     void Shutdown() {
         SetActiveApp(nullptr);
+        m_rewindBuffer.Stop();
 
         // Drop the callback first so ~SMPC() cannot call back into a half-torn-down app
         m_saturn.SMPC.ClearPersistDataCallback();
@@ -1103,6 +1173,17 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_izzy2lost_neonsaturn_EmulatorActivity_nativeExitEmulator(JNIEnv *, jobject) {
     if (auto *app = GetActiveApp(); app != nullptr) {
         app->RequestStop();
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_izzy2lost_neonsaturn_EmulatorActivity_nativeSetSpeedControls(
+    JNIEnv *,
+    jobject,
+    jboolean rewind,
+    jboolean fastForward) {
+    if (auto *app = GetActiveApp(); app != nullptr) {
+        app->SetSpeedControls(rewind == JNI_TRUE, fastForward == JNI_TRUE);
     }
 }
 

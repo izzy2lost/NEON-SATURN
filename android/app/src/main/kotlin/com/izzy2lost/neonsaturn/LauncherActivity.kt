@@ -331,6 +331,13 @@ class LauncherActivity : AppCompatActivity() {
             store.saveTransparentMeshesEnabled(isChecked)
         }
 
+        val rewindSwitch =
+            content.findViewById<com.google.android.material.materialswitch.MaterialSwitch>(R.id.rewindSwitch)
+        rewindSwitch.isChecked = store.loadRewindEnabled()
+        rewindSwitch.setOnCheckedChangeListener { _, isChecked ->
+            store.saveRewindEnabled(isChecked)
+        }
+
         val touchControlsSwitch =
             content.findViewById<com.google.android.material.materialswitch.MaterialSwitch>(R.id.touchControlsSwitch)
         touchControlsSwitch.isChecked = store.loadTouchControlsEnabled()
@@ -486,7 +493,8 @@ class LauncherActivity : AppCompatActivity() {
                         textureFilter = store.loadTextureFilter(),
                         resolutionScale = store.loadResolutionScale(),
                         deinterlace = store.loadDeinterlaceEnabled(),
-                        transparentMeshes = store.loadTransparentMeshesEnabled()
+                        transparentMeshes = store.loadTransparentMeshesEnabled(),
+                        rewindEnabled = store.loadRewindEnabled()
                     ))
                 }.onFailure { error ->
                     Toast.makeText(

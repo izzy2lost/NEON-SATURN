@@ -10,9 +10,12 @@
 
 #include <lz4.h>
 
+#include <algorithm>
+
 namespace app {
 
-RewindBuffer::RewindBuffer() {
+RewindBuffer::RewindBuffer(size_t frameCapacity)
+    : m_deltas(std::max<size_t>(frameCapacity, 1)) {
     Reset();
 }
 

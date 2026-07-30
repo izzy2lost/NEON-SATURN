@@ -15,7 +15,11 @@ namespace app {
 
 class RewindBuffer {
 public:
-    RewindBuffer();
+    // Number of delta frames retained by default: 60 seconds at 60 fps.
+    // Memory scales with this, so constrained frontends can ask for less.
+    static constexpr size_t kDefaultFrameCapacity = 60 * 60;
+
+    explicit RewindBuffer(size_t frameCapacity = kDefaultFrameCapacity);
     ~RewindBuffer();
 
     void Reset();
@@ -74,10 +78,10 @@ private:
     std::vector<char> m_deltaBuffer;            // XOR delta buffer
     size_t m_maxBufferSize = 0;                 // Largest buffer size ever used
 
-    std::array<std::vector<char>, 60 * 60> m_deltas; // Ring buffer of delta frames
-    size_t m_deltaWritePos = 0;                      // Current delta ring buffer write position
-    size_t m_deltaCount = 0;                         // Current amount of valid delta frames
-    size_t m_totalDeltaCount = 0;                    // Total number of frames written so far
+    std::vector<std::vector<char>> m_deltas; // Ring buffer of delta frames, sized at construction
+    size_t m_deltaWritePos = 0;              // Current delta ring buffer write position
+    size_t m_deltaCount = 0;                 // Current amount of valid delta frames
+    size_t m_totalDeltaCount = 0;            // Total number of frames written so far
 
     void ProcThread();
 

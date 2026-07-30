@@ -18,6 +18,8 @@ class TouchControlsEditorActivity : AppCompatActivity() {
 
         val isPortrait = resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
         editorView.interactionMode = TouchControlsView.InteractionMode.EDIT
+        // No point positioning a button that gameplay will not show.
+        editorView.rewindAvailable = store.loadRewindEnabled()
         editorView.touchControlsLayout = if (isPortrait) {
             store.loadTouchControlsLayoutPortrait()
         } else {

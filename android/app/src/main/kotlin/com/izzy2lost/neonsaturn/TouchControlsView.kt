@@ -6,9 +6,11 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.PointF
 import android.graphics.RectF
+import android.graphics.drawable.Drawable
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
+import androidx.appcompat.content.res.AppCompatResources
 import androidx.core.graphics.ColorUtils
 import kotlin.math.abs
 import kotlin.math.hypot
@@ -67,6 +69,24 @@ class TouchControlsView @JvmOverloads constructor(
             invalidate()
         }
 
+    /**
+     * Whether the rewind button is shown at all. Rewinding needs the emulator to be
+     * recording a timeline, which is opt-in, so the button stays hidden and untappable
+     * until that setting is on.
+     */
+    var rewindAvailable: Boolean = false
+        set(value) {
+            if (field == value) {
+                return
+            }
+            field = value
+            if (!value) {
+                pointerInteractions.entries.removeAll { it.value.controlId == TouchControlId.REWIND }
+                rebuildStateFromPointers()
+            }
+            invalidate()
+        }
+
     private val density = resources.displayMetrics.density
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -95,11 +115,20 @@ class TouchControlsView @JvmOverloads constructor(
     private val pointerInteractions = mutableMapOf<Int, PointerInteraction>()
     private var currentState = TouchControlsState()
 
+    // The vectors ship with a theme-resolved tint; force white so they read against the
+    // button fill regardless of which theme the host activity is using.
+    private val rewindIcon: Drawable? = loadIcon(R.drawable.fast_rewind_24px)
+    private val fastForwardIcon: Drawable? = loadIcon(R.drawable.fast_forward_24px)
+
     private val controlHitOrder = listOf(
         TouchControlId.MENU,
         TouchControlId.START,
         TouchControlId.L,
         TouchControlId.R,
+        // After L/R deliberately: if a custom layout overlaps them, a misplaced shoulder
+        // press costs less than an accidental rewind mid-game.
+        TouchControlId.REWIND,
+        TouchControlId.FAST_FORWARD,
         TouchControlId.Z,
         TouchControlId.Y,
         TouchControlId.X,
@@ -134,6 +163,12 @@ class TouchControlsView @JvmOverloads constructor(
 
         drawCapsuleButton(canvas, TouchControlId.START, Color.parseColor("#CC0F6A"))
         drawCapsuleButton(canvas, TouchControlId.MENU, Color.parseColor("#394550"))
+
+        // Slate like MENU, grouping the emulator actions apart from the Saturn buttons.
+        if (rewindAvailable) {
+            drawIconButton(canvas, TouchControlId.REWIND, rewindIcon, Color.parseColor("#394550"))
+        }
+        drawIconButton(canvas, TouchControlId.FAST_FORWARD, fastForwardIcon, Color.parseColor("#394550"))
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean =
@@ -399,6 +434,31 @@ class TouchControlsView @JvmOverloads constructor(
         }
     }
 
+    private fun loadIcon(resId: Int): Drawable? =
+        AppCompatResources.getDrawable(context, resId)?.mutate()?.apply { setTint(Color.WHITE) }
+
+    private fun drawIconButton(canvas: Canvas, controlId: TouchControlId, icon: Drawable?, color: Int) {
+        val center = controlCenter(controlId)
+        val radius = actionButtonRadius()
+        val pressed = isControlPressed(controlId)
+        fillPaint.color = fillColorFor(color, pressed)
+        strokePaint.color = outlineColorFor(color, pressed)
+        canvas.drawCircle(center.x, center.y, radius, fillPaint)
+        canvas.drawCircle(center.x, center.y, radius, strokePaint)
+
+        if (icon != null) {
+            val extent = (radius * 0.62f).toInt()
+            val cx = center.x.toInt()
+            val cy = center.y.toInt()
+            icon.setBounds(cx - extent, cy - extent, cx + extent, cy + extent)
+            icon.draw(canvas)
+        }
+
+        if (interactionMode == InteractionMode.EDIT) {
+            drawCaption(canvas, controlId, center.x, center.y + radius + (18f * density))
+        }
+    }
+
     private fun drawShoulderButton(canvas: Canvas, controlId: TouchControlId, color: Int) {
         val center = controlCenter(controlId)
         val width = 110f * density
@@ -509,15 +569,27 @@ class TouchControlsView @JvmOverloads constructor(
 
     private fun rebuildStateFromPointers() {
         var buttonMask = 0
+        var rewind = false
+        var fastForward = false
         pointerInteractions.values
             .filter { interaction ->
                 (interaction.pointerType == PointerType.BUTTON || interaction.pointerType == PointerType.MENU) &&
                     interaction.inside
             }
             .forEach { interaction ->
-                buttonMask = buttonMask or buttonMaskFor(interaction.controlId)
+                when (interaction.controlId) {
+                    TouchControlId.REWIND -> rewind = true
+                    TouchControlId.FAST_FORWARD -> fastForward = true
+                    else -> buttonMask = buttonMask or buttonMaskFor(interaction.controlId)
+                }
             }
-        updateState(currentState.copy(buttonMask = buttonMask))
+        updateState(
+            currentState.copy(
+                buttonMask = buttonMask,
+                rewind = rewind,
+                fastForward = fastForward,
+            )
+        )
     }
 
     private fun updateState(nextState: TouchControlsState) {
@@ -550,13 +622,19 @@ class TouchControlsView @JvmOverloads constructor(
                 it.controlId == controlId && it.pointerType == PointerType.MENU && it.inside
             }
 
+            TouchControlId.REWIND -> currentState.rewind
+            TouchControlId.FAST_FORWARD -> currentState.fastForward
+
             else -> (currentState.buttonMask and buttonMaskFor(controlId)) != 0
         }
 
     private fun hitTestControl(x: Float, y: Float): TouchControlId? =
         controlHitOrder.firstOrNull { controlId ->
-            isPointInsideControl(controlId, x, y)
+            isControlAvailable(controlId) && isPointInsideControl(controlId, x, y)
         }
+
+    private fun isControlAvailable(controlId: TouchControlId): Boolean =
+        controlId != TouchControlId.REWIND || rewindAvailable
 
     private fun isPointInsideControl(controlId: TouchControlId, x: Float, y: Float, hitExpansion: Float = 1f): Boolean {
         val center = controlCenter(controlId)
@@ -573,6 +651,10 @@ class TouchControlsView @JvmOverloads constructor(
                 )
                 tempRect.contains(x, y)
             }
+
+            TouchControlId.REWIND,
+            TouchControlId.FAST_FORWARD ->
+                hypot(x - center.x, y - center.y) <= actionButtonRadius() * hitExpansion
 
             TouchControlId.START,
             TouchControlId.MENU -> {
@@ -615,10 +697,14 @@ class TouchControlsView @JvmOverloads constructor(
             TouchControlId.R -> (56f * density) to (20f * density)
             TouchControlId.START -> (44f * density) to (20f * density)
             TouchControlId.MENU -> (48f * density) to (20f * density)
+            TouchControlId.REWIND,
+            TouchControlId.FAST_FORWARD -> actionButtonRadius() to actionButtonRadius()
             else -> faceButtonRadius() to faceButtonRadius()
         }
 
     private fun faceButtonRadius(): Float = 29f * density
+
+    private fun actionButtonRadius(): Float = 22f * density
 
     private fun dpadRadius(): Float = 58f * density
 

@@ -91,6 +91,18 @@ class BootstrapStore(context: Context) {
     fun loadTransparentMeshesEnabled(): Boolean =
         preferences.getBoolean(KEY_TRANSPARENT_MESHES_ENABLED, false)
 
+    fun saveRewindEnabled(enabled: Boolean) {
+        preferences.edit().putBoolean(KEY_REWIND_ENABLED, enabled).apply()
+    }
+
+    /**
+     * Whether the emulator records a rewind timeline. Capturing costs a save state every
+     * frame plus the memory to retain a few seconds of them, so it is off by default and
+     * the on-screen rewind button stays hidden until it is turned on.
+     */
+    fun loadRewindEnabled(): Boolean =
+        preferences.getBoolean(KEY_REWIND_ENABLED, false)
+
     fun saveLibraryViewMode(mode: Int) {
         preferences.edit().putInt(KEY_LIBRARY_VIEW_MODE, mode).apply()
     }
@@ -203,6 +215,7 @@ class BootstrapStore(context: Context) {
         private const val KEY_RESOLUTION_SCALE = "resolution_scale"
         private const val KEY_DEINTERLACE_ENABLED = "deinterlace_enabled"
         private const val KEY_TRANSPARENT_MESHES_ENABLED = "transparent_meshes_enabled"
+        private const val KEY_REWIND_ENABLED = "rewind_enabled"
         const val VIEW_MODE_LIST = 0
         const val VIEW_MODE_NA_COVERS = 1
         const val VIEW_MODE_JAPAN_COVERS = 2
