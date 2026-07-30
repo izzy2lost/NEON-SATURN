@@ -4,5 +4,19 @@
     <color name="neon_saturn_surface">#FFFFFF</color>
     <color name="neon_saturn_primary">#007EA3</color>
     <color name="neon_saturn_on_primary">#FFFFFF</color>
-</resources>
 
+    <!-- Library list cards: neon_saturn_surface at 85% so the starfield reads
+         through them. Drop the alpha (D9) for more stars, raise it for more
+         contrast against the card text. -->
+    <color name="library_card_surface">#D9FFFFFF</color>
+
+    <!-- Animated library backdrop. The light variant stays pale so the dark
+         on-surface text drawn over it keeps its contrast; the night variant in
+         values-night/ is the deep-space one. -->
+    <color name="starfield_sky_top">#EEF3F9</color>
+    <color name="starfield_sky_bottom">#D8E3F0</color>
+    <color name="starfield_star">#54708C</color>
+    <color name="starfield_accent">#007EA3</color>
+    <color name="starfield_nebula_primary">#7FB4CC</color>
+    <color name="starfield_nebula_secondary">#A79BD8</color>
+</resources>

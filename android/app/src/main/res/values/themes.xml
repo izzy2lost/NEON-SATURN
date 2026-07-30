@@ -9,6 +9,14 @@
         <item name="android:windowBackground">@color/neon_saturn_bg</item>
     </style>
 
+    <!-- The launcher draws edge-to-edge over the animated starfield, so the system
+         bars stay transparent and let it show through. LauncherActivity picks the
+         matching light/dark bar icons at runtime. -->
+    <style name="Theme.NeonSaturn.Launcher" parent="Theme.NeonSaturn">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+
     <style name="Theme.NeonSaturn.Emulator" parent="Theme.NeonSaturn">
         <item name="android:windowFullscreen">true</item>
         <item name="android:windowBackground">@android:color/black</item>

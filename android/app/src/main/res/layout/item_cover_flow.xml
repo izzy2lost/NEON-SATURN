@@ -16,8 +16,9 @@
         android:adjustViewBounds="true"
         android:contentDescription="@null" />
 
-    <!-- Reflection container — scaleY=-1 applied in code, gradient fades bottom edge -->
-    <FrameLayout
+    <!-- Reflection container — scaleY=-1 applied in code, the layout masks the
+         bottom edge to transparent so it sits correctly over the starfield -->
+    <com.izzy2lost.neonsaturn.ReflectionFadeLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content">
 
@@ -29,13 +30,7 @@
             android:scaleType="fitCenter"
             android:adjustViewBounds="false"
             android:contentDescription="@null" />
-
-        <!-- Gradient overlay: transparent at top (nearest cover), bg-color at bottom -->
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:background="@drawable/reflection_gradient" />
-    </FrameLayout>
+    </com.izzy2lost.neonsaturn.ReflectionFadeLayout>
 
     <TextView
         android:id="@+id/coverTitleText"

@@ -15,6 +15,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.isVisible
 import androidx.core.view.updatePadding
 import androidx.core.view.updatePaddingRelative
@@ -45,6 +46,7 @@ class LauncherActivity : AppCompatActivity() {
     private lateinit var libraryProgressIndicator: LinearProgressIndicator
     private lateinit var libraryRecyclerView: RecyclerView
     private lateinit var viewModeToggleButton: ImageButton
+    private lateinit var starfieldView: StarfieldView
 
     private var currentGamesFolderUri: String? = null
     private var currentLibraryEntries: List<GameLibraryEntry> = emptyList()
@@ -87,6 +89,7 @@ class LauncherActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         setContentView(R.layout.activity_launcher)
+        applySystemBarAppearance()
 
         store = BootstrapStore(this)
         paths = applicationContext.neonSaturnPaths()
@@ -106,6 +109,7 @@ class LauncherActivity : AppCompatActivity() {
         libraryProgressIndicator = findViewById(R.id.libraryProgressIndicator)
         libraryRecyclerView = findViewById(R.id.libraryRecyclerView)
         viewModeToggleButton = findViewById(R.id.viewModeToggleButton)
+        starfieldView = findViewById(R.id.starfieldView)
 
         currentViewMode = store.loadLibraryViewMode()
         applyToggleIcon(currentViewMode)
@@ -175,12 +179,28 @@ class LauncherActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        starfieldView.resume()
         refreshUi(forceRescan = false)
     }
 
     override fun onPause() {
+        starfieldView.pause()
         librarySettingsDialog?.dismiss()
         super.onPause()
+    }
+
+    /**
+     * The launcher theme leaves the system bars transparent so the starfield runs
+     * edge to edge. Both the starfield and the wizard background follow the
+     * day/night theme, so the bar icons can key off that.
+     */
+    private fun applySystemBarAppearance() {
+        val nightMode = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK ==
+            Configuration.UI_MODE_NIGHT_YES
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            isAppearanceLightStatusBars = !nightMode
+            isAppearanceLightNavigationBars = !nightMode
+        }
     }
 
     private fun importDocument(
@@ -216,6 +236,8 @@ class LauncherActivity : AppCompatActivity() {
         libraryContainer.isVisible = setupComplete
         librarySettingsButton.isVisible = setupComplete
         viewModeToggleButton.isVisible = setupComplete
+        // The setup wizard keeps the plain background; the starfield is the library's.
+        starfieldView.isVisible = setupComplete
 
         if (!setupComplete) {
             librarySettingsDialog?.dismiss()

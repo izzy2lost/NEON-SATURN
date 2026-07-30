@@ -7,6 +7,7 @@
     android:layout_marginBottom="12dp"
     android:clickable="true"
     android:focusable="true"
+    app:cardBackgroundColor="@color/library_card_surface"
     app:cardUseCompatPadding="true"
     app:strokeColor="@color/neon_saturn_primary"
     app:strokeWidth="1dp">
