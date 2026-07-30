@@ -31,7 +31,6 @@ static const char *GetRegionName(db::SystemRegion region) {
     case db::SystemRegion::US_EU: return "US/EU";
     case db::SystemRegion::JP: return "Japan";
     case db::SystemRegion::KR: return "South Korea";
-    case db::SystemRegion::RegionFree: return "Region-free";
     default: return "Unknown";
     }
 }
@@ -42,7 +41,8 @@ IPLSettingsView::IPLSettingsView(SharedContext &context)
 void IPLSettingsView::Display() {
     auto &settings = GetSettings().system.ipl;
 
-    ImGui::TextUnformatted("NOTE: Changing any of these options will cause a hard reset");
+    ImGui::TextUnformatted("NOTE: Changing any of these options will cause a hard reset.");
+    ImGui::TextUnformatted("IPL ROMs contain the Saturn BIOS program.");
 
     ImGui::Separator();
 
@@ -81,7 +81,7 @@ void IPLSettingsView::Display() {
         ImGui::TableSetupColumn("Version", ImGuiTableColumnFlags_WidthFixed, 50 * m_context.displayScale);
         ImGui::TableSetupColumn("Date", ImGuiTableColumnFlags_WidthFixed, 75 * m_context.displayScale);
         ImGui::TableSetupColumn("Variant", ImGuiTableColumnFlags_WidthFixed, 60 * m_context.displayScale);
-        ImGui::TableSetupColumn("Region", ImGuiTableColumnFlags_WidthFixed, 80 * m_context.displayScale);
+        ImGui::TableSetupColumn("Region", ImGuiTableColumnFlags_WidthFixed, 105 * m_context.displayScale);
         ImGui::TableSetupColumn("##use", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort,
                                 useButtonWidth);
         ImGui::TableSetupScrollFreeze(0, 1);
@@ -133,7 +133,8 @@ void IPLSettingsView::Display() {
                     case 4: // Region
                         std::stable_sort(sortStart, sortEnd, [](const IPLROMEntry &lhs, const IPLROMEntry &rhs) {
                             if (lhs.info && rhs.info) {
-                                return (lhs.info->region < rhs.info->region);
+                                return std::tie(lhs.info->regionFree, lhs.info->region) <
+                                       std::tie(rhs.info->regionFree, rhs.info->region);
                             } else {
                                 return (lhs.info != nullptr) < (rhs.info != nullptr);
                             }
@@ -188,7 +189,11 @@ void IPLSettingsView::Display() {
             if (ImGui::TableNextColumn()) {
                 ImGui::AlignTextToFramePadding();
                 if (iplRom.info != nullptr) {
-                    ImGui::Text("%s", GetRegionName(iplRom.info->region));
+                    if (iplRom.info->regionFree) {
+                        ImGui::Text("%s (RF)", GetRegionName(iplRom.info->region));
+                    } else {
+                        ImGui::Text("%s", GetRegionName(iplRom.info->region));
+                    }
                 } else {
                     ImGui::TextUnformatted("Unknown");
                 }
@@ -212,7 +217,7 @@ void IPLSettingsView::Display() {
     ImGui::Separator();
 
     ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Preferred system variant");
+    ImGui::TextUnformatted("Preferred system variant:");
     ImGui::SameLine();
     if (ImGui::BeginCombo("##variant", GetVariantName(settings.variant), ImGuiComboFlags_WidthFitPreview)) {
         for (int i = 0; i <= 4; ++i) {

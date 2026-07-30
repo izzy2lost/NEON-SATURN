@@ -32,6 +32,7 @@ void VDP2DebugOverlayView::Display() {
         case OverlayType::Windows: return "Windows";
         case OverlayType::RotParams: return "RBG0 rotation parameters";
         case OverlayType::ColorCalc: return "Color calculations";
+        case OverlayType::ColorGradation: return "Color gradation";
         case OverlayType::Shadow: return "Shadows";
         default: return "Invalid";
         }
@@ -57,7 +58,7 @@ void VDP2DebugOverlayView::Display() {
     }
 
     ImGui::SeparatorText("Overlay");
-    if (ImGui::BeginCombo("Type##overlay", overlayName(overlay.type))) {
+    if (ImGui::BeginCombo("Type##overlay", overlayName(overlay.type), ImGuiComboFlags_HeightLargest)) {
         auto option = [&](OverlayType type) {
             if (ImGui::Selectable(overlayName(type), overlay.type == type)) {
                 overlay.type = type;
@@ -70,6 +71,7 @@ void VDP2DebugOverlayView::Display() {
         option(OverlayType::Windows);
         option(OverlayType::RotParams);
         option(OverlayType::ColorCalc);
+        option(OverlayType::ColorGradation);
         option(OverlayType::Shadow);
         ImGui::EndCombo();
     }
@@ -98,12 +100,15 @@ void VDP2DebugOverlayView::Display() {
             case 5: return "NBG3";
             case 6: return "Back screen";
             case 7: return "Line color screen";
-            case 8: return "Transparent mesh sprites";
+            case 8: return "RBG0 line color";
+            case 9: return "RBG1 line color";
+            case 10: return "Transparent mesh sprites";
+            case 11: return "Color gradation screen";
             default: return "Invalid";
             }
         };
         if (ImGui::BeginCombo("Layer##single", layerName(overlay.singleLayerIndex), ImGuiComboFlags_HeightLargest)) {
-            for (uint32 i = 0; i <= 8; ++i) {
+            for (uint32 i = 0; i <= 11; ++i) {
                 const std::string label = fmt::format("{}##single_layer", layerName(i));
                 if (ImGui::Selectable(label.c_str(), overlay.singleLayerIndex == i)) {
                     overlay.singleLayerIndex = i;
@@ -218,10 +223,20 @@ void VDP2DebugOverlayView::Display() {
     {
         static constexpr uint8 kMinLayerStackIndex = 0;
         static constexpr uint8 kMaxLayerStackIndex = 1;
-        ImGui::SliderScalar("Layer level##vdp2_overlay", ImGuiDataType_U8, &overlay.colorCalcStackIndex,
+        ImGui::SliderScalar("Layer level##vdp2_overlay_color_calc", ImGuiDataType_U8, &overlay.colorCalcStackIndex,
                             &kMinLayerStackIndex, &kMaxLayerStackIndex, nullptr, ImGuiSliderFlags_AlwaysClamp);
-        colorPicker("Disabled##color_calc", overlay.colorCalcDisableColor);
-        colorPicker("Enabled##color_calc", overlay.colorCalcEnableColor);
+        colorPicker("Disabled##color_grad", overlay.colorCalcDisableColor);
+        colorPicker("Enabled##color_grad", overlay.colorCalcEnableColor);
+        break;
+    }
+    case OverlayType::ColorGradation: //
+    {
+        static constexpr uint8 kMinLayerStackIndex = 0;
+        static constexpr uint8 kMaxLayerStackIndex = 1;
+        ImGui::SliderScalar("Layer level##vdp2_overlay_color_grad", ImGuiDataType_U8, &overlay.colorGradStackIndex,
+                            &kMinLayerStackIndex, &kMaxLayerStackIndex, nullptr, ImGuiSliderFlags_AlwaysClamp);
+        colorPicker("Disabled##color_grad", overlay.colorGradDisableColor);
+        colorPicker("Enabled##color_grad", overlay.colorGradEnableColor);
         break;
     }
     case OverlayType::Shadow: //

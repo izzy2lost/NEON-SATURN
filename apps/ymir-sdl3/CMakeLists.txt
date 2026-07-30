@@ -23,7 +23,6 @@ add_executable(ymir-sdl3
     src/app/settings_defaults.hpp
     src/app/shared_context.cpp
     src/app/shared_context.hpp
-    src/app/stb_implementations.cpp
     src/app/toml_implementation.cpp
     src/app/update_checker.cpp
     src/app/update_checker.hpp
@@ -72,6 +71,29 @@ add_executable(ymir-sdl3
     src/app/services/save_state_service.cpp
     src/app/services/save_state_service.hpp
     src/app/services/save_state_types.hpp
+    src/app/services/screenshot_service.cpp
+    src/app/services/screenshot_service.hpp
+    src/app/services/screenshot_types.hpp
+    src/app/services/update_checker_service.cpp
+    src/app/services/update_checker_service.hpp
+    src/app/services/mouse_capture_service.cpp
+    src/app/services/mouse_capture_service.hpp
+    src/app/services/rom_service.cpp
+    src/app/services/rom_service.hpp
+    src/app/services/disc_service.cpp
+    src/app/services/disc_service.hpp
+    src/app/services/discord_rpc_service.cpp
+    src/app/services/discord_rpc_service.hpp
+    src/app/services/display_service.cpp
+    src/app/services/display_service.hpp
+    src/app/services/file_dialog_service.cpp
+    src/app/services/file_dialog_service.hpp
+    src/app/services/input_service.cpp
+    src/app/services/input_service.hpp
+    src/app/services/persistence_service.cpp
+    src/app/services/persistence_service.hpp
+    src/app/services/window_manager_service.cpp
+    src/app/services/window_manager_service.hpp
 
     src/app/ui/window_base.cpp
     src/app/ui/window_base.hpp
@@ -87,6 +109,8 @@ add_executable(ymir-sdl3
 
     src/app/ui/state/debug/memory_viewer_state.hpp
 
+    src/app/ui/utils/debug/vdp_window_set_printer.hpp
+
     src/app/ui/views/backup_memory_view.cpp
     src/app/ui/views/backup_memory_view.hpp
 
@@ -96,6 +120,8 @@ add_executable(ymir-sdl3
     src/app/ui/views/debug/cdblock_drive_state_trace_view.hpp
     src/app/ui/views/debug/cdblock_filters_view.cpp
     src/app/ui/views/debug/cdblock_filters_view.hpp
+    src/app/ui/views/debug/cdblock_partitions_view.cpp
+    src/app/ui/views/debug/cdblock_partitions_view.hpp
     src/app/ui/views/debug/cdblock_ygr_cmd_trace_view.cpp
     src/app/ui/views/debug/cdblock_ygr_cmd_trace_view.hpp
     src/app/ui/views/debug/debug_output_view.cpp
@@ -176,16 +202,22 @@ add_executable(ymir-sdl3
     src/app/ui/views/debug/sh2_wdt_view.hpp
     src/app/ui/views/debug/vdp1_registers_view.cpp
     src/app/ui/views/debug/vdp1_registers_view.hpp
+    src/app/ui/views/debug/vdp2_bg_layer_params_view.cpp
+    src/app/ui/views/debug/vdp2_bg_layer_params_view.hpp
+    src/app/ui/views/debug/vdp2_color_calc_params_view.cpp
+    src/app/ui/views/debug/vdp2_color_calc_params_view.hpp
     src/app/ui/views/debug/vdp2_cram_view.cpp
     src/app/ui/views/debug/vdp2_cram_view.hpp
     src/app/ui/views/debug/vdp2_debug_overlay_view.cpp
     src/app/ui/views/debug/vdp2_debug_overlay_view.hpp
-    src/app/ui/views/debug/vdp2_layer_params_view.cpp
-    src/app/ui/views/debug/vdp2_layer_params_view.hpp
     src/app/ui/views/debug/vdp2_layer_visibility_view.cpp
     src/app/ui/views/debug/vdp2_layer_visibility_view.hpp
-    src/app/ui/views/debug/vdp2_vram_delay_view.cpp
-    src/app/ui/views/debug/vdp2_vram_delay_view.hpp
+    src/app/ui/views/debug/vdp2_sprite_layer_params_view.cpp
+    src/app/ui/views/debug/vdp2_sprite_layer_params_view.hpp
+    src/app/ui/views/debug/vdp2_vram_access_patterns_view.cpp
+    src/app/ui/views/debug/vdp2_vram_access_patterns_view.hpp
+    src/app/ui/views/debug/vdp2_window_params_view.cpp
+    src/app/ui/views/debug/vdp2_window_params_view.hpp
 
     src/app/ui/views/settings/analog_pad_config_view.cpp
     src/app/ui/views/settings/analog_pad_config_view.hpp
@@ -232,6 +264,8 @@ add_executable(ymir-sdl3
     src/app/ui/widgets/common_widgets.hpp
     src/app/ui/widgets/datetime_widgets.cpp
     src/app/ui/widgets/datetime_widgets.hpp
+    src/app/ui/widgets/debug_widgets.cpp
+    src/app/ui/widgets/debug_widgets.hpp
     src/app/ui/widgets/input_widgets.cpp
     src/app/ui/widgets/input_widgets.hpp
     src/app/ui/widgets/peripheral_widgets.cpp
@@ -249,6 +283,8 @@ add_executable(ymir-sdl3
     src/app/ui/windows/about_window.hpp
     src/app/ui/windows/backup_ram_manager_window.cpp
     src/app/ui/windows/backup_ram_manager_window.hpp
+    src/app/ui/windows/message_history_window.cpp
+    src/app/ui/windows/message_history_window.hpp
     src/app/ui/windows/peripheral_config_window.cpp
     src/app/ui/windows/peripheral_config_window.hpp
     src/app/ui/windows/settings_window.cpp
@@ -266,6 +302,8 @@ add_executable(ymir-sdl3
     src/app/ui/windows/debug/cdblock_drive_state_trace_window.hpp
     src/app/ui/windows/debug/cdblock_filters_window.cpp
     src/app/ui/windows/debug/cdblock_filters_window.hpp
+    src/app/ui/windows/debug/cdblock_partitions_window.cpp
+    src/app/ui/windows/debug/cdblock_partitions_window.hpp
     src/app/ui/windows/debug/cdblock_window_base.cpp
     src/app/ui/windows/debug/cdblock_window_base.hpp
     src/app/ui/windows/debug/cdblock_window_set.hpp
@@ -327,16 +365,22 @@ add_executable(ymir-sdl3
     src/app/ui/windows/debug/vdp_window_set.hpp
     src/app/ui/windows/debug/vdp1_registers_window.cpp
     src/app/ui/windows/debug/vdp1_registers_window.hpp
+    src/app/ui/windows/debug/vdp2_bg_layer_params_window.cpp
+    src/app/ui/windows/debug/vdp2_bg_layer_params_window.hpp
+    src/app/ui/windows/debug/vdp2_color_calc_params_window.cpp
+    src/app/ui/windows/debug/vdp2_color_calc_params_window.hpp
     src/app/ui/windows/debug/vdp2_cram_window.cpp
     src/app/ui/windows/debug/vdp2_cram_window.hpp
     src/app/ui/windows/debug/vdp2_debug_overlay_window.cpp
     src/app/ui/windows/debug/vdp2_debug_overlay_window.hpp
-    src/app/ui/windows/debug/vdp2_layer_params_window.cpp
-    src/app/ui/windows/debug/vdp2_layer_params_window.hpp
     src/app/ui/windows/debug/vdp2_layer_visibility_window.cpp
     src/app/ui/windows/debug/vdp2_layer_visibility_window.hpp
-    src/app/ui/windows/debug/vdp2_vram_delay_window.cpp
-    src/app/ui/windows/debug/vdp2_vram_delay_window.hpp
+    src/app/ui/windows/debug/vdp2_sprite_layer_params_window.cpp
+    src/app/ui/windows/debug/vdp2_sprite_layer_params_window.hpp
+    src/app/ui/windows/debug/vdp2_vram_access_patterns_window.cpp
+    src/app/ui/windows/debug/vdp2_vram_access_patterns_window.hpp
+    src/app/ui/windows/debug/vdp2_window_params_window.cpp
+    src/app/ui/windows/debug/vdp2_window_params_window.hpp
 
     src/serdes/cereal_archive_vector.hpp
     src/serdes/cereal_savestate.hpp
@@ -390,10 +434,8 @@ find_package(cxxopts CONFIG REQUIRED)
 find_package(date CONFIG REQUIRED)
 find_package(OpenSSL CONFIG REQUIRED)
 find_package(CURL REQUIRED)
-find_package(fmt CONFIG REQUIRED)
 find_package(rtmidi CONFIG REQUIRED)
 find_package(SDL3 CONFIG REQUIRED)
-find_package(Stb REQUIRED)
 find_package(tomlplusplus CONFIG REQUIRED)
 
 target_include_directories(ymir-sdl3
@@ -401,7 +443,6 @@ target_include_directories(ymir-sdl3
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
     PRIVATE
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>"
-        "$<BUILD_INTERFACE:${Stb_INCLUDE_DIR}>"
 )
 target_link_libraries(ymir-sdl3 PRIVATE
     ymir::ymir-core
@@ -414,8 +455,11 @@ target_link_libraries(ymir-sdl3 PRIVATE
     tomlplusplus::tomlplusplus
     cereal::cereal
     lz4::lz4
+    discord-rpc
     RtMidi::rtmidi
     CURL::libcurl_static
+    stb::stb
+    dr_libs::dr_libs
 )
 if (WIN32)
     target_link_libraries(ymir-sdl3 PRIVATE
@@ -431,6 +475,8 @@ cmrc_add_resource_library(ymir-sdl3-rc
     WHENCE res/embed
 
     res/embed/fonts/MaterialSymbolsOutlined_Filled-Regular.ttf
+    res/embed/fonts/MPLUSU-Ymir-Bold.ttf
+    res/embed/fonts/MPLUSU-Ymir-ExtraBold.ttf
     res/embed/fonts/SplineSans-Bold.ttf
     res/embed/fonts/SplineSans-Medium.ttf
     res/embed/fonts/SplineSansMono-Bold.ttf

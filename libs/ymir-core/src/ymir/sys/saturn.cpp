@@ -49,15 +49,15 @@ namespace grp {
 } // namespace grp
 
 Saturn::Saturn()
-    : masterSH2(m_scheduler, mainBus, true, m_systemFeatures)
-    , slaveSH2(m_scheduler, mainBus, false, m_systemFeatures)
+    : masterSH2(mainBus, true)
+    , slaveSH2(mainBus, false)
     , SCU(m_scheduler, mainBus)
     , VDP(m_scheduler, configuration)
     , SMPC(m_scheduler, smpcOps, configuration.rtc)
     , SCSP(m_scheduler, configuration.audio)
-    , CDBlock(m_scheduler, m_disc, m_fs, configuration.cdblock)
+    , CDBlock(m_scheduler, m_cdif, m_fs, configuration.cdblock)
     , SH1(SH1Bus)
-    , CDDrive(m_scheduler, m_disc, m_fs, configuration.cdblock) {
+    , CDDrive(m_scheduler, m_cdif, m_fs, configuration.cdblock) {
 
     mainBus.MapNormal(
         0x000'0000, 0x7FF'FFFF, nullptr,
@@ -123,6 +123,7 @@ Saturn::Saturn()
     YGR.MapCallbacks(SH1.CbAssertIRQ6, SH1.CbAssertIRQ7, SH1.CbSetDREQ0n, SH1.CbSetDREQ1n, SH1.CbStepDMAC1,
                      SCU.CbTriggerExtIntr0);
     CDBlock.MapCallbacks(SCU.CbTriggerExtIntr0, SCSP.CbCDDASector);
+    m_cdif.MapCallbacks(util::MakeClassMemberRequiredCallback<&Saturn::OnMediaChanged>(this));
 
     m_system.AddClockSpeedChangeCallback(SCSP.CbClockSpeedChange);
     m_system.AddClockSpeedChangeCallback(SMPC.CbClockSpeedChange);
@@ -143,15 +144,23 @@ Saturn::Saturn()
     }
     YGR.MapMemory(SH1Bus);
 
+    masterSH2.BindGlobalCycleCounter(m_scheduler.CurrentCountRef());
+    slaveSH2.BindGlobalCycleCounter(m_scheduler.CurrentCountRef());
+
+    masterSH2.BindEmulateCacheOption(m_emulateSH2Caches);
+    slaveSH2.BindEmulateCacheOption(m_emulateSH2Caches);
+
     ConfigureAccessCycles(false);
 
-    m_systemFeatures.enableDebugTracing = false;
-    m_systemFeatures.emulateSH2Cache = false;
+    m_enableDebugTracing = false;
+    m_emulateSH2Caches = false;
     UpdateFunctionPointers();
 
     configuration.system.preferredRegionOrder.Observe(
         [&](const std::vector<core::config::sys::Region> &regions) { UpdatePreferredRegionOrder(regions); });
+    configuration.system.debugTracing.Observe([&](bool enabled) { UpdateDebugTracing(enabled); });
     configuration.system.emulateSH2Cache.Observe([&](bool enabled) { UpdateSH2CacheEmulation(enabled); });
+    configuration.system.sh2ClockFactor.Observe([&](RatioU32 factor) { UpdateSH2ClockFactor(factor); });
     configuration.system.videoStandard.Observe(
         [&](core::config::sys::VideoStandard videoStandard) { UpdateVideoStandard(videoStandard); });
     configuration.cdblock.useLLE.Observe([&](bool enabled) { SetCDBlockLLE(enabled); });
@@ -224,49 +233,29 @@ XXH128Hash Saturn::GetIPLHash() const noexcept {
     return mem.GetIPLHash();
 }
 
-const media::Disc &Saturn::GetDisc() const noexcept {
-    return m_disc;
-}
-
 XXH128Hash Saturn::GetDiscHash() const noexcept {
     return m_fs.GetHash();
 }
 
 void Saturn::LoadDisc(media::Disc &&disc) {
+    // Load disc into CD interface
+    m_cdif.LoadDisc(std::move(disc));
+
     // Configure area code based on compatible area codes from the disc
-    AutodetectRegion(disc.header.compatAreaCode);
-    m_disc.Swap(std::move(disc));
+    AutodetectRegion();
+}
 
-    // Try building filesystem structure
-    if (m_fs.Read(m_disc)) {
-        devlog::info<grp::media>("Filesystem built successfully");
-    } else {
-        devlog::warn<grp::media>("Failed to build filesystem");
+bool Saturn::OpenHostCDDrive(std::string path) {
+    if (m_cdif.OpenHostDevice(path)) {
+        AutodetectRegion();
+        return true;
     }
-
-    // Notify CD drive of disc change
-    if (m_cdblockLLE) {
-        CDDrive.OnDiscLoaded();
-    } else {
-        CDBlock.OnDiscLoaded();
-    }
-
-    // Apply game-specific settings if needed
-    const db::GameInfo *info = db::GetGameInfo(m_disc.header.productNumber, m_fs.GetHash());
-    auto hasFlag = [&](db::GameInfo::Flags flag) { return info && BitmaskEnum(info->flags).AnyOf(flag); };
-    ConfigureAccessCycles(hasFlag(db::GameInfo::Flags::FastBusTimings));
-    ForceSH2CacheEmulation(hasFlag(db::GameInfo::Flags::ForceSH2Cache));
-    SCSP.SetCPUClockShift(hasFlag(db::GameInfo::Flags::FastMC68EC000) ? 1 : 0);
-    VDP.SetStallVDP1OnVRAMWrites(hasFlag(db::GameInfo::Flags::StallVDP1OnVRAMWrites));
-    VDP.SetSlowVDP1(hasFlag(db::GameInfo::Flags::SlowVDP1));
-    VDP.SetSkipEmptyVDP1CommandTable(hasFlag(db::GameInfo::Flags::SkipEmptyVDP1Table));
-    VDP.vdp2AccessPatternsConfig.relaxedBitmapCPAccessChecks =
-        hasFlag(db::GameInfo::Flags::RelaxedVDP2BitmapCPAccessChecks);
+    return false;
 }
 
 void Saturn::EjectDisc() {
-    if (!m_disc.sessions.empty()) {
-        m_disc = {};
+    if (m_cdif.HasDisc()) {
+        m_cdif.Eject();
         m_fs.Clear();
         if (m_cdblockLLE) {
             CDDrive.OnDiscEjected();
@@ -316,10 +305,18 @@ void Saturn::UsePreferredRegion() {
     }
 }
 
-void Saturn::AutodetectRegion(media::AreaCode areaCodes) {
+void Saturn::AutodetectRegion() {
     if (!configuration.system.autodetectRegion) {
         return;
     }
+    if (!m_cdif.HasDisc()) {
+        return;
+    }
+    const media::SaturnHeader &header = m_cdif.GetDiscHeader();
+    if (!header.IsValid()) {
+        return;
+    }
+    const media::AreaCode areaCodes = header.compatAreaCode;
     if (areaCodes == media::AreaCode::None) {
         return;
     }
@@ -359,22 +356,6 @@ void Saturn::AutodetectRegion(media::AreaCode areaCodes) {
     }
 }
 
-void Saturn::EnableDebugTracing(bool enable) {
-    if (m_systemFeatures.enableDebugTracing && !enable) {
-        DetachAllTracers();
-    }
-    m_systemFeatures.enableDebugTracing = enable;
-    UpdateFunctionPointers();
-    SCSP.SetDebugTracing(enable);
-    if (enable) {
-        masterSH2.UseDebugBreakManager(&m_debugBreakMgr);
-        slaveSH2.UseDebugBreakManager(&m_debugBreakMgr);
-    } else {
-        masterSH2.UseDebugBreakManager(nullptr);
-        slaveSH2.UseDebugBreakManager(nullptr);
-    }
-}
-
 void Saturn::SaveState(savestate::SaveState &state) const {
     m_scheduler.SaveState(state.scheduler);
     m_system.SaveState(state.system);
@@ -400,6 +381,7 @@ void Saturn::SaveState(savestate::SaveState &state) const {
         CDBlock.SaveState(state.cdblock);
     }
     state.discHash = GetDiscHash();
+    m_cdif.SaveState(state.cdif);
 }
 
 bool Saturn::LoadState(const savestate::SaveState &state, bool skipROMChecks) {
@@ -430,6 +412,9 @@ bool Saturn::LoadState(const savestate::SaveState &state, bool skipROMChecks) {
     if (!SCSP.ValidateState(state.scsp)) {
         return false;
     }
+    if (!m_cdif.ValidateState(state.cdif)) {
+        return false;
+    }
 
     if (state.cdblockLLE) {
         if (!SH1.ValidateState(state.sh1, skipROMChecks)) {
@@ -451,7 +436,7 @@ bool Saturn::LoadState(const savestate::SaveState &state, bool skipROMChecks) {
     }
 
     // Changing this option causes a hard reset, so do it before loading the state
-    SetCDBlockLLE(state.cdblockLLE);
+    configuration.cdblock.useLLE = state.cdblockLLE;
 
     m_scheduler.LoadState(state.scheduler);
     m_system.LoadState(state.system);
@@ -465,6 +450,7 @@ bool Saturn::LoadState(const savestate::SaveState &state, bool skipROMChecks) {
     SMPC.LoadState(state.smpc);
     VDP.LoadState(state.vdp);
     SCSP.LoadState(state.scsp);
+    m_cdif.LoadState(state.cdif);
     if (m_cdblockLLE) {
         SH1.LoadState(state.sh1);
         YGR.LoadState(state.ygr);
@@ -475,6 +461,9 @@ bool Saturn::LoadState(const savestate::SaveState &state, bool skipROMChecks) {
     } else {
         CDBlock.LoadState(state.cdblock);
     }
+
+    masterSH2.PostLoadState(state.msh2);
+    slaveSH2.PostLoadState(state.ssh2);
 
     return true;
 }
@@ -505,17 +494,19 @@ void Saturn::DumpCDBlockDRAM(std::ostream &out) {
 
 template <bool debug, bool enableSH2Cache, bool cdblockLLE>
 void Saturn::RunFrameImpl() {
-    // Use the last line phase as reference to give some leeway if we overshoot the target cycles
-    while (VDP.InLastLinePhase()) {
+    // Run until we reach the vertical blanking area.
+    // At that point, the frame is fully rendered and dispatched to the frontend.
+    while (VDP.GetVerticalPhase() == vdp::VerticalPhase::BlankingAndSync) {
         if (!Run<debug, enableSH2Cache, cdblockLLE>()) {
             return;
         }
     }
-    while (!VDP.InLastLinePhase()) {
+    while (VDP.GetVerticalPhase() != vdp::VerticalPhase::BlankingAndSync) {
         if (!Run<debug, enableSH2Cache, cdblockLLE>()) {
             return;
         }
     }
+    SCSP.SyncSCSPThreadPublic();
 }
 
 template <bool debug, bool enableSH2Cache, bool cdblockLLE>
@@ -552,6 +543,7 @@ bool Saturn::Run() {
                     m_ssh2SpilloverCycles = slaveCycles - execCycles;
                 } else {
                     m_msh2SpilloverCycles = execCycles - slaveCycles;
+                    m_ssh2SpilloverCycles = 0;
                 }
             } else {
                 m_ssh2SpilloverCycles = slaveCycles - execCycles;
@@ -678,7 +670,7 @@ uint64 Saturn::StepSlaveSH2Impl() {
 }
 
 void Saturn::UpdateFunctionPointers() {
-    UpdateFunctionPointersTemplate(m_systemFeatures.enableDebugTracing, m_systemFeatures.emulateSH2Cache, m_cdblockLLE);
+    UpdateFunctionPointersTemplate(m_enableDebugTracing, m_emulateSH2Caches, m_cdblockLLE);
 }
 
 template <bool... t_features>
@@ -709,49 +701,59 @@ void Saturn::ConfigureAccessCycles(bool fastTimings) {
     if (fastTimings) {
         // HACK: this fixes X-Men/Marvel Super Heroes vs. Street Fighter
         // ... but why?
-        mainBus.SetAccessCycles(0x000'0000, 0x7FF'FFFF, 1, 1); // Forced fast timings for all regions
+        mainBus.SetAccessCycles(0x000'0000, 0x7FF'FFFF, 1, 1, 1, 1, 1, 1);
     } else {
         // These timings avoid issues with some games:
         // - Virtua Fighter 2 -- sound effects go missing if the SH-2 runs too fast
         // - Resident Evil -- can't go past title screen if timings are too slow
         // CD block area timings help with BIOS CD player track switching
-        mainBus.SetAccessCycles(0x000'0000, 0x7FF'FFFF, 4, 2); // Default timings for all unmapped regions
 
-        mainBus.SetAccessCycles(0x000'0000, 0x00F'FFFF, 2, 2);   // IPL/BIOS ROM
-        mainBus.SetAccessCycles(0x018'0000, 0x01F'FFFF, 2, 2);   // Internal Backup RAM
-        mainBus.SetAccessCycles(0x020'0000, 0x02F'FFFF, 2, 2);   // Low Work RAM
-        mainBus.SetAccessCycles(0x010'0000, 0x017'FFFF, 4, 2);   // SMPC registers
-        mainBus.SetAccessCycles(0x100'0000, 0x1FF'FFFF, 4, 2);   // MINIT/SINIT area
-        mainBus.SetAccessCycles(0x200'0000, 0x4FF'FFFF, 2, 2);   // SCU A-Bus CS0/CS1 area (TODO: variable timings)
-        mainBus.SetAccessCycles(0x500'0000, 0x57F'FFFF, 8, 2);   // SCU A-Bus dummy area
-        mainBus.SetAccessCycles(0x580'0000, 0x58F'FFFF, 40, 40); // SCU A-Bus CS2 area (CD block, Netlink)
-        mainBus.SetAccessCycles(0x5A0'0000, 0x5BF'FFFF, 40, 2);  // SCSP RAM, registers
-        mainBus.SetAccessCycles(0x5C0'0000, 0x5C7'FFFF, 22, 2);  // VDP1 VRAM (TODO: VDP1 drawing contention)
-        mainBus.SetAccessCycles(0x5C8'0000, 0x5CF'FFFF, 22, 2);  // VDP1 FB (TODO: variable timings)
-        mainBus.SetAccessCycles(0x5D0'0000, 0x5D7'FFFF, 14, 2);  // VDP1 registers
-        mainBus.SetAccessCycles(0x5E0'0000, 0x5FB'FFFF, 20, 2);  // VDP2 VRAM, CRAM, registers
-        mainBus.SetAccessCycles(0x5FE'0000, 0x5FE'FFFF, 4, 2);   // SCU registers (TODO: delay on some registers)
-        mainBus.SetAccessCycles(0x600'0000, 0x7FF'FFFF, 2, 2);   // High Work RAM
+        // TODO:
+        // - SCU A-Bus CS0/CS1 area variable timings
+        // - SCU register delays
+        // - VDP1 FB variable timings
+        // - VDP1 VRAM drawing contention
 
-        // The timings below pass misctest, but are too slow in practice
+        mainBus.SetAccessCycles(0x000'0000, 0x7FF'FFFF, 4, 2, 4, 2, 4, 2); // Default timings for all unmapped regions
 
-        // mainBus.SetAccessCycles(0x000'0000, 0x7FF'FFFF, 4, 4); // Default timings for all regions
+        mainBus.SetAccessCycles(0x000'0000, 0x00F'FFFF, 2, 2, 2, 2, 4, 4);       // IPL/BIOS ROM
+        mainBus.SetAccessCycles(0x018'0000, 0x01F'FFFF, 2, 2, 2, 2, 4, 4);       // Internal Backup RAM
+        mainBus.SetAccessCycles(0x020'0000, 0x02F'FFFF, 2, 2, 2, 2, 4, 4);       // Low Work RAM
+        mainBus.SetAccessCycles(0x010'0000, 0x017'FFFF, 4, 2, 4, 2, 8, 4);       // SMPC registers
+        mainBus.SetAccessCycles(0x100'0000, 0x1FF'FFFF, 4, 2, 4, 2, 8, 4);       // MINIT/SINIT area
+        mainBus.SetAccessCycles(0x200'0000, 0x4FF'FFFF, 2, 2, 2, 2, 4, 4);       // SCU A-Bus CS0/CS1
+        mainBus.SetAccessCycles(0x500'0000, 0x57F'FFFF, 8, 2, 8, 2, 8, 2);       // SCU A-Bus dummy area
+        mainBus.SetAccessCycles(0x580'0000, 0x58F'FFFF, 40, 40, 40, 40, 40, 40); // SCU A-Bus CS2 (CD block, Netlink)
+        mainBus.SetAccessCycles(0x5A0'0000, 0x5BF'FFFF, 40, 2, 40, 2, 40, 2);    // SCSP RAM, registers
+        mainBus.SetAccessCycles(0x5C0'0000, 0x5C7'FFFF, 22, 2, 22, 2, 22, 2);    // VDP1 VRAM
+        mainBus.SetAccessCycles(0x5C8'0000, 0x5CF'FFFF, 22, 2, 22, 2, 22, 2);    // VDP1 FB
+        mainBus.SetAccessCycles(0x5D0'0000, 0x5D7'FFFF, 14, 2, 14, 2, 14, 2);    // VDP1 registers
+        mainBus.SetAccessCycles(0x5E0'0000, 0x5FB'FFFF, 20, 2, 20, 2, 20, 2);    // VDP2 VRAM, CRAM, registers
+        mainBus.SetAccessCycles(0x5FE'0000, 0x5FE'FFFF, 4, 2, 4, 2, 4, 2);       // SCU registers
+        mainBus.SetAccessCycles(0x600'0000, 0x7FF'FFFF, 2, 2, 2, 2, 2, 2);       // High Work RAM
+
+        // The timings below pass misctest, but are too slow in practice due to inaccurate SH2 cache, write buffer and
+        // BSC emulation
+
+        // TODO: IPL/BIOS ROM 32-bit R/W should be 18/18
+
+        // mainBus.SetAccessCycles(0x000'0000, 0x7FF'FFFF, 4, 4, 4, 4, 8, 8); // Default timings for all regions
         //
-        // mainBus.SetAccessCycles(0x000'0000, 0x00F'FFFF, 9, 9);   // IPL/BIOS ROM
-        // mainBus.SetAccessCycles(0x018'0000, 0x01F'FFFF, 9, 9);   // Internal Backup RAM
-        // mainBus.SetAccessCycles(0x020'0000, 0x02F'FFFF, 8, 8);   // Low Work RAM
-        // mainBus.SetAccessCycles(0x010'0000, 0x017'FFFF, 9, 9);   // SMPC registers
-        // mainBus.SetAccessCycles(0x100'0000, 0x1FF'FFFF, 9, 9);   // MINIT/SINIT area
-        // mainBus.SetAccessCycles(0x200'0000, 0x4FF'FFFF, 4, 4);   // SCU A-Bus CS0/CS1 area (TODO: variable timings)
-        // mainBus.SetAccessCycles(0x500'0000, 0x57F'FFFF, 16, 16); // SCU A-Bus dummy area
-        // mainBus.SetAccessCycles(0x580'0000, 0x58F'FFFF, 8, 8);   // SCU A-Bus CS2 area (CD block, Netlink)
-        // mainBus.SetAccessCycles(0x5A0'0000, 0x5BF'FFFF, 47, 47); // SCSP RAM, registers
-        // mainBus.SetAccessCycles(0x5C0'0000, 0x5C7'FFFF, 45, 45); // VDP1 VRAM (TODO: VDP1 drawing contention)
-        // mainBus.SetAccessCycles(0x5C8'0000, 0x5CF'FFFF, 45, 45); // VDP1 FB (TODO: variable timings)
-        // mainBus.SetAccessCycles(0x5D0'0000, 0x5D7'FFFF, 29, 29); // VDP1 registers
-        // mainBus.SetAccessCycles(0x5E0'0000, 0x5FB'FFFF, 40, 40); // VDP2 VRAM, CRAM, registers
-        // mainBus.SetAccessCycles(0x5FE'0000, 0x5FE'FFFF, 8, 8);   // SCU registers (TODO: delay on some registers)
-        // mainBus.SetAccessCycles(0x600'0000, 0x7FF'FFFF, 8, 8);   // High Work RAM
+        // mainBus.SetAccessCycles(0x000'0000, 0x00F'FFFF, 9, 9, 9, 9, 17, 17);     // IPL/BIOS ROM
+        // mainBus.SetAccessCycles(0x018'0000, 0x01F'FFFF, 9, 9, 9, 9, 18, 18);     // Internal Backup RAM
+        // mainBus.SetAccessCycles(0x020'0000, 0x02F'FFFF, 8, 8, 8, 8, 16, 16);     // Low Work RAM
+        // mainBus.SetAccessCycles(0x010'0000, 0x017'FFFF, 9, 9, 9, 9, 18, 18);     // SMPC registers
+        // mainBus.SetAccessCycles(0x100'0000, 0x1FF'FFFF, 9, 9, 9, 9, 18, 18);     // MINIT/SINIT area
+        // mainBus.SetAccessCycles(0x200'0000, 0x4FF'FFFF, 4, 4, 4, 4, 8, 8);       // SCU A-Bus CS0/CS1
+        // mainBus.SetAccessCycles(0x500'0000, 0x57F'FFFF, 16, 16, 16, 16, 16, 16); // SCU A-Bus dummy area
+        // mainBus.SetAccessCycles(0x580'0000, 0x58F'FFFF, 8, 8, 8, 8, 8, 8);       // SCU A-Bus CS2 (CD block, Netlink)
+        // mainBus.SetAccessCycles(0x5A0'0000, 0x5BF'FFFF, 47, 47, 47, 47, 47, 47); // SCSP RAM, registers
+        // mainBus.SetAccessCycles(0x5C0'0000, 0x5C7'FFFF, 45, 45, 45, 45, 45, 45); // VDP1 VRAM
+        // mainBus.SetAccessCycles(0x5C8'0000, 0x5CF'FFFF, 45, 45, 45, 45, 45, 45); // VDP1 FB
+        // mainBus.SetAccessCycles(0x5D0'0000, 0x5D7'FFFF, 29, 29, 29, 29, 29, 29); // VDP1 registers
+        // mainBus.SetAccessCycles(0x5E0'0000, 0x5FB'FFFF, 40, 40, 40, 40, 40, 40); // VDP2 VRAM, CRAM, registers
+        // mainBus.SetAccessCycles(0x5FE'0000, 0x5FE'FFFF, 8, 8, 8, 8, 8, 8);       // SCU registers
+        // mainBus.SetAccessCycles(0x600'0000, 0x7FF'FFFF, 8, 8, 8, 8, 8, 8);       // High Work RAM
     }
 }
 
@@ -780,14 +782,35 @@ void Saturn::UpdatePreferredRegionOrder(std::span<const core::config::sys::Regio
     }
 }
 
+void Saturn::UpdateDebugTracing(bool enabled) {
+    if (m_enableDebugTracing && !enabled) {
+        DetachAllTracers();
+    }
+    m_enableDebugTracing = enabled;
+    UpdateFunctionPointers();
+    SCSP.SetDebugTracing(enabled);
+    if (enabled) {
+        masterSH2.UseDebugBreakManager(&m_debugBreakMgr);
+        slaveSH2.UseDebugBreakManager(&m_debugBreakMgr);
+    } else {
+        masterSH2.UseDebugBreakManager(nullptr);
+        slaveSH2.UseDebugBreakManager(nullptr);
+    }
+}
+
 void Saturn::UpdateSH2CacheEmulation(bool enabled) {
     enabled |= m_forceSH2CacheEmulation;
-    if (!m_systemFeatures.emulateSH2Cache && enabled) {
+    if (!m_emulateSH2Caches && enabled) {
         masterSH2.PurgeCache();
         slaveSH2.PurgeCache();
     }
-    m_systemFeatures.emulateSH2Cache = enabled;
+    m_emulateSH2Caches = enabled;
     UpdateFunctionPointers();
+}
+
+void Saturn::UpdateSH2ClockFactor(RatioU32 factor) {
+    m_system.sh2ClockFactor = factor;
+    m_system.UpdateClockRatios();
 }
 
 void Saturn::UpdateVideoStandard(core::config::sys::VideoStandard videoStandard) {
@@ -806,6 +829,35 @@ void Saturn::SetCDBlockLLE(bool enabled) {
         UpdateFunctionPointers();
         Reset(true);
     }
+}
+
+// -----------------------------------------------------------------------------
+// media::CDInterfaceCallbacks implementation
+
+void Saturn::OnMediaChanged() {
+    // Copy file system structure from disc
+    m_fs = m_cdif.GetFilesystem();
+
+    // Notify CD drive of disc change
+    if (m_cdblockLLE) {
+        CDDrive.OnDiscLoaded();
+    } else {
+        CDBlock.OnDiscLoaded();
+    }
+
+    // Apply game-specific settings if needed
+    const media::SaturnHeader &discHeader = m_cdif.GetDiscHeader();
+    const db::GameInfo *info = db::GetGameInfo(discHeader.productNumber, m_fs.GetHash());
+    auto hasFlag = [&](db::GameInfo::Flags flag) { return info && BitmaskEnum(info->flags).AnyOf(flag); };
+    ConfigureAccessCycles(hasFlag(db::GameInfo::Flags::FastBusTimings));
+    ForceSH2CacheEmulation(hasFlag(db::GameInfo::Flags::ForceSH2Cache));
+    SCSP.SetCPUClockShift(hasFlag(db::GameInfo::Flags::FastMC68EC000) ? 1 : 0);
+    VDP.SetStallVDP1OnVRAMWrites(hasFlag(db::GameInfo::Flags::StallVDP1OnVRAMWrites));
+    VDP.SetSlowVDP1(hasFlag(db::GameInfo::Flags::SlowVDP1));
+    VDP.SetSkipEmptyVDP1CommandTable(hasFlag(db::GameInfo::Flags::SkipEmptyVDP1Table));
+    VDP.vdp2AccessPatternsConfig.relaxedBitmapCPAccessChecks =
+        hasFlag(db::GameInfo::Flags::RelaxedVDP2BitmapCPAccessChecks);
+    VDP.SetVirtuaGunJitter(hasFlag(db::GameInfo::Flags::VirtuaGunJitter));
 }
 
 // -----------------------------------------------------------------------------

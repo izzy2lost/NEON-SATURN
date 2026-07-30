@@ -126,6 +126,16 @@ void GeneralSettingsView::Display() {
         "Does not affect the behavior of manual pauses - they persist through focus changes.",
         m_context.displayScale);
 
+    MakeDirty(ImGui::Checkbox("Unpause after loading discs", &settings.unpauseOnDiscLoad));
+    widgets::ExplanationTooltip("The emulator will unpause when a game disc is loaded.", m_context.displayScale);
+
+    MakeDirty(ImGui::Checkbox("Start paused upon launch", &settings.startPaused));
+    widgets::ExplanationTooltip("Ymir will launch with emulation paused when starting up.", m_context.displayScale);
+
+    MakeDirty(ImGui::Checkbox("Enable Discord Rich Presence", &settings.enableDiscordPresence));
+    widgets::ExplanationTooltip("Displays the current game on your Discord profile while Ymir is running.",
+                                m_context.displayScale);
+
     // -----------------------------------------------------------------------------------------------------------------
 
     ImGui::PushFont(m_context.fonts.sansSerif.bold, m_context.fontSizes.large);

@@ -7,6 +7,8 @@
 #include <cereal/types/array.hpp>
 #include <cereal/types/vector.hpp>
 
+#include <fmt/format.h>
+
 #include <algorithm>
 #include <string>
 
@@ -28,7 +30,9 @@ namespace ymir::savestate {
 //  10 = 0.2.0
 //  11 = 0.2.1
 //  12 = 0.3.0
-inline constexpr uint32 kVersion = 12;
+//  13 = 0.3.2
+//  14 = 0.4.0
+inline constexpr uint32 kVersion = 14;
 
 } // namespace ymir::savestate
 
@@ -72,6 +76,10 @@ void serialize(Archive &ar, SystemSaveState &s) {
 
 template <class Archive>
 void serialize(Archive &ar, SH2SaveState &s, const uint32 version) {
+    // v13:
+    // - New fields
+    //   - uint32 fetchedOpcodes = 0
+    //   - uint8 wbReg = 0
     // v12:
     // - New fields
     //   - bool intrAllow = true
@@ -85,6 +93,14 @@ void serialize(Archive &ar, SH2SaveState &s, const uint32 version) {
         ar(s.intrAllow);
     } else {
         s.intrAllow = true;
+    }
+    if (version >= 13) {
+        ar(s.fetchedOpcodes);
+        s.forceFetchOpcodes = false;
+        ar(s.wbReg);
+    } else {
+        s.forceFetchOpcodes = true;
+        s.wbReg = 0;
     }
     ar(s.bsc, s.dmac);
     serialize(ar, s.wdt, version);
@@ -442,12 +458,15 @@ void serialize(Archive &ar, VDPSaveState &s, const uint32 version) {
     //
     // VDP1RegsSaveState
     // -----------------
+    // v13:
+    // - Added fields
+    //   - uint32 nextCommandAddress = COPR << 3u
     // v12:
     // - Added fields
-    //   - FBCRChanged = handled in VDPSaveState serializer
-    //   - eraseWriteValueLatch = handled in VDPSaveState serializer
-    //   - eraseX1Latch, eraseY1Latch = handled in VDPSaveState serializer
-    //   - eraseX3Latch, eraseY3Latch = handled in VDPSaveState serializer
+    //   - FBCRChanged = moved from VDPSaveState
+    //   - eraseWriteValueLatch = moved from VDPRendererSaveState::VDP1RenderSaveState
+    //   - eraseX1Latch, eraseY1Latch = moved from VDPRendererSaveState::VDP1RenderSaveState
+    //   - eraseX3Latch, eraseY3Latch = moved from VDPRendererSaveState::VDP1RenderSaveState
     // v9:
     // - Removed fields
     //   - bool manualSwap
@@ -455,6 +474,9 @@ void serialize(Archive &ar, VDPSaveState &s, const uint32 version) {
     //
     // VDP2RegsSaveState
     // -----------------
+    // v13:
+    // - Removed fields
+    //   - bool VCNTLatched
     // v12:
     // - Added fields
     //   - VCNTLatch -> moved from VDPSaveState::VDP2VCNTLatch
@@ -513,10 +535,18 @@ void serialize(Archive &ar, VDPSaveState &s, const uint32 version) {
         s.regs1.FBCRChanged = false;
     }
     if (version >= 12) {
-        ar(s.regs2.VCNTLatch, s.regs2.VCNTLatched);
+        ar(s.regs2.VCNTLatch);
+        if (version < 13) {
+            bool VCNTLatched;
+            ar(VCNTLatched);
+        }
     } else {
         s.regs2.VCNTLatch = 0x3FF;
-        s.regs2.VCNTLatched = false;
+    }
+    if (version >= 13) {
+        ar(s.regs1.nextCommandAddress);
+    } else {
+        s.regs1.nextCommandAddress = s.regs1.COPR << 3u;
     }
 
     // -------------------------------------------------------------------------
@@ -1203,7 +1233,22 @@ void serialize(Archive &ar, SCSPTimerSaveState &s) {
 }
 
 template <class Archive>
+void serialize(Archive &ar, CDInterfaceSaveState &s, const uint32 version) {
+    // v14:
+    // - Struct added with fields:
+    //   - uint32 seekTarget
+    //   - uint32 seekFAD
+    //   - bool seekDone
+    ar(s.seekTarget);
+    ar(s.seekFAD);
+    ar(s.seekDone);
+}
+
+template <class Archive>
 void serialize(Archive &ar, CDBlockSaveState &s, SaveState &root, const uint32 version) {
+    // v13:
+    // - New fields
+    //   - RR = CR
     // v10:
     // - Removed fields
     //   - discHash moved to the root of the structure
@@ -1229,7 +1274,13 @@ void serialize(Archive &ar, CDBlockSaveState &s, SaveState &root, const uint32 v
         ar(root.discHash);
         // v10+ is handled in the root serializer
     }
-    ar(s.CR, s.HIRQ, s.HIRQMASK);
+    ar(s.CR);
+    if (version >= 13) {
+        ar(s.RR);
+    } else {
+        s.RR = s.CR;
+    }
+    ar(s.HIRQ, s.HIRQMASK);
     serialize(ar, s.status, version);
     ar(s.readyForPeriodicReports);
     ar(s.currDriveCycles, s.targetDriveCycles);
@@ -1664,17 +1715,20 @@ void serialize(Archive &ar, CDDriveSaveState::CDStatusSaveState &s, const uint32
         ar(s.indexNum);
         ar(s.min);
         ar(s.sec);
-        ar(s.frac);
+        ar(s.frame);
         ar(s.zero);
         ar(s.absMin);
         ar(s.absSec);
-        ar(s.absFrac);
+        ar(s.absFrame);
     }
     // No need to initialize on pre-v10 because CD Block LLE did not exist
 }
 
 template <class Archive>
 void serialize(Archive &ar, SaveState &s, const uint32 version) {
+    // v14:
+    // - New fields:
+    //   - cdif = default
     // v10:
     // - Every component now has a 4-byte magic field to check for data alignment
     // - New fields:
@@ -1696,8 +1750,12 @@ void serialize(Archive &ar, SaveState &s, const uint32 version) {
     // - New fields:
     //   - uint64 ssh2SpilloverCycles = 0
 
-    // Reject version 0 and future versions
-    if (version == 0 || version > kVersion) {
+    // Ignore version 0 (empty save state)
+    if (version == 0) {
+        return;
+    }
+    // Reject future versions
+    if (version > kVersion) {
         throw cereal::Exception(
             fmt::format("Save state version is higher than supported ({} > {})", version, kVersion));
     }
@@ -1724,6 +1782,9 @@ void serialize(Archive &ar, SaveState &s, const uint32 version) {
     magic("SMPC"), serialize(ar, s.smpc, version);
     magic("VDP#"), serialize(ar, s.vdp, version);
     magic("SCSP"), serialize(ar, s.scsp, version);
+    if (version >= 14) {
+        magic("CDIf"), serialize(ar, s.cdif, version);
+    }
     magic("CDBl");
     if (version >= 10) {
         magic("cLLE"), ar(s.cdblockLLE);

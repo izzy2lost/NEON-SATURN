@@ -8,7 +8,8 @@
 #include <ymir/util/data_ops.hpp>
 #include <ymir/util/dev_assert.hpp>
 
-#include "cdrom_crc.hpp"
+#include "cd_defs.hpp"
+#include "cd_utils.hpp"
 #include "saturn_header.hpp"
 #include "subheader.hpp"
 
@@ -22,22 +23,6 @@
 #include <vector>
 
 namespace ymir::media {
-
-struct TOCEntry {
-    uint8 controlADR;        // Bits 7-4 = Control, bits 3-0 = q-Mode
-                             //   Control = 0b0100 (0x4) = non-copyable data
-                             //   Control = 0b0110 (0x6) = copyable data
-                             //   q-Mode = 0b0001 (0x1) = lead-in, user data, lead-out areas
-                             //   q-Mode = 0b0010 (0x2) = information area
-    uint8 trackNum;          // 00 for lead-in, 01 to 99 for tracks, AA for lead-out
-    uint8 pointOrIndex;      // Pointer field for lead-in, index for tracks and lead-out
-                             //   For tracks: index 00 is pause, 01 to 99 are various indices within the track
-                             //   Lead-out always uses 01
-    uint8 min, sec, frac;    // Relative time. During pause (index 00) this time is relative to the start of the track
-                             // (index 01) and counts in decreasing order
-    uint8 zero;              // Must be 0x00
-    uint8 amin, asec, afrac; // Absolute time. Monotonically increasing until the lead-out track.
-};
 
 struct Index {
     uint32 startFrameAddress = 0;
@@ -138,52 +123,7 @@ struct Track {
         fmt::println("Track unit size:   {} bytes", unitSize);*/
 
         // Fill in any missing data
-        if (!hasSyncBytes) {
-            static constexpr std::array<uint8, 12> syncBytes = {0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-                                                                0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00};
-            std::copy(syncBytes.begin(), syncBytes.end(), outBuf.begin());
-            // fmt::println("  Added sync bytes");
-        }
-        if (!hasHeader) {
-            // Convert absolute frame address to min:sec:frac
-            outBuf[0xC] = util::to_bcd(frameAddress / 75 / 60);
-            outBuf[0xD] = util::to_bcd((frameAddress / 75) % 60);
-            outBuf[0xE] = util::to_bcd(frameAddress % 75);
-
-            // Determine mode based on track type and sector size
-            if (controlADR == 0x41) {
-                // Data track
-                outBuf[0xF] = mode2 ? 0x02 : 0x01;
-            } else {
-                // Audio track
-                outBuf[0xF] = 0x00;
-            }
-            // fmt::println("  Added header");
-        } else {
-            YMIR_DEV_ASSERT(outBuf[0xC] == util::to_bcd(frameAddress / 75 / 60));
-            YMIR_DEV_ASSERT(outBuf[0xD] == util::to_bcd((frameAddress / 75) % 60));
-            YMIR_DEV_ASSERT(outBuf[0xE] == util::to_bcd(frameAddress % 75));
-        }
-        if (!hasECC) {
-            // Fill out EDC, Intermediate, P-Parity and Q-Parity fields
-            // TODO: handle Mode 2 Form 1 and 2
-
-            std::span<uint8> edcBuf{outBuf.subspan(2064, 4)};
-            std::span<uint8> interBuf{outBuf.subspan(2068, 8)};
-            std::span<uint8> pParityBuf{outBuf.subspan(2076, 172)};
-            std::span<uint8> qParityBuf{outBuf.subspan(2248, 104)};
-
-            const uint32 crc = CalcCRC(std::span<uint8, 2064>{outBuf.first(2064)});
-            util::WriteLE<uint32>(&edcBuf[0], crc);
-
-            std::fill(interBuf.begin(), interBuf.end(), 0x00);
-
-            // TODO: compute ECC (P-Parity and Q-Parity)
-            std::fill(pParityBuf.begin(), pParityBuf.end(), 0x00);
-            std::fill(qParityBuf.begin(), qParityBuf.end(), 0x00);
-
-            // fmt::println("  Added subheader");
-        }
+        SynthesizeSectorData(outBuf, outputSize, frameAddress, controlADR, mode2);
 
         /*fmt::println("Raw sector data:");
         for (uint32 i = 0; i < outBuf.size(); i++) {
@@ -243,7 +183,6 @@ struct Session {
         for (int i = 0; i < tracks.size(); i++) {
             tracks[i].index = i + 1;
         }
-        toc.fill(0xFFFFFFFF);
     }
 
     const Track *FindTrack(uint32 absFrameAddress) const {
@@ -264,117 +203,62 @@ struct Session {
         return 0xFF;
     }
 
-    // The table of contents contains the following entries:
-    // (partially from https://www.ecma-international.org/wp-content/uploads/ECMA-394_1st_edition_december_2010.pdf)
-    //
-    // 0-98: One entry per track in the following format:
-    //   31-24  track control/ADR
-    //   23-0   track start frame address
-    // Unused tracks contain 0xFFFFFFFF
-    //
-    // 99: Point A0
-    //   31-24  first track control/ADR
-    //   23-16  first track number (PMIN)
-    //   15-8   program area format (PSEC):
-    //            0x00: CD-DA and CD-ROM
-    //            0x10: CD-i
-    //            0x20: CD-ROM-XA
-    //    7-0   PFRAME - always zero
-    //
-    // 100: Point A1
-    //   31-24  last track control/ADR
-    //   23-16  last track number (PMIN)
-    //   15-8   PSEC - always zero
-    //    7-0   PFRAME - always zero
-    //
-    // 101: Point A2
-    //   31-24  leadout track control/ADR
-    //   23-0   leadout frame address
-    std::array<uint32, 99 + 3> toc;
-
     // TOC entries listed in the lead-in area
-    std::array<TOCEntry, 99 + 3> leadInTOC;
-    uint32 leadInTOCCount;
+    std::array<TOCEntry, 99 + 3> toc{};
+    uint32 tocSize = 0;
 
     // Build table of contents using track information
     void BuildTOC() {
         // -----------------------------------------------------------------------------------------
-        // Simplified TOC data (4 bytes per entry)
-        // Returned by Read TOC CD block command
-
-        uint32 firstTrackNum = 0;
-        uint32 lastTrackNum = 0;
-        for (int i = 0; i < 99; i++) {
-            auto &track = tracks[i];
-            if (track.controlADR != 0x00) {
-                toc[i] = (track.controlADR << 24u) | track.index01FrameAddress;
-                if (firstTrackNum == 0) {
-                    firstTrackNum = i + 1;
-                }
-                lastTrackNum = i + 1;
-            } else {
-                toc[i] = 0xFFFFFFFF;
-            }
-        }
-
-        const uint32 leadOutFAD = endFrameAddress + 1;
-        if (firstTrackNum != 0) {
-            toc[99] = (tracks[firstTrackNum - 1].controlADR << 24u) | (firstTrackNum << 16u);
-            toc[100] = (tracks[lastTrackNum - 1].controlADR << 24u) | (lastTrackNum << 16u);
-            toc[101] = (tracks[lastTrackNum - 1].controlADR << 24u) | leadOutFAD;
-        } else {
-            toc[99] = toc[100] = toc[101] = 0xFFFFFFFF;
-        }
-
-        // -----------------------------------------------------------------------------------------
         // Raw TOC data (10 bytes per entry)
         // Stored in lead-in area of the disc
 
-        leadInTOCCount = 0;
+        tocSize = 0;
 
         // Point A0 - first data track
         {
-            auto &tocEntry = leadInTOC[leadInTOCCount++];
-            tocEntry.controlADR = tracks[firstTrackNum - 1].controlADR;
+            auto &tocEntry = toc[tocSize++];
+            tocEntry.controlADR = 0x41;
             tocEntry.trackNum = 0x00;
             tocEntry.pointOrIndex = 0xA0;
-            tocEntry.min = util::to_bcd(startFrameAddress / 75 / 60);
-            tocEntry.sec = util::to_bcd(startFrameAddress / 75 % 60);
-            tocEntry.frac = util::to_bcd(startFrameAddress % 75);
+            tocEntry.min = 0x00;
+            tocEntry.sec = 0x00;
+            tocEntry.frame = 0x00;
             tocEntry.zero = 0x00;
-            tocEntry.amin = util::to_bcd(firstTrackNum);
+            tocEntry.amin = util::to_bcd(firstTrackIndex + 1);
             tocEntry.asec = 0x00;
-            tocEntry.afrac = 0x00;
+            tocEntry.aframe = 0x00;
         }
 
         // Point A1 - last data track
         {
-            auto &tocEntry = leadInTOC[leadInTOCCount++];
-            tocEntry.controlADR = tracks[lastTrackNum - 1].controlADR;
+            auto &tocEntry = toc[tocSize++];
+            tocEntry.controlADR = 0x41;
             tocEntry.trackNum = 0x00;
             tocEntry.pointOrIndex = 0xA1;
-            tocEntry.min = util::to_bcd(startFrameAddress / 75 / 60);
-            tocEntry.sec = util::to_bcd(startFrameAddress / 75 % 60);
-            tocEntry.frac = util::to_bcd(startFrameAddress % 75);
+            tocEntry.min = 0x00;
+            tocEntry.sec = 0x00;
+            tocEntry.frame = 0x00;
             tocEntry.zero = 0x00;
-            tocEntry.amin = util::to_bcd(lastTrackNum);
+            tocEntry.amin = util::to_bcd(lastTrackIndex + 1);
             tocEntry.asec = 0x00;
-            tocEntry.afrac = 0x00;
+            tocEntry.aframe = 0x00;
         }
 
         // Point A2 - start of leadout track
         {
-            auto &tocEntry = leadInTOC[leadInTOCCount++];
-            tocEntry.controlADR = tracks[lastTrackNum - 1].controlADR;
+            const uint32 leadOutFAD = endFrameAddress + 1;
+            auto &tocEntry = toc[tocSize++];
+            tocEntry.controlADR = 0x41;
             tocEntry.trackNum = 0x00;
             tocEntry.pointOrIndex = 0xA2;
             tocEntry.min = util::to_bcd(startFrameAddress / 75 / 60);
             tocEntry.sec = util::to_bcd(startFrameAddress / 75 % 60);
-            tocEntry.frac = util::to_bcd(startFrameAddress % 75);
+            tocEntry.frame = util::to_bcd(startFrameAddress % 75);
             tocEntry.zero = 0x00;
             tocEntry.amin = util::to_bcd(leadOutFAD / 75 / 60);
             tocEntry.asec = util::to_bcd(leadOutFAD / 75 % 60);
-            tocEntry.afrac = util::to_bcd(leadOutFAD % 75);
+            tocEntry.aframe = util::to_bcd(leadOutFAD % 75);
         }
 
         // Tracks
@@ -385,17 +269,17 @@ struct Session {
             }
 
             const uint32 relFAD = track.index01FrameAddress - track.startFrameAddress;
-            auto &entry = leadInTOC[leadInTOCCount++];
+            auto &entry = toc[tocSize++];
             entry.controlADR = track.controlADR;
             entry.trackNum = 0x00;
             entry.pointOrIndex = util::to_bcd(i + 1);
             entry.min = util::to_bcd(relFAD / 75 / 60);
             entry.sec = util::to_bcd(relFAD / 75 % 60);
-            entry.frac = util::to_bcd(relFAD % 75);
+            entry.frame = util::to_bcd(relFAD % 75);
             entry.zero = 0x00;
             entry.amin = util::to_bcd(track.index01FrameAddress / 75 / 60);
             entry.asec = util::to_bcd(track.index01FrameAddress / 75 % 60);
-            entry.afrac = util::to_bcd(track.index01FrameAddress % 75);
+            entry.aframe = util::to_bcd(track.index01FrameAddress % 75);
         }
     }
 };

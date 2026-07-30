@@ -2221,3 +2221,80 @@ TestData{
     // Rotation coefficient accesses
     {false, false, false, false},
 },
+
+TestData{
+    "Ryuuteki Gosennen - Dragons of China :: In-game :: Legality of CP access follows same bank as PN access when multiple PN accesses in different banks exist",
+    0xF44FFEEF, // 010,012 CYCA0L/U  -   CP0 CP0 -   -   SH2 SH2 -
+    0xF55FFEEF, // 014,016 CYCA1L/U  -   CP1 CP1 -   -   SH2 SH2 -
+    0x26FFFEEF, // 018,01A CYCB0L/U  PN2 CP2 -   -   -   SH2 SH2 -
+    0x3726FEEF, // 01C,01E CYCB1L/U  PN3 CP3 PN2 CP2 -   SH2 SH2 -
+    0x1300, // 00E RAMCTL  A0/A1, B0/B1, no rotparams
+    0x8000, // 000 TVMD    lo-res
+    0x000F, // 020 BGON    NBG0, NBG1, NBG2, NBG3
+    0x1212, // 028 CHCTLA  NBG0 = pal256 bitmap       NBG1 = pal256 bitmap
+    0x0000, // 02A CHCTLB  NBG2 = pal16 scroll 1x1    NBG3 = pal16 scroll 1x1
+    0x0000, // 098 ZMCTL
+    0x0000, // 09A SCRCTL  NBG0 =                     NBG1 =
+
+    // Expected
+    {{
+        // NBG0
+        {
+            .check = true,
+            .bitmap = true,
+            .patNameAccess = {false, false, false, false},
+            .charPatAccess = {true, false, false, false},
+            .charPatDelay = {false, false, false, false},
+            .vramDataOffset = {0, 0, 0, 0},
+            .vcellScrollDelay = false,
+            .vcellScrollRepeat = false,
+            .vcellScrollOffset = 0,
+        },
+        // NBG1
+        {
+            .check = true,
+            .bitmap = true,
+            .patNameAccess = {false, false, false, false},
+            .charPatAccess = {false, true, false, false},
+            .charPatDelay = {false, false, false, false},
+            .vramDataOffset = {0, 0, 0, 0},
+            .vcellScrollDelay = false,
+            .vcellScrollRepeat = false,
+            .vcellScrollOffset = 0,
+        },
+        // NBG2
+        {
+            .check = true,
+            .bitmap = false,
+            .patNameAccess = {false, false, true, true},
+            .charPatAccess = {false, false, true, true},
+            .charPatDelay = {false, false, false, false},
+            .vramDataOffset = {0, 0, 0, 0},
+            .vcellScrollDelay = false,
+            .vcellScrollRepeat = false,
+            .vcellScrollOffset = 0,
+        },
+        // NBG3
+        {
+            .check = true,
+            .bitmap = false,
+            .patNameAccess = {false, false, false, true},
+            .charPatAccess = {false, false, false, true},
+            .charPatDelay = {false, false, false, false},
+            .vramDataOffset = {0, 0, 0, 0},
+            .vcellScrollDelay = false,
+            .vcellScrollRepeat = false,
+            .vcellScrollOffset = 0,
+        },
+    }},
+    {{
+        // RBG0
+        {},
+        // RBG1
+        {},
+    }},
+    // Vertical cell scroll increment
+    0,
+    // Rotation coefficient accesses
+    {false, false, false, false},
+},

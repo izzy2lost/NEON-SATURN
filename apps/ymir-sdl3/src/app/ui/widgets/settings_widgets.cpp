@@ -23,9 +23,9 @@ namespace settings::system {
         const db::GameInfo *gameInfo = nullptr;
         {
             std::unique_lock lock{ctx.locks.disc};
-            const auto &disc = ctx.saturn.GetDisc();
-            if (!disc.sessions.empty()) {
-                gameInfo = db::GetGameInfo(disc.header.productNumber, ctx.saturn.GetDiscHash());
+            const auto &discHeader = ctx.saturn.GetDiscHeader();
+            if (discHeader.IsValid()) {
+                gameInfo = db::GetGameInfo(discHeader.productNumber, ctx.saturn.GetDiscHash());
             }
         }
         const bool forced =
@@ -49,6 +49,36 @@ namespace settings::system {
             ImGui::EndDisabled();
             ImGui::SameLine();
             ImGui::TextColored(ctx.colors.notice, "Forced by the currently loaded game");
+        }
+    }
+
+    void SH2ClockFactor(SharedContext &ctx) {
+        const float paddingWidth = ImGui::GetStyle().FramePadding.x;
+        const float itemSpacingWidth = ImGui::GetStyle().ItemSpacing.x;
+        const float resetButtonWidth = ImGui::CalcTextSize("Reset").x + paddingWidth * 2;
+
+        auto &settings = ctx.serviceLocator.GetRequired<Settings>();
+        int factor = settings.system.sh2ClockFactor.Get();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("SH-2 clock factor");
+        widgets::ExplanationTooltip("WARNING: May break games, desync audio, or cause crashes.\n"
+                                    "Use with caution!\n"
+                                    "\n"
+                                    "Adjusts the cycle rate of the SH-2 CPUs. Also affects SCU DSP and VDP1.\n"
+                                    "\n"
+                                    "Values over 100% can reduce slowdowns in CPU-intensive games.\n"
+                                    "Values below 100% can improve performance on slower host CPUs.",
+                                    ctx.displayScale);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(-(resetButtonWidth + itemSpacingWidth));
+        if (settings.MakeDirty(ImGui::SliderInt(
+                "##sh2_clock_factor", &factor, app::config_defaults::system::kMinSH2ClockFactor,
+                app::config_defaults::system::kMaxSH2ClockFactor, "%d%%", ImGuiSliderFlags_AlwaysClamp))) {
+            settings.system.sh2ClockFactor = factor;
+        }
+        ImGui::SameLine();
+        if (settings.MakeDirty(ImGui::Button("Reset##sh2_clock_factor"))) {
+            settings.system.sh2ClockFactor = app::config_defaults::system::kDefaultSH2ClockFactor;
         }
     }
 
@@ -317,6 +347,18 @@ namespace settings::audio {
         }
     }
 
+    void ThreadedSCSP(SharedContext &ctx) {
+        auto &settings = ctx.serviceLocator.GetRequired<Settings>();
+        bool threadedSCSP = settings.audio.threadedSCSP;
+        if (settings.MakeDirty(ImGui::Checkbox("Threaded SCSP and sound CPU", &threadedSCSP))) {
+            ctx.EnqueueEvent(events::emu::EnableThreadedSCSP(threadedSCSP));
+        }
+        widgets::ExplanationTooltip("Runs the SCSP and MC68EC000 in a dedicated thread.\n"
+                                    "Improves performance at the cost of accuracy.\n"
+                                    "A few select games may break when this option is enabled.",
+                                    ctx.displayScale);
+    }
+
 } // namespace settings::audio
 
 namespace settings::cdblock {
@@ -355,8 +397,6 @@ namespace settings::cdblock {
         auto &settings = ctx.serviceLocator.GetRequired<Settings>();
         auto &cdblockSettings = settings.cdblock;
 
-        bool useLLE = cdblockSettings.useLLE;
-
         bool hasROMs;
         {
             std::unique_lock lock{ctx.locks.romManager};
@@ -365,8 +405,8 @@ namespace settings::cdblock {
         if (!hasROMs) {
             ImGui::BeginDisabled();
         }
-        if (settings.MakeDirty(ImGui::Checkbox("Use low level CD Block emulation", &useLLE))) {
-            cdblockSettings.useLLE = useLLE;
+        if (settings.MakeDirty(ImGui::Checkbox("Use low level CD Block emulation", &cdblockSettings.useLLE))) {
+            ctx.EnqueueEvent(events::emu::SetCDBlockLLE(cdblockSettings.useLLE));
         }
         widgets::ExplanationTooltip("Choose between high or low level CD Block emulation.\n"
                                     "High level emulation is faster, but has lower compatibility.\n"

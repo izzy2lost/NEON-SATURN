@@ -656,10 +656,11 @@ void SCU::DMAReadIndirectTransfer(uint8 level) {
     ch.currDstAddrInc = ch.dstAddrInc;
     ch.InitTransfer();
 
-    devlog::trace<grp::dma_start>(
-        "SCU DMA{}: Starting indirect transfer at {:08X} - {:06X} bytes from {:08X} (+{:02X}) to {:08X} (+{:02X}){}",
-        level, baseIndirectSrc, ch.currXferCount, ch.currSrcAddr, ch.currSrcAddrInc, ch.currDstAddr, ch.currDstAddrInc,
-        (ch.endIndirect ? " (final)" : ""));
+    devlog::trace<grp::dma_start>("SCU DMA{}: Starting indirect transfer at {:08X} - {:06X} bytes from {:08X} "
+                                  "(+{:02X}{}) to {:08X} (+{:02X}{}){}",
+                                  level, baseIndirectSrc, ch.currXferCount, ch.currSrcAddr, ch.currSrcAddrInc,
+                                  (ch.updateSrcAddr ? "#" : ""), ch.currDstAddr, ch.currDstAddrInc,
+                                  (ch.updateDstAddr ? "#" : ""), (ch.endIndirect ? " (final)" : ""));
 
     if (ch.currSrcAddr & 1) {
         devlog::debug<grp::dma>("SCU DMA{}: Unaligned indirect transfer read from {:08X}", level, ch.currSrcAddr);
@@ -881,7 +882,7 @@ void SCU::RunDMA(uint64 cycles) {
             // mess that is B-Bus writes.
         } else {
             // B-Bus writes are incredibly buggy. It's a miracle it even works on real hardware.
-            // Only +2 increments produce useful write patterns. You *might* find other increments useful if they-re
+            // Only +2 increments produce useful write patterns. You *might* find other increments useful if they're
             // word-aligned but not longword-aligned (write address & 3 == 2) -- at least those follow the proper
             // increment intervals. Every other increment is pretty much useless in practice.
 
@@ -1116,8 +1117,9 @@ void SCU::RecalcDMAChannel() {
             ch.InitTransfer();
 
             devlog::trace<grp::dma_start>(
-                "SCU DMA{}: Starting direct transfer of {:06X} bytes from {:08X} (+{:02X}) to {:08X} (+{:02X})", level,
-                ch.currXferCount, ch.currSrcAddr, ch.currSrcAddrInc, ch.currDstAddr, ch.currDstAddrInc);
+                "SCU DMA{}: Starting direct transfer of {:06X} bytes from {:08X} (+{:02X}{}) to {:08X} (+{:02X}{})",
+                level, ch.currXferCount, ch.currSrcAddr, ch.currSrcAddrInc, (ch.updateSrcAddr ? "#" : ""),
+                ch.currDstAddr, ch.currDstAddrInc, (ch.updateDstAddr ? "#" : ""));
             if (ch.currSrcAddr & 1) {
                 devlog::debug<grp::dma>("SCU DMA{}: Unaligned direct transfer read from {:08X}", level, ch.currSrcAddr);
             }
@@ -1596,34 +1598,29 @@ FORCE_INLINE void SCU::WriteRegByte(uint32 address, uint8 value) {
         break;
 
     case 0x80: // (DSP_PPAF) DSP Program Control Port (bits 24-31)
-        // TODO: should this go through? should it be buffered? ignored?
-        // if (bit::test<1>(value)) {
-        //     m_dsp.programPaused = true;
-        // } else if (bit::test<2>(value)) {
-        //     m_dsp.programPaused = false;
-        // }
+        if (bit::test<1>(value)) {
+            m_dsp.programPaused = true;
+        } else if (bit::test<2>(value)) {
+            m_dsp.programPaused = false;
+        }
         break;
     case 0x81: // (DSP_PPAF) DSP Program Control Port (bits 16-23)
-        // TODO: should this go through? should it be buffered? ignored?
-        // m_dsp.programExecuting = bit::test<0>(value);
-        // m_dsp.programStep = bit::test<1>(value);
+        m_dsp.programExecuting = bit::test<0>(value);
+        m_dsp.programStep = bit::test<1>(value);
         break;
     case 0x82: // (DSP_PPAF) DSP Program Control Port (bits 8-15)
-        // TODO: should this go through? should it be buffered? ignored?
         break;
     case 0x83: // (DSP_PPAF) DSP Program Control Port (bits 0-7)
-        // TODO: should this go through? should it be buffered? ignored?
-        // if (bit::test<7>(value at 0x82)) {
-        //     m_dsp.WritePC<poke>(bit::extract<0, 7>(value));
-        // }
+        if (bit::test<7>(value)) {
+            m_dsp.WritePC<poke>(bit::extract<0, 7>(value));
+        }
         break;
 
     case 0x84: // (DSP_PPD) DSP Program RAM Data Port (bits 24-31)
     case 0x85: // (DSP_PPD) DSP Program RAM Data Port (bits 16-23)
     case 0x86: // (DSP_PPD) DSP Program RAM Data Port (bits 8-15)
     case 0x87: // (DSP_PPD) DSP Program RAM Data Port (bits 0-7)
-        // TODO: should this go through? should it be buffered? ignored?
-        // m_dsp.WriteProgram<poke>(value);
+        m_dsp.WriteProgram<poke>(value);
         break;
 
     case 0x88: // (DSP_PDA) DSP Data RAM Address Port (bits 24-31)
@@ -1639,8 +1636,7 @@ FORCE_INLINE void SCU::WriteRegByte(uint32 address, uint8 value) {
     case 0x8D: // (DSP_PDD) DSP Data RAM Data Port (bits 16-23)
     case 0x8E: // (DSP_PDD) DSP Data RAM Data Port (bits 8-15)
     case 0x8F: // (DSP_PDD) DSP Data RAM Data Port (bits 0-7)
-        // TODO: should this go through? should it be buffered? ignored?
-        // m_dsp.WriteData<poke>(value);
+        m_dsp.WriteData<poke>(value);
         break;
 
     case 0x90: // (T0C) Timer 0 Compare (bits 24-31)

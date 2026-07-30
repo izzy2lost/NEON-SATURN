@@ -18,10 +18,8 @@ See @ref index for instructions on how to use the emulator.
 
 #include "memory.hpp"
 #include "system.hpp"
-#include "system_features.hpp"
 
 #include <ymir/hw/cart/cart.hpp>
-#include <ymir/hw/cart/cart_slot.hpp>
 #include <ymir/hw/cdblock/cd_drive.hpp>
 #include <ymir/hw/cdblock/cdblock.hpp>
 #include <ymir/hw/cdblock/ygr.hpp>
@@ -32,9 +30,7 @@ See @ref index for instructions on how to use the emulator.
 #include <ymir/hw/smpc/smpc.hpp>
 #include <ymir/hw/vdp/vdp.hpp>
 
-#include <ymir/media/disc.hpp>
-
-#include <memory>
+#include <ymir/media/cd_interface.hpp>
 
 namespace ymir {
 
@@ -103,13 +99,15 @@ struct Saturn {
     /// @return the hash code of the currently loaded IPL ROM image
     [[nodiscard]] XXH128Hash GetIPLHash() const noexcept;
 
-    /// @brief Retrieves the currently loaded disc.
-    /// @return a read-only reference to the currently loaded disc
-    [[nodiscard]] const media::Disc &GetDisc() const noexcept;
-
     /// @brief Retrieves the game disc image hash code.
     /// @return the hash code of the currently loaded game disc image
     [[nodiscard]] XXH128Hash GetDiscHash() const noexcept;
+
+    /// @brief Retrieves the CD interface currently in use.
+    /// @return the current CD interface
+    [[nodiscard]] const media::CDInterface &GetCDInterface() const noexcept {
+        return m_cdif;
+    }
 
     /// @brief Inserts a cartridge into the cartridge slot.
     /// @tparam T the cartridge type, which must be a specialization of `ymir::cart::BaseCartridge`
@@ -139,6 +137,11 @@ struct Saturn {
     /// @param[in] disc the disc to be moved
     void LoadDisc(media::Disc &&disc);
 
+    /// @brief Connects to a host CD drive.
+    /// @param path[in] the path to the host CD drive
+    /// @return `true` if the device was opened successfully, `false` if there was an error
+    bool OpenHostCDDrive(std::string path);
+
     /// @brief Ejects the disc from the CD drive.
     void EjectDisc();
 
@@ -155,10 +158,9 @@ struct Saturn {
     /// @brief Switches the SMPC area code to the preferred region.
     void UsePreferredRegion();
 
-    /// @brief Switches the SMPC area code to the region that best matches the given area codes, respecting the
-    /// preferred region order defined in the configuration.
-    /// @param[in] areaCodes the area code bitmask to base the selection on
-    void AutodetectRegion(media::AreaCode areaCodes);
+    /// @brief Switches the SMPC area code to the region that best matches the area codes present in the currently
+    /// loaded disc, respecting the preferred region order defined in the configuration.
+    void AutodetectRegion();
 
     /// @brief Enables or disables debug tracing on hot paths.
     ///
@@ -171,12 +173,14 @@ struct Saturn {
     /// Disabling debug tracing also detaches all tracers from all components.
     ///
     /// @param[in] enable whether to enable or disable debug tracing
-    void EnableDebugTracing(bool enable);
+    void EnableDebugTracing(bool enable) {
+        configuration.system.debugTracing = enable;
+    }
 
     /// @brief Determines if debug tracing is enabled.
     /// @return the debug tracing state
     [[nodiscard]] bool IsDebugTracingEnabled() const noexcept {
-        return m_systemFeatures.enableDebugTracing;
+        return m_enableDebugTracing;
     }
 
     /// @brief Enables or disables SH-2 cache emulation.
@@ -193,7 +197,13 @@ struct Saturn {
     /// @brief Determines if SH-2 cache emulation is enabled.
     /// @return the SH-2 cache emulation state
     [[nodiscard]] bool IsSH2CacheEmulationEnabled() const noexcept {
-        return configuration.system.emulateSH2Cache;
+        return m_emulateSH2Caches;
+    }
+
+    /// @brief Sets the SH-2 clock factor.
+    /// @param[in] factor the clock factor ratio
+    void SetSH2ClockFactor(RatioU32 factor) {
+        configuration.system.sh2ClockFactor = factor;
     }
 
     /// @brief Runs the emulator until the end of the current frame using the current settings.
@@ -372,9 +382,17 @@ private:
     /// @param[in] regions the new preferred region order
     void UpdatePreferredRegionOrder(std::span<const core::config::sys::Region> regions);
 
+    /// @brief Updates the debug tracing setting and the `RunFrameFn()` pointer.
+    /// @param[in] enabled whether to enable debug tracing
+    void UpdateDebugTracing(bool enabled);
+
     /// @brief Updates the SH-2 cache emulation setting and the `RunFrameFn()` pointer.
     /// @param[in] enabled whether to enable SH-2 cache emulation
     void UpdateSH2CacheEmulation(bool enabled);
+
+    /// @brief Updates the SH-2 clock factor and updates system clock ratios.
+    /// @param[in] factor the new clock ratio
+    void UpdateSH2ClockFactor(RatioU32 factor);
 
     /// @brief Updates the video standard to emulate and adjusts clock ratios across the system's components.
     /// @param[in] videoStandard the new video standard
@@ -402,8 +420,11 @@ private:
     /// @brief Global system parameters.
     sys::System m_system;
 
-    /// @brief Global system features.
-    sys::SystemFeatures m_systemFeatures;
+    /// @brief Whether to use debug tracing.
+    bool m_enableDebugTracing = false;
+
+    /// @brief Whether to emulate SH2 caches.
+    bool m_emulateSH2Caches = false;
 
 public:
     // -------------------------------------------------------------------------
@@ -418,10 +439,10 @@ public:
     vdp::VDP VDP;             ///< VDP1 and VDP2
     smpc::SMPC SMPC;          ///< SMPC and input devices
     scsp::SCSP SCSP;          ///< SCSP and its DSP, and MC68EC000 CPU
-    cdblock::CDBlock CDBlock; ///< CD block and media
+    cdblock::CDBlock CDBlock; ///< HLE CD block
 
     // LLE CD block components
-    // TODO: move them to cdblock::CDBlock
+    // TODO: move to cdblock::CDBlockLLE and rename cdblock::CDBlock to CDBlockHLE
     sh1::SH1 SH1;                              ///< CD block SH-1
     sys::SH1Bus SH1Bus;                        ///< CD block SH-1 bus
     cdblock::CDDrive CDDrive;                  ///< CD block drive
@@ -433,13 +454,16 @@ private:
     // Internal state
 
     // TODO: use an abstraction to support reading from real drives as well as disc images
-    media::Disc m_disc;         ///< Currently loaded game disc
+    media::CDInterface m_cdif;  ///< CD interface containing currently loaded disc
     media::fs::Filesystem m_fs; ///< Filesystem contained in the disc
 
     uint64 m_msh2SpilloverCycles; ///< Master SH-2 execution cycles spilled over between executions
     uint64 m_ssh2SpilloverCycles; ///< Slave SH-2 execution cycles spilled over between executions
     uint64 m_sh1SpilloverCycles;  ///< SH-1 execution cycles spilled over between executions
     uint64 m_sh1FracCycles;       ///< SH-1 fractional execution cycles spilled over by clock ratio calculation
+
+    /// @brief Invoked when the CD interface detects a change in media.
+    void OnMediaChanged();
 
     // -------------------------------------------------------------------------
     // System operations (SMPC) - smpc::ISMPCOperations implementation

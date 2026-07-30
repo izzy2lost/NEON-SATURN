@@ -148,10 +148,8 @@ FORCE_INLINE static void Parse(toml::node_view<toml::node> &node, peripheral::Pe
             value = peripheral::PeripheralType::ArcadeRacer;
         } else if (*opt == "MissionStick"s) {
             value = peripheral::PeripheralType::MissionStick;
-#if Ymir_FF_VIRTUA_GUN
         } else if (*opt == "VirtuaGun"s) {
             value = peripheral::PeripheralType::VirtuaGun;
-#endif
         } else if (*opt == "ShuttleMouse"s) {
             value = peripheral::PeripheralType::ShuttleMouse;
         }
@@ -432,9 +430,7 @@ FORCE_INLINE static const char *ToTOML(const peripheral::PeripheralType value) {
     case peripheral::PeripheralType::AnalogPad: return "AnalogPad";
     case peripheral::PeripheralType::ArcadeRacer: return "ArcadeRacer";
     case peripheral::PeripheralType::MissionStick: return "MissionStick";
-#if Ymir_FF_VIRTUA_GUN
     case peripheral::PeripheralType::VirtuaGun: return "VirtuaGun";
-#endif
     case peripheral::PeripheralType::ShuttleMouse: return "ShuttleMouse";
     }
 }
@@ -754,6 +750,7 @@ Settings::Settings(SharedContext &sharedCtx) noexcept
     mapInput(m_actionInputs, hotkeys.openSettings);
     mapInput(m_actionInputs, hotkeys.toggleWindowedVideoOutput);
     mapInput(m_actionInputs, hotkeys.toggleFullScreen);
+    mapInput(m_actionInputs, hotkeys.showMessageHistory);
     mapInput(m_actionInputs, hotkeys.takeScreenshot);
     mapInput(m_actionInputs, hotkeys.exitApp);
 
@@ -974,14 +971,19 @@ void Settings::ResetToDefaults() {
     general.useAltSpeed = false;
 
     general.pauseWhenUnfocused = false;
+    general.unpauseOnDiscLoad = true;
+    general.startPaused = false;
 
     general.checkForUpdates = false;
     general.includeNightlyBuilds = false;
+    general.enableDiscordPresence = false;
 
     gui.overrideUIScale = false;
     gui.uiScale = 1.0;
     gui.rememberWindowGeometry = true;
     gui.showMessages = true;
+    gui.showGameNameOnTitleBar = true;
+    gui.showPerformanceOnTitleBar = true;
     gui.showFrameRateOSD = false;
     gui.frameRateOSDPosition = GUI::FrameRateOSDPosition::TopRight;
     gui.showSpeedIndicatorForAllSpeeds = false;
@@ -991,11 +993,13 @@ void Settings::ResetToDefaults() {
 
     system.autodetectRegion = true;
     system.preferredRegionOrder =
-        std::vector<config::sys::Region>{config::sys::Region::NorthAmerica, config::sys::Region::Japan};
+        std::vector<config::sys::Region>{config::sys::Region::NorthAmerica, config::sys::Region::Japan,
+                                         config::sys::Region::EuropePAL, config::sys::Region::AsiaNTSC};
 
     system.videoStandard = config::sys::VideoStandard::NTSC;
 
     system.emulateSH2Cache = false;
+    system.sh2ClockFactor = config_defaults::system::kDefaultSH2ClockFactor;
 
     system.ipl.overrideImage = false;
     system.ipl.path = "";
@@ -1042,6 +1046,7 @@ void Settings::ResetToDefaults() {
     }
 
     input.mouse.captureMode = Input::Mouse::CaptureMode::SystemCursor;
+    input.mouse.lockToDisplay = true;
 
     input.gamepad.lsDeadzone = 0.15f;
     input.gamepad.rsDeadzone = 0.15f;
@@ -1110,6 +1115,8 @@ void Settings::BindConfiguration(ymir::core::Configuration &config) {
     system.autodetectRegion.Observe(config.system.autodetectRegion);
     system.preferredRegionOrder.Observe([&](auto value) { config.system.preferredRegionOrder = value; });
     system.videoStandard.Observe([&](auto value) { config.system.videoStandard = value; });
+    system.sh2ClockFactor.ObserveAndNotify(
+        [&](auto value) { m_context.EnqueueEvent(events::emu::SetSH2ClockFactor(value)); });
 
     system.rtc.mode.Observe([&](auto value) { config.rtc.mode = value; });
     system.rtc.virtHardResetStrategy.Observe([&](auto value) { config.rtc.virtHardResetStrategy = value; });
@@ -1123,7 +1130,6 @@ void Settings::BindConfiguration(ymir::core::Configuration &config) {
     audio.threadedSCSP.Observe([&](auto value) { config.audio.threadedSCSP = value; });
 
     cdblock.readSpeedFactor.Observe([&](auto value) { config.cdblock.readSpeedFactor = value; });
-    cdblock.useLLE.Observe([&](auto value) { m_context.EnqueueEvent(events::emu::SetCDBlockLLE(value)); });
 }
 
 SettingsLoadResult Settings::Load(const std::filesystem::path &path) {
@@ -1175,8 +1181,11 @@ SettingsLoadResult Settings::Load(const std::filesystem::path &path) {
         Parse(tblGeneral, "AltSpeedFactor", general.altSpeedFactor);
         Parse(tblGeneral, "UseAltSpeed", general.useAltSpeed);
         Parse(tblGeneral, "PauseWhenUnfocused", general.pauseWhenUnfocused);
+        Parse(tblGeneral, "UnpauseOnDiscLoadd", general.unpauseOnDiscLoad);
+        Parse(tblGeneral, "StartPaused", general.startPaused);
         Parse(tblGeneral, "CheckForUpdates", general.checkForUpdates);
         Parse(tblGeneral, "IncludeNightlyBuilds", general.includeNightlyBuilds);
+        Parse(tblGeneral, "EnableDiscordPresence", general.enableDiscordPresence);
 
         general.screenshotScale = std::clamp(general.screenshotScale, 1, 4);
 
@@ -1210,16 +1219,21 @@ SettingsLoadResult Settings::Load(const std::filesystem::path &path) {
         }
         Parse(tblGUI, "RememberWindowGeometry", gui.rememberWindowGeometry);
         Parse(tblGUI, "ShowMessages", gui.showMessages);
+        Parse(tblGUI, "ShowGameNameOnTitleBar", gui.showGameNameOnTitleBar);
+        Parse(tblGUI, "ShowPerformanceOnTitleBar", gui.showPerformanceOnTitleBar);
         Parse(tblGUI, "ShowFrameRateOSD", gui.showFrameRateOSD);
         Parse(tblGUI, "FrameRateOSDPosition", gui.frameRateOSDPosition);
         Parse(tblGUI, "ShowSpeedIndicatorForAllSpeeds", gui.showSpeedIndicatorForAllSpeeds);
     }
 
     if (auto tblSystem = data["System"]) {
+        using namespace app::config_defaults::system;
         Parse(tblSystem, "VideoStandard", system.videoStandard);
         Parse(tblSystem, "AutoDetectRegion", system.autodetectRegion);
         Parse(tblSystem, "PreferredRegionOrder", system.preferredRegionOrder);
         Parse(tblSystem, "EmulateSH2Cache", system.emulateSH2Cache);
+        Parse(tblSystem, "SH2ClockFactor", system.sh2ClockFactor, kDefaultSH2ClockFactor, kMinSH2ClockFactor,
+              kMaxSH2ClockFactor);
         Parse(tblSystem, "InternalBackupRAMImagePath", system.internalBackupRAMImagePath);
         Parse(tblSystem, "InternalBackupRAMPerGame", system.internalBackupRAMPerGame);
         system.internalBackupRAMImagePath = Absolute(ProfilePath::PersistentState, system.internalBackupRAMImagePath);
@@ -1237,8 +1251,8 @@ SettingsLoadResult Settings::Load(const std::filesystem::path &path) {
         if (auto tblRTC = tblSystem["RTC"]) {
             Parse(tblRTC, "Mode", rtc.mode);
             if (auto tblVirtual = tblRTC["Virtual"]) {
-                Parse(tblRTC, "HardResetStrategy", rtc.virtHardResetStrategy);
-                Parse(tblRTC, "HardResetTimestamp", rtc.virtHardResetTimestamp);
+                Parse(tblVirtual, "HardResetStrategy", rtc.virtHardResetStrategy);
+                Parse(tblVirtual, "HardResetTimestamp", rtc.virtHardResetTimestamp);
             }
         }
     }
@@ -1247,6 +1261,7 @@ SettingsLoadResult Settings::Load(const std::filesystem::path &path) {
         Parse(tblHotkeys, "OpenSettings", hotkeys.openSettings);
         Parse(tblHotkeys, "ToggleWindowedVideoOutput", hotkeys.toggleWindowedVideoOutput);
         Parse(tblHotkeys, "ToggleFullScreen", hotkeys.toggleFullScreen);
+        Parse(tblHotkeys, "ShowMessageHistory", hotkeys.showMessageHistory);
         Parse(tblHotkeys, "TakeScreenshot", hotkeys.takeScreenshot);
         Parse(tblHotkeys, "ExitApp", hotkeys.exitApp);
         Parse(tblHotkeys, "ToggleFrameRateOSD", hotkeys.toggleFrameRateOSD);
@@ -1520,6 +1535,7 @@ SettingsLoadResult Settings::Load(const std::filesystem::path &path) {
 
         if (auto tblMouse = tblInput["Mouse"]) {
             Parse(tblMouse, "CaptureMode", input.mouse.captureMode);
+            Parse(tblMouse, "LockToDisplay", input.mouse.lockToDisplay);
         }
 
         if (configVersion >= 4) {
@@ -1564,7 +1580,7 @@ SettingsLoadResult Settings::Load(const std::filesystem::path &path) {
     }
 
     if (auto tblVideo = data["Video"]) {
-        Parse(tblVideo, "GraphicsBackend", video.graphicsBackend);
+        // Parse(tblVideo, "GraphicsBackend", video.graphicsBackend);
         Parse(tblVideo, "ForceIntegerScaling", video.forceIntegerScaling);
         Parse(tblVideo, "ForceAspectRatio", video.forceAspectRatio);
         Parse(tblVideo, "ForcedAspect", video.forcedAspect);
@@ -1840,8 +1856,11 @@ SettingsSaveResult Settings::Save() {
             {"AltSpeedFactor", general.altSpeedFactor.Get()},
             {"UseAltSpeed", general.useAltSpeed.Get()},
             {"PauseWhenUnfocused", general.pauseWhenUnfocused},
+            {"UnpauseOnDiscLoad", general.unpauseOnDiscLoad},
+            {"StartPaused", general.startPaused},
             {"CheckForUpdates", general.checkForUpdates},
             {"IncludeNightlyBuilds", general.includeNightlyBuilds},
+            {"EnableDiscordPresence", general.enableDiscordPresence},
 
             {"PathOverrides", toml::table{{
                 {"IPLROMImages", m_context.profile.GetPathOverride(ProfilePath::IPLROMImages).native()},
@@ -1861,6 +1880,8 @@ SettingsSaveResult Settings::Save() {
             {"UIScale", gui.uiScale.Get()},
             {"RememberWindowGeometry", gui.rememberWindowGeometry},
             {"ShowMessages", gui.showMessages},
+            {"ShowGameNameOnTitleBar", gui.showGameNameOnTitleBar},
+            {"ShowPerformanceOnTitleBar", gui.showPerformanceOnTitleBar},
             {"ShowFrameRateOSD", gui.showFrameRateOSD},
             {"FrameRateOSDPosition", ToTOML(gui.frameRateOSDPosition)},
             {"ShowSpeedIndicatorForAllSpeeds", gui.showSpeedIndicatorForAllSpeeds},
@@ -1871,6 +1892,7 @@ SettingsSaveResult Settings::Save() {
             {"AutoDetectRegion", system.autodetectRegion.Get()},
             {"PreferredRegionOrder", ToTOML(system.preferredRegionOrder.Get())},
             {"EmulateSH2Cache", system.emulateSH2Cache},
+            {"SH2ClockFactor", system.sh2ClockFactor.Get()},
             {"InternalBackupRAMImagePath", Proximate(ProfilePath::PersistentState, system.internalBackupRAMImagePath).native()},
             {"InternalBackupRAMPerGame", system.internalBackupRAMPerGame},
 
@@ -1893,6 +1915,7 @@ SettingsSaveResult Settings::Save() {
             {"OpenSettings", ToTOML(hotkeys.openSettings)},
             {"ToggleWindowedVideoOutput", ToTOML(hotkeys.toggleWindowedVideoOutput)},
             {"ToggleFullScreen", ToTOML(hotkeys.toggleFullScreen)},
+            {"ShowMessageHistory", ToTOML(hotkeys.showMessageHistory)},
             {"TakeScreenshot", ToTOML(hotkeys.takeScreenshot)},
             {"ExitApp", ToTOML(hotkeys.exitApp)},
             {"ToggleFrameRateOSD", ToTOML(hotkeys.toggleFrameRateOSD)},
@@ -1977,6 +2000,7 @@ SettingsSaveResult Settings::Save() {
             {"Port2", makePortTable(1)},
             {"Mouse", toml::table{{
                 {"CaptureMode", ToTOML(input.mouse.captureMode)},
+                {"LockToDisplay", input.mouse.lockToDisplay},
             }}},
             {"Gamepad", toml::table{{
                 {"LSDeadzone", input.gamepad.lsDeadzone.Get()},
@@ -2004,7 +2028,7 @@ SettingsSaveResult Settings::Save() {
         }}},
 
         {"Video", toml::table{{
-            {"GraphicsBackend", ToTOML(video.graphicsBackend)},
+            //{"GraphicsBackend", ToTOML(video.graphicsBackend)},
             {"ForceIntegerScaling", video.forceIntegerScaling},
             {"ForceAspectRatio", video.forceAspectRatio},
             {"ForcedAspect", video.forcedAspect},
@@ -2070,7 +2094,7 @@ SettingsSaveResult Settings::Save() {
 
         {"CDBlock", toml::table{{
             {"ReadSpeed", cdblock.readSpeedFactor.Get()},
-            {"UseLLE", cdblock.useLLE.Get()},
+            {"UseLLE", cdblock.useLLE},
             {"OverrideROM", cdblock.overrideROM},
             {"ROMPath", Proximate(ProfilePath::CDBlockROMImages, cdblock.romPath).native()},
         }}},
@@ -2305,6 +2329,7 @@ std::unordered_set<input::MappedAction> Settings::ResetHotkeys() {
     rebindCtx.Rebind(hotkeys.openSettings, {KeyCombo{Mod::None, Key::F10}});
     rebindCtx.Rebind(hotkeys.toggleWindowedVideoOutput, {KeyCombo{Mod::None, Key::F9}});
     rebindCtx.Rebind(hotkeys.toggleFullScreen, {KeyCombo{Mod::Alt, Key::Return}});
+    rebindCtx.Rebind(hotkeys.showMessageHistory, {KeyCombo{Key::F1}});
     rebindCtx.Rebind(hotkeys.takeScreenshot, {KeyCombo{Key::F12}});
     rebindCtx.Rebind(hotkeys.exitApp, {}); // Alt+F4 is always recognized, no need to bind it here
 

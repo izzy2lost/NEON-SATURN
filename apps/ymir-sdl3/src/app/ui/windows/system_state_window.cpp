@@ -152,10 +152,15 @@ void SystemStateWindow::DrawClocks() {
         ImGui::TableSetupColumn("Ratio");
         ImGui::TableHeadersRow();
 
-        const sys::ClockRatios &clockRatios = m_context.saturn.instance->GetClockRatios();
+        const Saturn &saturn = *m_context.saturn.instance;
 
-        const double masterClock =
-            (double)clockRatios.masterClock * clockRatios.masterClockNum / clockRatios.masterClockDen / 1000000.0;
+        const sys::ClockRatios clockRatios = saturn.GetClockRatios();
+
+        const double clockScale = (double)saturn.configuration.system.sh2ClockFactor.Get().AsDouble();
+        const double baseMasterClock =
+            ((double)clockRatios.masterClock * clockRatios.masterClockNum / clockRatios.masterClockDen / 1000000.0);
+        const double masterClock = baseMasterClock * clockScale;
+
         ImGui::TableNextRow();
         if (ImGui::TableNextColumn()) {
             ImGui::TextUnformatted("SH-2, SCU and VDPs");
@@ -179,14 +184,14 @@ void SystemStateWindow::DrawClocks() {
         }
 
         // Account for double-resolution
-        const bool doubleWidth = m_context.saturn.instance->VDP.GetProbe().GetResolution().width >= 640;
+        const bool doubleWidth = saturn.VDP.GetProbe().GetResolution().width >= 640;
         ImGui::TableNextRow();
         if (ImGui::TableNextColumn()) {
             ImGui::TextUnformatted("Pixel clock");
         }
         if (ImGui::TableNextColumn()) {
             const double factor = doubleWidth ? 0.5 : 0.25;
-            ImGui::Text("%.5lf MHz", masterClock * factor);
+            ImGui::Text("%.5lf MHz", baseMasterClock * factor);
         }
         if (ImGui::TableNextColumn()) {
             ImGui::Text("1:%u", doubleWidth ? 2u : 4u);
@@ -257,24 +262,8 @@ void SystemStateWindow::DrawCDBlock() {
         m_context.EnqueueEvent(events::emu::EjectDisc());
     }
 
-    ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x);
-    if (m_context.state.loadedDiscImagePath.empty()) {
-        ImGui::TextUnformatted("No image loaded");
-    } else {
-        ImGui::Text("Image from %s", fmt::format("{}", m_context.state.loadedDiscImagePath).c_str());
-        std::string hash{};
-        {
-            std::unique_lock lock{m_context.locks.disc};
-            hash = ToString(m_context.saturn.GetDiscHash());
-        }
+    DrawDiscImage();
 
-        ImGui::Text("Hash: %s", hash.c_str());
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Copy##disc_hash")) {
-            SDL_SetClipboardText(hash.c_str());
-        }
-    }
-    ImGui::PopTextWrapPos();
     switch (status) {
     case cdblock::kStatusCodeBusy: ImGui::TextUnformatted("Busy"); break;
     case cdblock::kStatusCodePause: ImGui::TextUnformatted("Paused"); break;
@@ -300,7 +289,7 @@ void SystemStateWindow::DrawCDBlock() {
     const uint32 fad = probe.GetCurrentFrameAddress();
     const uint8 repeat = probe.GetCurrentRepeatCount();
     const uint8 maxRepeat = probe.GetMaxRepeatCount();
-    const cdblock::MSF msf = cdblock::FADToMSF(fad);
+    const media::MSF msf = media::FADToMSF(fad);
 
     if (status == cdblock::kStatusCodePlay || status == cdblock::kStatusCodeScan) {
         ImGui::BeginGroup();
@@ -430,24 +419,8 @@ void SystemStateWindow::DrawCDDrive() {
         m_context.EnqueueEvent(events::emu::EjectDisc());
     }
 
-    ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x);
-    if (m_context.state.loadedDiscImagePath.empty()) {
-        ImGui::TextUnformatted("No image loaded");
-    } else {
-        ImGui::Text("Image from %s", fmt::format("{}", m_context.state.loadedDiscImagePath).c_str());
-        std::string hash{};
-        {
-            std::unique_lock lock{m_context.locks.disc};
-            hash = ToString(m_context.saturn.GetDiscHash());
-        }
+    DrawDiscImage();
 
-        ImGui::Text("Hash: %s", hash.c_str());
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Copy##disc_hash")) {
-            SDL_SetClipboardText(hash.c_str());
-        }
-    }
-    ImGui::PopTextWrapPos();
     switch (status.operation) {
     case CDOp::Reset: ImGui::TextUnformatted("Reset"); break;
     case CDOp::Idle: ImGui::TextUnformatted("Idle"); break;
@@ -457,13 +430,16 @@ void SystemStateWindow::DrawCDDrive() {
     case CDOp::ReadTOC: ImGui::TextUnformatted("Reading TOC"); break;
     case CDOp::DiscChanged: ImGui::TextUnformatted("Disc changed"); break;
     case CDOp::ReadDataSector:
-        ImGui::Text("Reading track %u, index %u (Data)", status.trackNum, status.indexNum);
+        ImGui::Text("Reading track %u, index %u (Data)", util::from_bcd(status.trackNum),
+                    util::from_bcd(status.indexNum));
         break;
     case CDOp::ReadAudioSector:
-        ImGui::Text("Playing track %u, index %u (CDDA)", status.trackNum, status.indexNum);
+        ImGui::Text("Playing track %u, index %u (CDDA)", util::from_bcd(status.trackNum),
+                    util::from_bcd(status.indexNum));
         break;
     case CDOp::ScanAudioSector:
-        ImGui::Text("Scanning track %u, index %u (CDDA)", status.trackNum, status.indexNum);
+        ImGui::Text("Scanning track %u, index %u (CDDA)", util::from_bcd(status.trackNum),
+                    util::from_bcd(status.indexNum));
         break;
     case CDOp::Seek: ImGui::TextUnformatted("Seeking"); break;
     case CDOp::SeekSecurityRingB2: [[fallthrough]];
@@ -479,7 +455,7 @@ void SystemStateWindow::DrawCDDrive() {
                            status.operation == CDOp::SeekSecurityRingB6;
 
     const uint32 fad = isSeeking ? probe.GetTargetFrameAddress() : probe.GetCurrentFrameAddress();
-    const cdblock::MSF msf = cdblock::FADToMSF(fad);
+    const media::MSF msf = media::FADToMSF(fad);
 
     if (isReading || isSeeking) {
         ImGui::BeginGroup();
@@ -576,6 +552,44 @@ void SystemStateWindow::DrawCDDrive() {
     } else {
         ImGui::TextUnformatted("");
     }
+}
+
+void SystemStateWindow::DrawDiscImage() {
+    ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x);
+    if (m_context.state.loadedDiscImagePath.empty() && m_context.state.loadedDiscDrivePath.empty()) {
+        ImGui::TextUnformatted("No disc loaded");
+    } else {
+        if (!m_context.state.loadedDiscImagePath.empty()) {
+            ImGui::Text("Disc image from %s", fmt::format("{}", m_context.state.loadedDiscImagePath).c_str());
+        } else {
+            ImGui::Text("Disc from drive %s", fmt::format("{}", m_context.state.loadedDiscDrivePath).c_str());
+        }
+        std::string hash{};
+        std::string serial{};
+        {
+            std::unique_lock lock{m_context.locks.disc};
+            hash = ToString(m_context.saturn.GetDiscHash());
+            serial = m_context.saturn.GetDiscHeader().productNumber;
+        }
+
+        auto draw = [&](const char *name, std::string_view value) {
+            if (value.empty()) {
+                ImGui::Text("%s: <blank>", name);
+            } else {
+                ImGui::Text("%s: %s", name, value.data());
+                ImGui::PushID(name);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Copy")) {
+                    SDL_SetClipboardText(value.data());
+                }
+                ImGui::PopID();
+            }
+        };
+
+        draw("Serial", serial.c_str());
+        draw("Hash", hash.c_str());
+    }
+    ImGui::PopTextWrapPos();
 }
 
 void SystemStateWindow::DrawBackupMemory() {

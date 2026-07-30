@@ -18,6 +18,7 @@
 #include <SDL3/SDL.h>
 #include <curl/curlver.h>
 #include <cxxopts.hpp>
+#include <dr_libs/dr_mp3.h>
 #include <fmt/format.h>
 #include <lz4.h>
 #include <nghttp2/nghttp2ver.h>
@@ -56,6 +57,7 @@
 #define SEMVER_VERSION _SEMVER_STR(SEMVER_VERSION_MAJOR, SEMVER_VERSION_MINOR, SEMVER_VERSION_PATCH)
 #define STB_IMAGE_VERSION "2.30"       // Not exported
 #define STB_IMAGE_WRITE_VERSION "1.16" // Not exported
+#define STB_VORBIS_VERSION "1.22"      // Not exported
 #define MC_CONCQUEUE_VERSION "1.0.4"   // Not exported
 #define TOMLPP_VERSION _SEMVER_STR(TOML_LIB_MAJOR, TOML_LIB_MINOR, TOML_LIB_PATCH)
 #define XXHASH_VERSION _SEMVER_STR(XXH_VERSION_MAJOR, XXH_VERSION_MINOR, XXH_VERSION_RELEASE)
@@ -115,6 +117,7 @@ static const struct {
     {.name = "cxxopts",                       .version = CXXOPTS_VERSION,            .license = licenseMIT,           .repoURL = "https://github.com/jarro2783/cxxopts",           .licenseURL = "https://github.com/jarro2783/cxxopts/blob/master/LICENSE"},
     {.name = "date",                          .version = DATE_VERSION,               .license = licenseMIT,           .repoURL = "https://github.com/HowardHinnant/date",          .licenseURL = "https://github.com/HowardHinnant/date/blob/master/LICENSE.txt"},
     {.name = "Dear ImGui",                    .version = IMGUI_VERSION_FULL,         .license = licenseMIT,           .repoURL = "https://github.com/ocornut/imgui",               .licenseURL = "https://github.com/ocornut/imgui/blob/master/LICENSE.txt"},
+    {.name = "dr_mp3",                        .version = DRMP3_VERSION_STRING,       .license = licenseMIT,           .repoURL = "https://github.com/mackron/dr_libs",             .licenseURL = "https://github.com/mackron/dr_libs/blob/master/LICENSE"},
     {.name = "{fmt}",                         .version = fmtVersion.c_str(),         .license = licenseMIT,           .repoURL = "https://github.com/fmtlib/fmt",                  .licenseURL = "https://github.com/fmtlib/fmt/blob/master/LICENSE",                      .homeURL = "https://fmt.dev/latest/index.html"},
     {.name = "ImGui Club",                                                           .license = licenseMIT,           .repoURL = "https://github.com/ocornut/imgui_club",          .licenseURL = "https://github.com/ocornut/imgui_club/blob/main/LICENSE.txt"},
     {.name = "libchdr",                       .version = LIBCHDR_VERSION,            .license = licenseBSD3,          .repoURL = "https://github.com/rtissera/libchdr",            .licenseURL = "https://github.com/rtissera/libchdr/blob/master/LICENSE.txt"},
@@ -134,6 +137,7 @@ static const struct {
     {.name = "SDL_GameControllerDB",                                                 .license = licenseZlib,          .repoURL = "https://github.com/mdqinc/SDL_GameControllerDB", .licenseURL = "https://github.com/mdqinc/SDL_GameControllerDB/blob/master/LICENSE"},
     {.name = "stb_image",                     .version = STB_IMAGE_VERSION,          .license = licenseMIT,           .repoURL = "https://github.com/nothings/stb",                .licenseURL = "https://github.com/nothings/stb/blob/master/LICENSE"},
     {.name = "stb_image_write",               .version = STB_IMAGE_WRITE_VERSION,    .license = licenseMIT,           .repoURL = "https://github.com/nothings/stb",                .licenseURL = "https://github.com/nothings/stb/blob/master/LICENSE"},
+    {.name = "stb_vorbis",                    .version = STB_VORBIS_VERSION,         .license = licenseMIT,           .repoURL = "https://github.com/nothings/stb",                .licenseURL = "https://github.com/nothings/stb/blob/master/LICENSE"},
     {.name = "toml++",                        .version = TOMLPP_VERSION,             .license = licenseMIT,           .repoURL = "https://github.com/marzer/tomlplusplus" ,        .licenseURL = "https://github.com/marzer/tomlplusplus/blob/master/LICENSE",             .homeURL = "https://marzer.github.io/tomlplusplus/"},
     {.name = "xxHash",                        .version = XXHASH_VERSION,             .license = licenseBSD2,          .repoURL = "https://github.com/Cyan4973/xxHash",             .licenseURL = "https://github.com/Cyan4973/xxHash/blob/dev/LICENSE",                    .homeURL = "https://xxhash.com/"},
     {.name = "zlib",                          .version = ZLIB_VERSION,               .license = licenseZlib,          .repoURL = "https://github.com/madler/zlib",                 .licenseURL = "https://github.com/madler/zlib/blob/develop/LICENSE",                    .homeURL = "https://zlib.net/"},
@@ -147,6 +151,20 @@ static const char *demoTextStandard =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ  \u00C0\u00C9\u00CE\u00D5\u00DA\u00D1\u00C7\u00DD\n"
     "abcdefghijklmnopqrstuvwxyz  \u00E0\u00E9\u00EE\u00F5\u00FA\u00F1\u00E7\u00FD";
 
+static const char *demoTextStandardJP =
+    "いろはにほへとちりぬるを\n"
+    "わかよたれそつねならむ\n"
+    "うゐのおくやまけふこえて\n"
+    "あさきゆめみしゑひもせす\n"
+    "ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねの\n"
+    "はばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろゎわゐゑをんゔゝ\n"
+    "ァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノ\n"
+    "ハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロヮワヰヱヲンヴヵヶヷヸヺ\n"
+    "・ーヽ\n"
+    "\n"
+    "わがはいはねこである。なまえはまだない。どこでうまれたかとんとけんとうがつかつ。\n"
+    "なにでもうすぐらいじめじめしたところでニャーニャーないていたことだけはきおくしている。\n";
+
 static const char *demoTextMaterialSymbols =
     ICON_MS_HOME          ICON_MS_HELP         ICON_MS_FOLDER         ICON_MS_DOCS             ICON_MS_SETTINGS      ICON_MS_MENU         ICON_MS_HISTORY      ICON_MS_HISTORY_OFF    "\n"
     ICON_MS_PLAY_ARROW    ICON_MS_PAUSE        ICON_MS_PLAY_PAUSE     ICON_MS_ARROW_BACK_2     ICON_MS_FAST_FORWARD  ICON_MS_FAST_REWIND  ICON_MS_SKIP_NEXT    ICON_MS_SKIP_PREVIOUS  "\n"
@@ -158,6 +176,7 @@ static const FontDesc fontDescs[] = {
     { .name = "Material Symbols", .license = licenseApache2_0, .url = "https://fonts.google.com/icons",               .fontFn = [](SharedContext &ctx) -> FontInfo { return {ctx.fonts.sansSerif.regular, 24.0f}; }, .demoText = demoTextMaterialSymbols },
     { .name = "Spline Sans",      .license = licenseOFL,       .url = "https://github.com/SorkinType/SplineSans",     .fontFn = [](SharedContext &ctx) -> FontInfo { return {ctx.fonts.sansSerif.regular, 16.0f}; }, .demoText = demoTextStandard },
     { .name = "Spline Sans Mono", .license = licenseOFL,       .url = "https://github.com/SorkinType/SplineSansMono", .fontFn = [](SharedContext &ctx) -> FontInfo { return {ctx.fonts.monospace.regular, 16.0f}; }, .demoText = demoTextStandard },
+    { .name = "M PLUS U",         .license = licenseOFL,       .url = "https://github.com/coz-m/MPLUS_FONTS",         .fontFn = [](SharedContext &ctx) -> FontInfo { return {ctx.fonts.sansSerif.regular, 16.0f}; }, .demoText = demoTextStandardJP },
     { .name = "Zen Dots",         .license = licenseOFL,       .url = "https://github.com/googlefonts/zen-dots",      .fontFn = [](SharedContext &ctx) -> FontInfo { return {ctx.fonts.display,           24.0f}; }, .demoText = demoTextStandard },
 };
 // clang-format on
@@ -619,7 +638,8 @@ void AboutWindow::DrawAcknowledgementsTab() {
     ImGui::SameLine(0, 0);
     ImGui::TextUnformatted(", including:");
     ImGui::Indent();
-    ImGui::TextUnformatted("BlueInterlude, "
+    ImGui::TextUnformatted("4re, "
+                           "BlueInterlude, "
                            "bsdcode, "
                            "Citrodata, "
                            "floreal, "
@@ -668,6 +688,7 @@ void AboutWindow::DrawAcknowledgementsTab() {
     ImGui::TextUnformatted(":");
     ImGui::Indent();
     ImGui::TextUnformatted("Aitor Guevara, "
+                           "Armonte, "
                            "Aydan Watkins, "
                            "Chase Heathcliff, "
                            "Derek Fagan, "
@@ -679,6 +700,7 @@ void AboutWindow::DrawAcknowledgementsTab() {
                            "Jeff Greulich, "
                            "Joek, "
                            "Julien P, "
+                           "KC, "
                            "khalifax10, "
                            "Mario Fonseca, "
                            "Mored4u, "
@@ -689,7 +711,8 @@ void AboutWindow::DrawAcknowledgementsTab() {
                            "Rustle, "
                            "Some Guy, "
                            "TheCoolPup, "
-                           "Zrat.");
+                           "Zrat, "
+                           "アレ・.");
     ImGui::Unindent();
 
     ImGui::PushFont(m_context.fonts.sansSerif.bold, m_context.fontSizes.large);

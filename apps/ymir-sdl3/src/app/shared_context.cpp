@@ -4,11 +4,6 @@
 
 #include <ymir/sys/saturn.hpp>
 
-#include <ymir/util/scope_guard.hpp>
-
-#include <unordered_set>
-#include <vector>
-
 namespace app {
 
 SharedContext::SharedContext() {
@@ -34,12 +29,12 @@ std::filesystem::path SharedContext::GetGameFileName(bool oldStyle) const {
     // Use serial number + disc title if available
     {
         std::unique_lock lock{locks.disc};
-        const auto &disc = saturn.GetDisc();
-        if (!disc.sessions.empty() && !disc.header.productNumber.empty()) {
-            std::string productNumber = disc.header.productNumber;
+        const auto &discHeader = saturn.GetDiscHeader();
+        if (discHeader.IsValid() && !discHeader.productNumber.empty()) {
+            std::string productNumber = discHeader.productNumber;
             SanitizePath(productNumber);
-            if (!disc.header.gameTitle.empty()) {
-                std::string title = disc.header.gameTitle;
+            if (!discHeader.gameTitle.empty()) {
+                std::string title = discHeader.gameTitle;
                 SanitizePath(title);
                 if (oldStyle) {
                     return fmt::format("[{}] {}", productNumber, title);
@@ -85,6 +80,22 @@ std::filesystem::path SharedContext::GetPerGameExternalBackupRAMPath(ymir::bup::
     const std::filesystem::path basePath = profile.GetPath(ProfilePath::BackupMemory) / "games";
     std::filesystem::create_directories(basePath);
     return basePath / fmt::format("bup-ext-{}M-{}.bin", BupSizeToSize(bupSize) * 8 / 1024 / 1024, GetGameFileName());
+}
+
+std::filesystem::path SharedContext::GetPersistentSMPCDataPath() const {
+    const char *regionSuffix;
+    if (iplRomInfo != nullptr) {
+        switch (iplRomInfo->region) {
+        case ymir::db::SystemRegion::US_EU: regionSuffix = "us_eu"; break;
+        case ymir::db::SystemRegion::JP: regionSuffix = "jp"; break;
+        case ymir::db::SystemRegion::KR: regionSuffix = "asia"; break;
+        default: regionSuffix = "other"; break;
+        }
+    } else {
+        regionSuffix = "none";
+    }
+
+    return profile.GetPath(ProfilePath::PersistentState) / fmt::format("smpc-{}.bin", regionSuffix);
 }
 
 SDL_DisplayID SharedContext::GetSelectedDisplay() const {
@@ -152,6 +163,10 @@ bool SharedContext::SaturnContainer::IsDebugTracingEnabled() const {
     return instance->IsDebugTracingEnabled();
 }
 
+bool SharedContext::SaturnContainer::IsSH2CacheEmulationEnabled() const {
+    return instance->IsSH2CacheEmulationEnabled();
+}
+
 ymir::XXH128Hash SharedContext::SaturnContainer::GetIPLHash() const {
     return instance->GetIPLHash();
 }
@@ -164,8 +179,12 @@ ymir::XXH128Hash SharedContext::SaturnContainer::GetDiscHash() const {
     return instance->GetDiscHash();
 }
 
-const ymir::media::Disc &SharedContext::SaturnContainer::GetDisc() const {
-    return instance->GetDisc();
+const ymir::media::SaturnHeader &SharedContext::SaturnContainer::GetDiscHeader() const {
+    return instance->GetCDInterface().GetDiscHeader();
+}
+
+const ymir::media::CDInterface &SharedContext::SaturnContainer::GetCDInterface() const {
+    return instance->GetCDInterface();
 }
 
 ymir::core::Configuration &SharedContext::SaturnContainer::GetConfiguration() {

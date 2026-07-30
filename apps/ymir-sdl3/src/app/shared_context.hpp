@@ -23,7 +23,6 @@
 #include <app/events/emu_event.hpp>
 #include <app/events/gui_event.hpp>
 
-#include <util/deprecation_helpers.hpp>
 #include <util/service_locator.hpp>
 
 #include <ymir/hw/smpc/peripheral/peripheral_state_common.hpp>
@@ -91,7 +90,8 @@ namespace cart {
 } // namespace cart
 
 namespace media {
-    struct Disc;
+    class CDInterface;
+    struct SaturnHeader;
 } // namespace media
 
 } // namespace ymir
@@ -180,11 +180,13 @@ struct SharedContext {
         bool IsSlaveSH2Enabled() const;
         void SetSlaveSH2Enabled(bool enabled);
         bool IsDebugTracingEnabled() const;
+        bool IsSH2CacheEmulationEnabled() const;
 
         [[nodiscard]] ymir::XXH128Hash GetIPLHash() const;
         [[nodiscard]] ymir::XXH128Hash GetCDBlockROMHash() const;
         [[nodiscard]] ymir::XXH128Hash GetDiscHash() const;
-        [[nodiscard]] const ymir::media::Disc &GetDisc() const;
+        [[nodiscard]] const ymir::media::SaturnHeader &GetDiscHeader() const;
+        [[nodiscard]] const ymir::media::CDInterface &GetCDInterface() const;
 
         ymir::core::Configuration &GetConfiguration();
         const ymir::core::Configuration &GetConfiguration() const {
@@ -193,6 +195,7 @@ struct SharedContext {
     } saturn;
 
     AudioSystem audioSystem;
+    std::chrono::steady_clock::time_point lastVolumeChangeTime;
 
     float displayScale = 1.0f;
 
@@ -414,6 +417,14 @@ struct SharedContext {
                 y += inputs.y;
             }
 
+            // Also aggregate analog stick inputs if in digital mode
+            if (!analogMode) {
+                for (auto &[_, inputs] : analogStickInputs) {
+                    x += inputs.x;
+                    y += inputs.y;
+                }
+            }
+
             // Clamp to -1.0..1.0
             x = std::clamp(x, -1.0f, 1.0f);
             y = std::clamp(y, -1.0f, 1.0f);
@@ -424,7 +435,7 @@ struct SharedContext {
                 ~input::AnalogToDigital2DAxis(x, y, sensitivity, Button::Right, Button::Left, Button::Down, Button::Up);
         }
 
-        void UpdateAnalogStick() {
+        void UpdateAnalogStick(float sensitivity) {
             // Aggregate all analog stick inputs
             x = 0.0f;
             y = 0.0f;
@@ -436,6 +447,11 @@ struct SharedContext {
             // Clamp to -1.0..1.0
             x = std::clamp(x, -1.0f, 1.0f);
             y = std::clamp(y, -1.0f, 1.0f);
+
+            // Also update DPad in digital mode
+            if (!analogMode) {
+                UpdateDPad(sensitivity);
+            }
         }
 
         void UpdateAnalogTriggers() {
@@ -691,6 +707,7 @@ struct SharedContext {
 
     ROMManager romManager;
     std::filesystem::path iplRomPath;
+    const ymir::db::IPLROMInfo *iplRomInfo = nullptr;
     std::filesystem::path cdbRomPath;
 
     RewindBuffer rewindBuffer;
@@ -723,6 +740,7 @@ struct SharedContext {
 
     struct State {
         std::filesystem::path loadedDiscImagePath;
+        std::filesystem::path loadedDiscDrivePath;
         std::deque<std::filesystem::path> recentDiscs;
     } state;
 
@@ -790,15 +808,18 @@ struct SharedContext {
 
     // Circular buffer of messages to be displayed
     mutable struct Messages {
-        std::array<Message, 10> list{};
+        std::array<Message, 10000> list{};
         size_t count = 0;
         size_t head = 0;
 
         void Add(std::string message) {
+            Message msg{.message = message,
+                        .timestamp = std::chrono::steady_clock::now(),
+                        .sysTime = std::chrono::system_clock::now()};
             if (count < list.size()) {
-                list[count++] = {.message = message, .timestamp = std::chrono::steady_clock::now()};
+                list[count++] = msg;
             } else {
-                list[head++] = {.message = message, .timestamp = std::chrono::steady_clock::now()};
+                list[head++] = msg;
                 if (head == list.size()) {
                     head = 0;
                 }
@@ -851,6 +872,8 @@ struct SharedContext {
 
     std::filesystem::path GetInternalBackupRAMPath() const;
     std::filesystem::path GetPerGameExternalBackupRAMPath(ymir::bup::BackupMemorySize bupSize) const;
+
+    std::filesystem::path GetPersistentSMPCDataPath() const;
 
     // Retrieves the current display if one is selected.
     // Returns the primary display if the "current display" option is selected.

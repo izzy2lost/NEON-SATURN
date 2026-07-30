@@ -398,14 +398,14 @@ FORCE_INLINE void SCUDSP::Cmd_Operation(DSPInstr instr) {
     //  111   MOV [s],P   MOV [s],X
     if ((instr.aluInfo.xBusOp & 0b11) == 0b10) {
         // MOV MUL,P
-        P.s64 = bit::extract<0, 47>(static_cast<sint64>(RX) * static_cast<sint64>(RY));
+        P.u64 = bit::extract<0, 47>(static_cast<sint64>(RX) * static_cast<sint64>(RY));
     }
     if (instr.aluInfo.xBusOp >= 0b011) {
         const sint32 value = ReadSource<debug>(instr.aluInfo.xBusSource);
         markDataRAMRead(instr.aluInfo.xBusSource);
         if ((instr.aluInfo.xBusOp & 0b11) == 0b11) {
             // MOV [s],P
-            P.s64 = bit::extract<0, 47>(static_cast<sint64>(value));
+            P.u64 = bit::extract<0, 47>(static_cast<sint64>(value));
         }
         if (bit::test<2>(instr.aluInfo.xBusOp)) {
             // MOV [s],X
@@ -428,17 +428,17 @@ FORCE_INLINE void SCUDSP::Cmd_Operation(DSPInstr instr) {
     // 111    MOV [s],A   MOV [s],Y
     if ((instr.aluInfo.yBusOp & 0b11) == 0b01) {
         // CLR A
-        AC.s64 = 0;
+        AC.u64 = 0;
     } else if ((instr.aluInfo.yBusOp & 0b11) == 0b10) {
         // MOV ALU,A
-        AC.s64 = ALU.s64;
+        AC.u64 = ALU.u64;
     }
     if (instr.aluInfo.yBusOp >= 0b11) {
         const sint32 value = ReadSource<debug>(instr.aluInfo.yBusSource);
         markDataRAMRead(instr.aluInfo.yBusSource);
         if ((instr.aluInfo.yBusOp & 0b11) == 0b11) {
             // MOV [s],A
-            AC.s64 = bit::extract<0, 47>(static_cast<sint64>(value));
+            AC.u64 = bit::extract<0, 47>(static_cast<sint64>(value));
         }
         if (bit::test<2>(instr.aluInfo.yBusOp)) {
             // MOV [s],Y

@@ -44,14 +44,15 @@ struct VDP2DebugRender {
     // Debug overlay alpha blended on top of the final composite image
     struct Overlay {
         enum class Type {
-            None,          // No overlay is applied
-            SingleLayer,   // Display raw contents of a single layer
-            LayerStack,    // Colorize by layer on a level of the stack
-            PriorityStack, // Colorize by priority on a level of the stack
-            Windows,       // Colorize by window state (one layer or custom setup)
-            RotParams,     // Colorize by rotation parameters on RBG0
-            ColorCalc,     // Colorize by color calculation flag/mode
-            Shadow,        // Colorize by shadow flag
+            None,           // No overlay is applied
+            SingleLayer,    // Display raw contents of a single layer
+            LayerStack,     // Colorize by layer on a level of the stack
+            PriorityStack,  // Colorize by priority on a level of the stack
+            Windows,        // Colorize by window state (one layer or custom setup)
+            RotParams,      // Colorize by rotation parameters on RBG0
+            ColorCalc,      // Colorize by color calculation flag/mode
+            ColorGradation, // Colorize by color gradation flag
+            Shadow,         // Colorize by shadow flag
         } type = Type::None;
 
         // Whether to render the debug overlay.
@@ -68,8 +69,11 @@ struct VDP2DebugRender {
         // [4] NBG2
         // [5] NBG3
         // [6] Back
-        // [7] Line color
-        // [8] Transparent mesh sprites (when enhancement is enabled)
+        // [7] Line color screen
+        // [8] RBG0 line color
+        // [9] RBG1 line color
+        // [10] Transparent mesh sprites (when enhancement is enabled)
+        // [11] Gradation screen (when enabled)
         uint8 singleLayerIndex = 0;
 
         // Which layer stack level to draw when using LayerStack overlay.
@@ -143,6 +147,13 @@ struct VDP2DebugRender {
         uint8 colorCalcStackIndex = 0;
         Color888 colorCalcDisableColor{.r = 0x00, .g = 0x00, .b = 0x00};
         Color888 colorCalcEnableColor{.r = 0xFF, .g = 0xFF, .b = 0xFF};
+
+        // Which layer stack level to draw when using ColorGradation overlay.
+        // 0=top, 1=middle.
+        // Any other value defaults to 0.
+        uint8 colorGradStackIndex = 0;
+        Color888 colorGradDisableColor{.r = 0x00, .g = 0x00, .b = 0x00};
+        Color888 colorGradEnableColor{.r = 0xFF, .g = 0xFF, .b = 0xFF};
 
         Color888 shadowDisableColor{.r = 0xFF, .g = 0xFF, .b = 0xFF};
         Color888 shadowEnableColor{.r = 0x00, .g = 0x00, .b = 0x00};

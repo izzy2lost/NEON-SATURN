@@ -20,7 +20,7 @@
 
 #include <ymir/hw/hw_defs.hpp>
 
-#include <ymir/media/disc.hpp>
+#include <ymir/media/cd_interface.hpp>
 #include <ymir/media/filesystem.hpp>
 
 #include <ymir/core/hash.hpp>
@@ -32,7 +32,7 @@ namespace ymir::cdblock {
 
 class CDBlock {
 public:
-    CDBlock(core::Scheduler &scheduler, const media::Disc &disc, const media::fs::Filesystem &fs,
+    CDBlock(core::Scheduler &scheduler, media::CDInterface &cdif, const media::fs::Filesystem &fs,
             core::Configuration::CDBlock &config);
 
     void Reset(bool hard);
@@ -72,8 +72,9 @@ private:
     static void OnCommandExecEvent(core::EventContext &eventContext, void *userContext);
 
     alignas(uint64) std::array<uint16, 4> m_CR;
+    alignas(uint64) std::array<uint16, 4> m_RR;
 
-    const media::Disc &m_disc;
+    media::CDInterface &m_cdif;
     const media::fs::Filesystem &m_fs;
     media::fs::FilesystemState m_fsState{m_fs};
 
@@ -169,10 +170,10 @@ private:
     // -------------------------------------------------------------------------
     // Status reports
 
-    // Updates CR1-4 with the current CD status
+    // Updates RR1-4 with the current CD status
     void ReportCDStatus();
 
-    // Updates CR1-4 with the current CD status, overriding the status code
+    // Updates RR1-4 with the current CD status, overriding the status code
     void ReportCDStatus(uint8 statusCode);
 
     // Gets the current CD status code without the flags and taking into account the Play->Pause transition period
@@ -273,6 +274,10 @@ private:
     public:
         PartitionManager();
 
+        void UseTracer(debug::ICDBlockTracer *tracer) {
+            m_tracer = tracer;
+        }
+
         void Reset();
 
         uint8 GetBufferCount(uint8 partitionIndex) const;
@@ -298,11 +303,18 @@ private:
         [[nodiscard]] bool ValidateState(const savestate::CDBlockSaveState &state) const;
         void LoadState(const savestate::CDBlockSaveState &state);
 
+        // -------------------------------------------------------------------------
+        // Debugger
+
+        void OnTracerAttached();
+
     private:
         std::array<std::deque<Buffer>, kNumPartitions> m_partitions;
 
         uint32 m_freeBuffers;
         uint32 m_reservedBuffers;
+
+        debug::ICDBlockTracer *m_tracer = nullptr;
     };
 
     PartitionManager m_partitionManager;
@@ -434,7 +446,12 @@ public:
     // Attaches the specified tracer to this component.
     // Pass nullptr to disable tracing.
     void UseTracer(debug::ICDBlockTracer *tracer) {
+        if (m_tracer && m_tracer != tracer) {
+            m_tracer->Detach();
+        }
         m_tracer = tracer;
+        m_partitionManager.UseTracer(tracer);
+        m_partitionManager.OnTracerAttached();
     }
 
     class Probe {

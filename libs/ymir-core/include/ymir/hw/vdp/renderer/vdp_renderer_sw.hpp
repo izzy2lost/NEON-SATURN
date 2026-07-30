@@ -106,8 +106,8 @@ public:
     template <mem_primitive_16 T>
     void VDP1WriteVRAMImpl(uint32 address, T value);
 
-    void VDP1SyncFB() override {}
-    void VDP1DebugSyncFB() override {}
+    void VDP1SyncFB() override;
+    void VDP1DebugSyncFB() override;
 
     void VDP1WriteFB(uint32 address, uint8 value) override;
     void VDP1WriteFB(uint32 address, uint16 value) override;
@@ -198,10 +198,13 @@ private:
 
             EraseFramebuffer,
             SwapBuffers,
+            EndDraw,
             Command,
 
             VRAMWriteByte,
             VRAMWriteWord,
+            FBRAMWriteByte,
+            FBRAMWriteWord,
             RegWrite,
 
             PreSaveStateSync,
@@ -239,6 +242,10 @@ private:
             return {Type::SwapBuffers};
         }
 
+        static VDP1RenderEvent EndDraw() {
+            return {Type::EndDraw};
+        }
+
         static VDP1RenderEvent Command(uint32 address, VDP1Command::Control control) {
             return {Type::Command, {.command = {.address = address, .control = control}}};
         }
@@ -257,6 +264,24 @@ private:
                 return VRAMWriteByte(address, value);
             } else if constexpr (std::is_same_v<T, uint16>) {
                 return VRAMWriteWord(address, value);
+            }
+            util::unreachable();
+        }
+
+        static VDP1RenderEvent FBRAMWriteByte(uint32 address, uint8 value) {
+            return {Type::FBRAMWriteByte, {.write = {.address = address, .value = value}}};
+        }
+
+        static VDP1RenderEvent FBRAMWriteWord(uint32 address, uint16 value) {
+            return {Type::FBRAMWriteWord, {.write = {.address = address, .value = value}}};
+        }
+
+        template <mem_primitive_16 T>
+        static VDP1RenderEvent FBRAMWrite(uint32 address, T value) {
+            if constexpr (std::is_same_v<T, uint8>) {
+                return FBRAMWriteByte(address, value);
+            } else if constexpr (std::is_same_v<T, uint16>) {
+                return FBRAMWriteWord(address, value);
             }
             util::unreachable();
         }
@@ -290,35 +315,40 @@ private:
         std::array<VDP1RenderEvent, 64> pendingEvents;
         size_t pendingEventsCount = 0;
 
+        std::atomic_uint32_t cmdFence{0};
+        uint32 cmdCount{0};
+
         struct VDP1 {
             VDP1Regs regs;
             VDP1Memory mem;
+            alignas(16) std::array<SpriteFB, 2> spriteFB;
         } vdp1;
 
         void Reset() {
             vdp1.regs.Reset();
             vdp1.mem.Reset();
+            vdp1.spriteFB[0].fill(0);
+            vdp1.spriteFB[1].fill(0);
         }
 
         void EnqueueEvent(VDP1RenderEvent &&event) {
             switch (event.type) {
             case VDP1RenderEvent::Type::VRAMWriteByte:
             case VDP1RenderEvent::Type::VRAMWriteWord:
+            case VDP1RenderEvent::Type::FBRAMWriteByte:
+            case VDP1RenderEvent::Type::FBRAMWriteWord:
             case VDP1RenderEvent::Type::RegWrite:
-                // Batch VRAM and register writes to send in bulk
+                // Batch these writes to send in bulk
                 pendingEvents[pendingEventsCount++] = event;
                 if (pendingEventsCount == pendingEvents.size()) {
-                    eventQueue.enqueue_bulk(pTok, pendingEvents.begin(), pendingEventsCount);
-                    pendingEventsCount = 0;
+                    FlushPendingEvents();
                 }
                 break;
             default:
                 // Send any pending writes before rendering
-                if (pendingEventsCount > 0) {
-                    eventQueue.enqueue_bulk(pTok, pendingEvents.begin(), pendingEventsCount);
-                    pendingEventsCount = 0;
-                }
+                FlushPendingEvents();
                 eventQueue.enqueue(pTok, event);
+                ++cmdCount;
                 break;
             }
         }
@@ -326,6 +356,15 @@ private:
         template <typename It>
         size_t DequeueEvents(It first, size_t count) {
             return eventQueue.wait_dequeue_bulk(cTok, first, count);
+        }
+
+        FORCE_INLINE void FlushPendingEvents() {
+            if (pendingEventsCount == 0) [[likely]] {
+                return;
+            }
+            eventQueue.enqueue_bulk(pTok, pendingEvents.begin(), pendingEventsCount);
+            cmdCount += pendingEventsCount;
+            pendingEventsCount = 0;
         }
     } m_vdp1RenderingContext;
 
@@ -506,7 +545,7 @@ private:
             case VDP2RenderEvent::Type::VDP2CRAMWriteByte:
             case VDP2RenderEvent::Type::VDP2CRAMWriteWord:
             case VDP2RenderEvent::Type::VDP2RegWrite:
-                // Batch VRAM, CRAM and register writes to send in bulk
+                // Batch these writes to send in bulk
                 pendingEvents[pendingEventsCount++] = event;
                 if (pendingEventsCount == pendingEvents.size()) {
                     eventQueue.enqueue_bulk(pTok, pendingEvents.begin(), pendingEventsCount);
@@ -617,6 +656,9 @@ private:
     // Retrieves the current index of the VDP1 display framebuffer.
     uint8 VDP1GetDisplayFBIndex() const;
 
+    // Retrieves a reference to the current VDP1 draw framebuffer in use by the renderer.
+    std::array<SpriteFB, 2> &VDP1GetRendererDrawFB(bool altFB);
+
     // Erases the current VDP1 display framebuffer.
     template <bool countCycles>
     void VDP1DoEraseFramebuffer(uint64 cycles = ~0ull);
@@ -638,9 +680,12 @@ private:
     // Should return true if at least one pixel of the line is inside the system + user clipping areas, regardless of
     // transparency, mesh, end codes, etc.
 
-    TPL_TRAITS bool VDP1PlotPixel(CoordS32 coord, const VDP1PixelParams &pixelParams);
-    TPL_LINE_TRAITS bool VDP1PlotLine(CoordS32 coord1, CoordS32 coord2, VDP1LineParams &lineParams);
-    TPL_TRAITS bool VDP1PlotTexturedLine(CoordS32 coord1, CoordS32 coord2, VDP1TexturedLineParams &lineParams);
+    TPL_TRAITS bool VDP1PlotPixel(CoordS32 coord, const VDP1PixelParams &pixelParams, const VDP1Regs &regs1,
+                                  bool doubleDensity);
+    TPL_LINE_TRAITS bool VDP1PlotLine(CoordS32 coord1, CoordS32 coord2, VDP1LineParams &lineParams,
+                                      const VDP1Regs &regs1, bool doubleDensity);
+    TPL_TRAITS bool VDP1PlotTexturedLine(CoordS32 coord1, CoordS32 coord2, VDP1TexturedLineParams &lineParams,
+                                         const VDP1Regs &regs1, bool doubleDensity);
     TPL_TRAITS void VDP1PlotTexturedQuad(uint32 cmdAddress, VDP1Command::Control control, VDP1Command::Size size,
                                          CoordS32 coordA, CoordS32 coordB, CoordS32 coordC, CoordS32 coordD);
 
@@ -686,7 +731,7 @@ private:
     struct Pixels {
         alignas(16) std::array<Color888, kMaxResH> color;
         alignas(16) std::array<uint8, kMaxResH> priority;
-        alignas(16) std::array<bool, kMaxResH> specialColorCalc;
+        alignas(16) std::array<bool, kMaxResH> specialColorCalc; // also used as palette/RGB indicator in sprite layer
 
         FORCE_INLINE Pixel GetPixel(size_t index) const {
             return Pixel{
@@ -788,6 +833,7 @@ private:
         LYR_NBG3,
         LYR_Back,
         LYR_LineColor, // not really used
+        LYR_Invalid,
     };
 
     // Cached CRAM colors converted from RGB555 to RGB888.
@@ -875,6 +921,8 @@ private:
         alignas(16) std::array<bool, kMaxResH> layer0ColorOffsetEnabled;
         alignas(16) std::array<bool, kMaxResH> layer0MeshColorCalcEnabled;
         alignas(16) std::array<Color888, kMaxResH> meshTempColors;
+        alignas(16) std::array<bool, kMaxResH> colorGradEnabled;
+        alignas(16) std::array<Color888, kMaxResH> colorGradLayerColors;
     };
 
     // Pre-allocated buffers for VDP2ComposeLine for primary and alternate fields.

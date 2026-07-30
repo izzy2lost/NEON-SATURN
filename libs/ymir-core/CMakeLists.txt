@@ -105,6 +105,7 @@ add_library(ymir-core
 
     include/ymir/hw/smpc/rtc.hpp
     include/ymir/hw/smpc/smpc.hpp
+    include/ymir/hw/smpc/smpc_defs.hpp
     include/ymir/hw/smpc/smpc_internal_callbacks.hpp
 
     include/ymir/hw/smpc/peripheral/peripheral_base.hpp
@@ -142,14 +143,23 @@ add_library(ymir-core
 
     include/ymir/hw/vdp/renderer/common/vdp1_steppers.hpp
 
-    include/ymir/media/cdrom_crc.hpp
+    include/ymir/media/cd_defs.hpp
+    include/ymir/media/cd_interface.hpp
+    include/ymir/media/cd_utils.hpp
     include/ymir/media/disc.hpp
     include/ymir/media/filesystem.hpp
     include/ymir/media/frame_address.hpp
+    include/ymir/media/host_cd.hpp
     include/ymir/media/iso9660.hpp
     include/ymir/media/media_defs.hpp
     include/ymir/media/saturn_header.hpp
+    include/ymir/media/scsi.hpp
     include/ymir/media/subheader.hpp
+
+    include/ymir/media/cd_device/cd_device_base.hpp
+    include/ymir/media/cd_device/cd_device_null.hpp
+    include/ymir/media/cd_device/cd_device_host.hpp
+    include/ymir/media/cd_device/cd_device_image.hpp
 
     include/ymir/media/loader/loader.hpp
     include/ymir/media/loader/loader_bin_cue.hpp
@@ -171,6 +181,7 @@ add_library(ymir-core
     include/ymir/savestate/savestate.hpp
     include/ymir/savestate/savestate_cdblock.hpp
     include/ymir/savestate/savestate_cd_drive.hpp
+    include/ymir/savestate/savestate_cd_interface.hpp
     include/ymir/savestate/savestate_m68k.hpp
     include/ymir/savestate/savestate_scheduler.hpp
     include/ymir/savestate/savestate_scsp.hpp
@@ -193,7 +204,6 @@ add_library(ymir-core
     include/ymir/sys/memory_defs.hpp
     include/ymir/sys/saturn.hpp
     include/ymir/sys/system.hpp
-    include/ymir/sys/system_features.hpp
     include/ymir/sys/system_internal_callbacks.hpp
 
     include/ymir/util/arith_ops.hpp
@@ -212,9 +222,12 @@ add_library(ymir-core
     include/ymir/util/hashing.hpp
     include/ymir/util/inline.hpp
     include/ymir/util/lsn_denormals.hpp
+    include/ymir/util/observable.hpp
     include/ymir/util/process.hpp
+    include/ymir/util/ratio.hpp
     include/ymir/util/scope_guard.hpp
     include/ymir/util/size_ops.hpp
+    include/ymir/util/string.hpp
     include/ymir/util/thread_name.hpp
     include/ymir/util/type_traits_ex.hpp
     include/ymir/util/unreachable.hpp
@@ -276,9 +289,16 @@ add_library(ymir-core
 
     src/ymir/hw/vdp/renderer/vdp_renderer_sw.cpp
 
-    src/ymir/media/cdrom_crc.cpp
+    src/ymir/media/cd_defs.cpp
+    src/ymir/media/cd_interface.cpp
+    src/ymir/media/cd_utils.cpp
     src/ymir/media/filesystem.cpp
+    src/ymir/media/media_defs.cpp
     src/ymir/media/saturn_header.cpp
+
+    src/ymir/media/cd_device/cd_device_base.cpp
+    src/ymir/media/cd_device/cd_device_host.cpp
+    src/ymir/media/cd_device/cd_device_image.cpp
 
     src/ymir/media/loader/loader.cpp
     src/ymir/media/loader/loader_bin_cue.cpp
@@ -296,9 +316,11 @@ add_library(ymir-core
     src/ymir/util/date_time.cpp
     src/ymir/util/event.cpp
     src/ymir/util/process.cpp
+    src/ymir/util/string.cpp
     src/ymir/util/thread_name.cpp
     src/ymir/util/virtual_memory.cpp
 )
+
 add_library(ymir::ymir-core ALIAS ymir-core)
 set_target_properties(ymir-core PROPERTIES
                       VERSION ${Ymir_core_VERSION}
@@ -309,7 +331,20 @@ target_include_directories(ymir-core
 )
 target_compile_features(ymir-core PUBLIC cxx_std_20)
 
-find_package(fmt CONFIG REQUIRED)
+## Add OS-specific source files for host CD drive support
+if (Ymir_FF_HOST_CD_DRIVES)
+    if (WIN32)
+        target_sources(ymir-core PRIVATE src/ymir/media/host_cd_windows.cpp)
+    elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_sources(ymir-core PRIVATE src/ymir/media/host_cd_linux.cpp)
+    elseif (APPLE)
+        target_sources(ymir-core PRIVATE src/ymir/media/host_cd_macos.cpp)
+    else ()
+        target_sources(ymir-core PRIVATE src/ymir/media/host_cd_dummy.cpp)
+    endif ()
+else ()
+    target_sources(ymir-core PRIVATE src/ymir/media/host_cd_dummy.cpp)
+endif ()
 
 ## Add dependencies
 target_link_libraries(ymir-core PUBLIC
@@ -348,6 +383,7 @@ target_precompile_headers(ymir-core
         "$<$<COMPILE_LANGUAGE:CXX>:<filesystem$<ANGLE-R>>"
         "$<$<COMPILE_LANGUAGE:CXX>:<fstream$<ANGLE-R>>"
         "$<$<COMPILE_LANGUAGE:CXX>:<functional$<ANGLE-R>>"
+        "$<$<COMPILE_LANGUAGE:CXX>:<future$<ANGLE-R>>"
         "$<$<COMPILE_LANGUAGE:CXX>:<initializer_list$<ANGLE-R>>"
         "$<$<COMPILE_LANGUAGE:CXX>:<iosfwd$<ANGLE-R>>"
         "$<$<COMPILE_LANGUAGE:CXX>:<iostream$<ANGLE-R>>"
@@ -409,7 +445,9 @@ target_compile_definitions(ymir-core PUBLIC "Ymir_EXTRA_INLINING=$<BOOL:${Ymir_E
 target_compile_definitions(ymir-core PUBLIC "TOML_EXCEPTIONS=0")
 
 ## Define feature flags macros
-target_compile_definitions(ymir-core PUBLIC "Ymir_FF_VIRTUA_GUN=$<BOOL:${Ymir_FF_VIRTUA_GUN}>")
+## Template:
+## target_compile_definitions(ymir-core PUBLIC "Ymir_FF_[NAME]=$<BOOL:${Ymir_FF_[NAME]}>")
+target_compile_definitions(ymir-core PUBLIC "Ymir_FF_HOST_CD_DRIVES=$<BOOL:${Ymir_FF_HOST_CD_DRIVES}>")
 
 ## Generate the export header and attach it to the target
 include(GenerateExportHeader)
