@@ -30,6 +30,33 @@ set(Ymir_AVX2 OFF CACHE BOOL "" FORCE)
 
 message(STATUS "NEON SATURN Android: using minimal vendored dependency set")
 
+# Release optimization.
+# Gradle maps the release variant to RelWithDebInfo, which the NDK compiles at -O2 with
+# no cross-translation-unit optimization. ymir-core is split across ~90 files, so most of
+# the emulator's hot path is invisible to the optimizer; ThinLTO is what lets the SH2 and
+# VDP inner loops inline across those boundaries. Applied directory-wide so the vendored
+# decompression libraries (used for CHD loading) benefit too.
+# Debug builds are deliberately left at the NDK defaults to keep iteration fast.
+#
+# Note: Ymir_ENABLE_IPO above is inert in this build - it is gated on IPO_SUPPORTED, which
+# is only set by the root CMakeLists.txt that the Android build does not include. LTO is
+# applied here instead, which also covers the vendored libraries and the JNI layer.
+set(neonsaturn_optimized "$<NOT:$<CONFIG:Debug>>")
+
+add_compile_options(
+    "$<${neonsaturn_optimized}:-O3>"
+    "$<${neonsaturn_optimized}:-flto=thin>"
+)
+add_link_options(
+    "$<${neonsaturn_optimized}:-flto=thin>"
+    # Keeps incremental release links from redoing the whole ThinLTO backend
+    "$<${neonsaturn_optimized}:-Wl,--thinlto-cache-dir=${CMAKE_BINARY_DIR}/thinlto-cache>"
+    "$<${neonsaturn_optimized}:-Wl,--thinlto-cache-policy=cache_size_bytes=1g>"
+    # --gc-sections already comes from the NDK toolchain; fold identical functions as well.
+    # 'safe' honours Clang's address-significance table, so function-pointer identity holds.
+    "$<${neonsaturn_optimized}:-Wl,--icf=safe>"
+)
+
 # ymir-core links fmt::fmt but does not look it up itself (upstream gets it from
 # vendor/CMakeLists.txt, which this build does not use), so resolve it from vcpkg here
 find_package(fmt CONFIG REQUIRED)
