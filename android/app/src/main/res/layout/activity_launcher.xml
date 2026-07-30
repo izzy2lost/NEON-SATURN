@@ -34,7 +34,7 @@
                 android:adjustViewBounds="true"
                 android:contentDescription="@null"
                 android:scaleType="fitCenter"
-                android:src="@drawable/ic_header_saturn" />
+                android:src="@drawable/logo" />
 
             <!-- Single cycling view-mode toggle — start/left side -->
             <ImageButton
