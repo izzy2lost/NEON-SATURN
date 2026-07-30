@@ -545,9 +545,8 @@ void serialize(Archive &ar, VDPSaveState &s, const uint32 version) {
     }
     if (version >= 13) {
         ar(s.regs1.nextCommandAddress);
-    } else {
-        s.regs1.nextCommandAddress = s.regs1.COPR << 3u;
     }
+    // The pre-v13 fallback is derived from COPR, which is only read below.
 
     // -------------------------------------------------------------------------
 
@@ -561,6 +560,9 @@ void serialize(Archive &ar, VDPSaveState &s, const uint32 version) {
             bool dummy;
             ar(dummy /*manualSwap*/, dummy /*manualErase*/);
         }
+    }
+    if (version < 13) {
+        s.regs1.nextCommandAddress = s.regs1.COPR << 3u;
     }
 
     // -------------------------------------------------------------------------

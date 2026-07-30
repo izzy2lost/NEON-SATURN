@@ -261,6 +261,16 @@ public:
         }
     }
 
+    void WritePersistentSMPCData(const ymir::smpc::PersistentSMPCData &data) {
+        if (m_config.dataRoot.empty()) {
+            return;
+        }
+        std::error_code error{};
+        if (!SavePersistentSMPCData(StateDirectory() / "smpc.bin", data, error) && error) {
+            SDL_Log("SMPC persistent save warning: %s", error.message().c_str());
+        }
+    }
+
     [[nodiscard]] ActionResult SaveStateToSlot(std::size_t slotIndex) {
         if (slotIndex >= 10) {
             return {.success = false, .message = "Invalid save state slot"};
@@ -309,7 +319,7 @@ public:
             const auto statePath = SaveStatesDirectory(discHash) / (std::to_string(slotIndex) + ".savestate");
             std::ifstream in{statePath, std::ios::binary};
             if (!in) {
-                return {.success = false, .message = "State 1 is empty"};
+                return {.success = false, .message = "State " + std::to_string(slotIndex) + " is empty"};
             }
 
             auto state = std::make_unique<ymir::savestate::SaveState>();
@@ -625,6 +635,16 @@ private:
             m_saturn.SMPC.LoadPersistentData(smpcData);
         } else if (error && error.value() != ENOENT) {
             SDL_Log("SMPC persistent load warning: %s", error.message().c_str());
+        }
+
+        // Persist SMPC settings the moment they change. Android kills processes without
+        // running Shutdown(), so saving only on exit loses BIOS settings and clock changes.
+        // Fires from the emulator thread on SETSMEM/SETTIME only, so a direct write is fine.
+        if (!m_config.dataRoot.empty()) {
+            m_saturn.SMPC.SetPersistDataCallback(
+                {this, [](const ymir::smpc::PersistentSMPCData &data, void *ctx) {
+                     static_cast<EmulatorApp *>(ctx)->WritePersistentSMPCData(data);
+                 }});
         }
 
         ymir::media::Disc disc{};
@@ -1022,13 +1042,12 @@ private:
     void Shutdown() {
         SetActiveApp(nullptr);
 
+        // Drop the callback first so ~SMPC() cannot call back into a half-torn-down app
+        m_saturn.SMPC.ClearPersistDataCallback();
         if (!m_config.dataRoot.empty()) {
-            std::error_code error{};
             ymir::smpc::PersistentSMPCData smpcData{};
             m_saturn.SMPC.SavePersistentData(smpcData);
-            if (!SavePersistentSMPCData(StateDirectory() / "smpc.bin", smpcData, error) && error) {
-                SDL_Log("SMPC persistent save warning: %s", error.message().c_str());
-            }
+            WritePersistentSMPCData(smpcData);
         }
 
         if (m_gamepad != nullptr) {
