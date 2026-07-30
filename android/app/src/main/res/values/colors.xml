@@ -5,18 +5,22 @@
     <color name="neon_saturn_primary">#007EA3</color>
     <color name="neon_saturn_on_primary">#FFFFFF</color>
 
-    <!-- Library list cards: neon_saturn_surface at 85% so the starfield reads
-         through them. Drop the alpha (D9) for more stars, raise it for more
-         contrast against the card text. -->
-    <color name="library_card_surface">#D9FFFFFF</color>
+    <!-- The library backdrop is a deliberate deep-space surface, so it stays dark in every
+         theme: a starfield over a pale background just reads as noise. Everything drawn on
+         top of it is recoloured by ThemeOverlay.NeonSaturn.LibrarySurface to suit, so these
+         are deliberately NOT overridden in values-night/. -->
+    <color name="starfield_sky_top">#04060D</color>
+    <color name="starfield_sky_bottom">#0D1117</color>
+    <color name="starfield_star">#EAF4FF</color>
+    <color name="starfield_accent">#4ED8FF</color>
+    <color name="starfield_nebula_primary">#4ED8FF</color>
+    <color name="starfield_nebula_secondary">#7A5CFF</color>
 
-    <!-- Animated library backdrop. The light variant stays pale so the dark
-         on-surface text drawn over it keeps its contrast; the night variant in
-         values-night/ is the deep-space one. -->
-    <color name="starfield_sky_top">#EEF3F9</color>
-    <color name="starfield_sky_bottom">#D8E3F0</color>
-    <color name="starfield_star">#54708C</color>
-    <color name="starfield_accent">#007EA3</color>
-    <color name="starfield_nebula_primary">#7FB4CC</color>
-    <color name="starfield_nebula_secondary">#A79BD8</color>
+    <!-- Palette for content sitting on the starfield. Always dark, to match it. -->
+    <color name="library_surface">#151B23</color>
+    <color name="library_accent">#4ED8FF</color>
+
+    <!-- Library list cards: library_surface at 85% so the starfield reads through them.
+         Drop the alpha (D9) for more stars, raise it for more contrast against the text. -->
+    <color name="library_card_surface">#D9151B23</color>
 </resources>

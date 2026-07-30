@@ -1,6 +1,7 @@
 package com.izzy2lost.neonsaturn
 
 import android.content.Context
+import androidx.appcompat.app.AppCompatDelegate
 import java.io.File
 
 data class StoredLaunchSelection(
@@ -103,6 +104,14 @@ class BootstrapStore(context: Context) {
     fun loadRewindEnabled(): Boolean =
         preferences.getBoolean(KEY_REWIND_ENABLED, false)
 
+    fun saveThemeMode(mode: Int) {
+        preferences.edit().putInt(KEY_THEME_MODE, mode).apply()
+    }
+
+    /** Defaults to dark: the library's starfield is a dark surface, so dark suits the app. */
+    fun loadThemeMode(): Int =
+        preferences.getInt(KEY_THEME_MODE, THEME_DARK)
+
     fun saveLibraryViewMode(mode: Int) {
         preferences.edit().putInt(KEY_LIBRARY_VIEW_MODE, mode).apply()
     }
@@ -190,6 +199,18 @@ class BootstrapStore(context: Context) {
     }
 
     companion object {
+        const val THEME_SYSTEM = 0
+        const val THEME_LIGHT = 1
+        const val THEME_DARK = 2
+
+        /** Maps a stored [THEME_SYSTEM]/[THEME_LIGHT]/[THEME_DARK] to an AppCompat night mode. */
+        fun nightModeFor(themeMode: Int): Int =
+            when (themeMode) {
+                THEME_SYSTEM -> AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
+                THEME_LIGHT -> AppCompatDelegate.MODE_NIGHT_NO
+                else -> AppCompatDelegate.MODE_NIGHT_YES
+            }
+
         const val ASPECT_4_3 = "4:3"
         const val ASPECT_16_9 = "16:9"
         const val ASPECT_STRETCH = "stretch"
@@ -216,6 +237,7 @@ class BootstrapStore(context: Context) {
         private const val KEY_DEINTERLACE_ENABLED = "deinterlace_enabled"
         private const val KEY_TRANSPARENT_MESHES_ENABLED = "transparent_meshes_enabled"
         private const val KEY_REWIND_ENABLED = "rewind_enabled"
+        private const val KEY_THEME_MODE = "theme_mode"
         const val VIEW_MODE_LIST = 0
         const val VIEW_MODE_NA_COVERS = 1
         const val VIEW_MODE_JAPAN_COVERS = 2

@@ -9,7 +9,7 @@
     android:focusable="true"
     app:cardBackgroundColor="@color/library_card_surface"
     app:cardUseCompatPadding="true"
-    app:strokeColor="@color/neon_saturn_primary"
+    app:strokeColor="?attr/colorPrimary"
     app:strokeWidth="1dp">
 
     <LinearLayout

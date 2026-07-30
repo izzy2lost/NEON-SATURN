@@ -89,7 +89,6 @@ class LauncherActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         setContentView(R.layout.activity_launcher)
-        applySystemBarAppearance()
 
         store = BootstrapStore(this)
         paths = applicationContext.neonSaturnPaths()
@@ -190,16 +189,18 @@ class LauncherActivity : AppCompatActivity() {
     }
 
     /**
-     * The launcher theme leaves the system bars transparent so the starfield runs
-     * edge to edge. Both the starfield and the wizard background follow the
-     * day/night theme, so the bar icons can key off that.
+     * The launcher theme leaves the system bars transparent so whatever is behind them
+     * shows through. That is the always-dark starfield once the library is up, and the
+     * theme's own background during the setup wizard - so the bar icons follow whichever
+     * is actually on screen.
      */
-    private fun applySystemBarAppearance() {
+    private fun applySystemBarAppearance(overStarfield: Boolean) {
         val nightMode = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK ==
             Configuration.UI_MODE_NIGHT_YES
+        val lightBars = !overStarfield && !nightMode
         WindowInsetsControllerCompat(window, window.decorView).apply {
-            isAppearanceLightStatusBars = !nightMode
-            isAppearanceLightNavigationBars = !nightMode
+            isAppearanceLightStatusBars = lightBars
+            isAppearanceLightNavigationBars = lightBars
         }
     }
 
@@ -238,6 +239,7 @@ class LauncherActivity : AppCompatActivity() {
         viewModeToggleButton.isVisible = setupComplete
         // The setup wizard keeps the plain background; the starfield is the library's.
         starfieldView.isVisible = setupComplete
+        applySystemBarAppearance(overStarfield = setupComplete)
 
         if (!setupComplete) {
             librarySettingsDialog?.dismiss()
@@ -260,6 +262,30 @@ class LauncherActivity : AppCompatActivity() {
         }
 
         val content = LayoutInflater.from(this).inflate(R.layout.dialog_library_settings, null, false)
+
+        // Theme chips
+        val themeGroup = content.findViewById<com.google.android.material.chip.ChipGroup>(R.id.themeChipGroup)
+        when (store.loadThemeMode()) {
+            BootstrapStore.THEME_SYSTEM -> themeGroup.check(R.id.themeChipSystem)
+            BootstrapStore.THEME_LIGHT -> themeGroup.check(R.id.themeChipLight)
+            else -> themeGroup.check(R.id.themeChipDark)
+        }
+        themeGroup.setOnCheckedStateChangeListener { _, checkedIds ->
+            val value = when (checkedIds.firstOrNull()) {
+                R.id.themeChipSystem -> BootstrapStore.THEME_SYSTEM
+                R.id.themeChipLight -> BootstrapStore.THEME_LIGHT
+                else -> BootstrapStore.THEME_DARK
+            }
+            if (value != store.loadThemeMode()) {
+                store.saveThemeMode(value)
+                // Switching modes recreates the activity, so close the dialog first rather
+                // than leaving its window attached to the outgoing one.
+                librarySettingsDialog?.dismiss()
+                androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(
+                    BootstrapStore.nightModeFor(value)
+                )
+            }
+        }
 
         // Aspect ratio chips
         val aspectGroup = content.findViewById<com.google.android.material.chip.ChipGroup>(R.id.aspectRatioChipGroup)

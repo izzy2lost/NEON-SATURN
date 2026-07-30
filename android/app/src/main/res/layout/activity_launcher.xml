@@ -21,6 +21,7 @@
             android:id="@+id/headerContainer"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:theme="@style/ThemeOverlay.NeonSaturn.LibrarySurface"
             android:paddingStart="4dp"
             android:paddingTop="0dp"
             android:paddingEnd="12dp"
@@ -68,6 +69,7 @@
             android:id="@+id/libraryProgressIndicator"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:theme="@style/ThemeOverlay.NeonSaturn.LibrarySurface"
             android:indeterminate="true"
             android:visibility="gone" />
 
@@ -223,6 +225,7 @@
                 android:id="@+id/libraryContainer"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
+                android:theme="@style/ThemeOverlay.NeonSaturn.LibrarySurface"
                 android:orientation="vertical"
                 android:paddingBottom="24dp"
                 android:visibility="gone">

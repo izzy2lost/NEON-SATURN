@@ -9,6 +9,16 @@
         <item name="android:windowBackground">@color/neon_saturn_bg</item>
     </style>
 
+    <!-- Applied to the header and library, whose contents sit on the always-dark
+         starfield. Without this they would follow the app theme and end up as dark text
+         on deep space in light mode. ThemeOverlay.Material3.Dark covers the surface and
+         text roles but leaves colorPrimary alone, so the accent is set here too. -->
+    <style name="ThemeOverlay.NeonSaturn.LibrarySurface" parent="ThemeOverlay.Material3.Dark">
+        <item name="colorPrimary">@color/library_accent</item>
+        <item name="colorSurface">@color/library_surface</item>
+        <item name="android:colorBackground">@color/starfield_sky_bottom</item>
+    </style>
+
     <!-- The launcher draws edge-to-edge over the animated starfield, so the system
          bars stay transparent and let it show through. LauncherActivity picks the
          matching light/dark bar icons at runtime. -->

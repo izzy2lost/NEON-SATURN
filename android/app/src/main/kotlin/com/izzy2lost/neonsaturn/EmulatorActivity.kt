@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
 import android.os.Bundle
+import android.view.ContextThemeWrapper
 import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.ViewGroup
@@ -103,7 +104,12 @@ class EmulatorActivity : SDLActivity() {
         nativeSetPaused(true)
         suspendTouchControls()
 
-        val content = LayoutInflater.from(this).inflate(R.layout.dialog_quick_actions, null, false)
+        // SDLActivity is not an AppCompat activity, so it cannot follow the app's theme
+        // preference. This dialog floats over a fullscreen black game, so pin it to the
+        // same dark surface the library uses instead of letting the system theme decide.
+        val dialogContext = ContextThemeWrapper(this, R.style.ThemeOverlay_NeonSaturn_LibrarySurface)
+
+        val content = LayoutInflater.from(dialogContext).inflate(R.layout.dialog_quick_actions, null, false)
         content.findViewById<TextView>(R.id.quickActionsSubtitleText).text =
             intent.getStringExtra(EXTRA_DISC_PATH)?.substringAfterLast('/')
                 ?.substringAfterLast('\\')
@@ -111,7 +117,7 @@ class EmulatorActivity : SDLActivity() {
 
         var resumeOnDismiss = true
 
-        val dialog = MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_NeonSaturn_QuickActionsDialog)
+        val dialog = MaterialAlertDialogBuilder(dialogContext, R.style.ThemeOverlay_NeonSaturn_QuickActionsDialog)
             .setView(content)
             .setCancelable(true)
             .create()

@@ -35,6 +35,10 @@
     <string name="settings_graphics_enhancements">Graphics Enhancements</string>
     <string name="settings_deinterlace_enabled">Deinterlace high-resolution video</string>
     <string name="settings_transparent_meshes_enabled">Render mesh polygons as transparency</string>
+    <string name="settings_appearance">Appearance</string>
+    <string name="settings_theme_system">System</string>
+    <string name="settings_theme_light">Light</string>
+    <string name="settings_theme_dark">Dark</string>
     <string name="settings_emulation">Emulation</string>
     <string name="settings_rewind_enabled">Enable rewind</string>
     <string name="settings_rewind_note">Adds a rewind button to the on-screen controls and records the last few seconds so it can step back through them. Costs CPU and memory every frame, so it is off by default.</string>

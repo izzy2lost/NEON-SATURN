@@ -4,13 +4,4 @@
     <color name="neon_saturn_surface">#151B23</color>
     <color name="neon_saturn_primary">#4ED8FF</color>
     <color name="neon_saturn_on_primary">#04141B</color>
-
-    <color name="library_card_surface">#D9151B23</color>
-
-    <color name="starfield_sky_top">#04060D</color>
-    <color name="starfield_sky_bottom">#0D1117</color>
-    <color name="starfield_star">#EAF4FF</color>
-    <color name="starfield_accent">#4ED8FF</color>
-    <color name="starfield_nebula_primary">#4ED8FF</color>
-    <color name="starfield_nebula_secondary">#7A5CFF</color>
 </resources>
