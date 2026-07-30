@@ -4,6 +4,7 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import coil.ImageLoader
+import coil.annotation.ExperimentalCoilApi
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import coil.request.CachePolicy
@@ -121,6 +122,7 @@ object CoverArtManager {
         }
     }
 
+    @OptIn(ExperimentalCoilApi::class)
     fun clearCache(paths: NeonSaturnPaths) {
         loader?.diskCache?.clear()
         loader?.memoryCache?.clear()
