@@ -70,13 +70,18 @@ class BootstrapStore(context: Context) {
     fun loadTextureFilter(): String =
         preferences.getString(KEY_TEXTURE_FILTER, FILTER_NEAREST) ?: FILTER_NEAREST
 
-    fun saveResolutionScale(value: Int) {
-        preferences.edit().putInt(KEY_RESOLUTION_SCALE, value.coerceIn(RESOLUTION_SCALE_1X, RESOLUTION_SCALE_8X)).apply()
+    fun saveUpscaleFilter(value: Int) {
+        preferences.edit().putInt(KEY_UPSCALE_FILTER, value.coerceIn(UPSCALE_OFF, UPSCALE_XBRZ_6X)).apply()
     }
 
-    fun loadResolutionScale(): Int =
-        preferences.getInt(KEY_RESOLUTION_SCALE, RESOLUTION_SCALE_1X)
-            .coerceIn(RESOLUTION_SCALE_1X, RESOLUTION_SCALE_8X)
+    /**
+     * Edge-aware upscaling filter applied to the finished frame. This is a display filter,
+     * not an internal render resolution - the core rasterises at Saturn-native size and
+     * has no hardware renderer, so no filter can add real 3D detail.
+     */
+    fun loadUpscaleFilter(): Int =
+        preferences.getInt(KEY_UPSCALE_FILTER, UPSCALE_OFF)
+            .coerceIn(UPSCALE_OFF, UPSCALE_XBRZ_6X)
 
     fun saveDeinterlaceEnabled(enabled: Boolean) {
         preferences.edit().putBoolean(KEY_DEINTERLACE_ENABLED, enabled).apply()
@@ -218,14 +223,8 @@ class BootstrapStore(context: Context) {
         const val FILTER_NEAREST = "nearest"
         const val FILTER_BILINEAR = "bilinear"
 
-        const val RESOLUTION_SCALE_1X = 1
-        const val RESOLUTION_SCALE_2X = 2
-        const val RESOLUTION_SCALE_3X = 3
-        const val RESOLUTION_SCALE_4X = 4
-        const val RESOLUTION_SCALE_5X = 5
-        const val RESOLUTION_SCALE_6X = 6
-        const val RESOLUTION_SCALE_7X = 7
-        const val RESOLUTION_SCALE_8X = 8
+        const val UPSCALE_OFF = 0
+        const val UPSCALE_XBRZ_6X = 1
 
         private const val KEY_IPL_PATH = "ipl_path"
         private const val KEY_CDB_PATH = "cdb_path"
@@ -233,7 +232,7 @@ class BootstrapStore(context: Context) {
         private const val KEY_GAMES_FOLDER_URI = "games_folder_uri"
         private const val KEY_ASPECT_RATIO = "aspect_ratio"
         private const val KEY_TEXTURE_FILTER = "texture_filter"
-        private const val KEY_RESOLUTION_SCALE = "resolution_scale"
+        private const val KEY_UPSCALE_FILTER = "upscale_filter"
         private const val KEY_DEINTERLACE_ENABLED = "deinterlace_enabled"
         private const val KEY_TRANSPARENT_MESHES_ENABLED = "transparent_meshes_enabled"
         private const val KEY_REWIND_ENABLED = "rewind_enabled"

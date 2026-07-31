@@ -126,78 +126,43 @@
                 android:text="@string/settings_filter_smooth" />
         </com.google.android.material.chip.ChipGroup>
 
-        <!-- Resolution Scale -->
+        <!-- Upscaling filter -->
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="@string/settings_resolution_scale"
+            android:text="@string/settings_upscale_filter"
             android:textAppearance="?attr/textAppearanceLabelLarge" />
 
         <com.google.android.material.chip.ChipGroup
-            android:id="@+id/resolutionScaleChipGroup"
+            android:id="@+id/upscaleFilterChipGroup"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            app:singleSelection="true"
-            app:selectionRequired="true">
+            app:selectionRequired="true"
+            app:singleSelection="true">
 
             <com.google.android.material.chip.Chip
-                android:id="@+id/scaleChip1x"
+                android:id="@+id/upscaleChipOff"
                 style="@style/Widget.Material3.Chip.Filter"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/settings_scale_1x" />
+                android:text="@string/settings_upscale_off" />
 
             <com.google.android.material.chip.Chip
-                android:id="@+id/scaleChip2x"
+                android:id="@+id/upscaleChipXbrz"
                 style="@style/Widget.Material3.Chip.Filter"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/settings_scale_2x" />
-
-            <com.google.android.material.chip.Chip
-                android:id="@+id/scaleChip3x"
-                style="@style/Widget.Material3.Chip.Filter"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/settings_scale_3x" />
-
-            <com.google.android.material.chip.Chip
-                android:id="@+id/scaleChip4x"
-                style="@style/Widget.Material3.Chip.Filter"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/settings_scale_4x" />
-
-            <com.google.android.material.chip.Chip
-                android:id="@+id/scaleChip5x"
-                style="@style/Widget.Material3.Chip.Filter"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/settings_scale_5x" />
-
-            <com.google.android.material.chip.Chip
-                android:id="@+id/scaleChip6x"
-                style="@style/Widget.Material3.Chip.Filter"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/settings_scale_6x" />
-
-            <com.google.android.material.chip.Chip
-                android:id="@+id/scaleChip7x"
-                style="@style/Widget.Material3.Chip.Filter"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/settings_scale_7x" />
-
-            <com.google.android.material.chip.Chip
-                android:id="@+id/scaleChip8x"
-                style="@style/Widget.Material3.Chip.Filter"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/settings_scale_8x" />
+                android:text="@string/settings_upscale_xbrz" />
         </com.google.android.material.chip.ChipGroup>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/settings_upscale_note"
+            android:textAppearance="?attr/textAppearanceBodySmall" />
 
         <TextView
             android:layout_width="match_parent"

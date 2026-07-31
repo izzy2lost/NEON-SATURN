@@ -27,5 +27,7 @@ target_link_libraries(neonsaturn-main PRIVATE
     SDL3::SDL3
     ymir-core
     android
+    EGL
+    GLESv3
     log
 )

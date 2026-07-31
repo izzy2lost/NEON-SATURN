@@ -89,7 +89,7 @@ class EmulatorActivity : SDLActivity() {
         intent.getStringExtra(EXTRA_GAME_CONTROLLER_DB_PATH)?.let { arguments += "--gamecontrollerdb=$it" }
         intent.getStringExtra(EXTRA_ASPECT_RATIO)?.let { arguments += "--aspect-ratio=$it" }
         intent.getStringExtra(EXTRA_TEXTURE_FILTER)?.let { arguments += "--texture-filter=$it" }
-        arguments += "--resolution-scale=${intent.getIntExtra(EXTRA_RESOLUTION_SCALE, BootstrapStore.RESOLUTION_SCALE_1X)}"
+        arguments += "--upscale-filter=${intent.getIntExtra(EXTRA_UPSCALE_FILTER, BootstrapStore.UPSCALE_OFF)}"
         arguments += "--deinterlace=${intent.getBooleanExtra(EXTRA_DEINTERLACE, false)}"
         arguments += "--transparent-meshes=${intent.getBooleanExtra(EXTRA_TRANSPARENT_MESHES, false)}"
         arguments += "--rewind=${intent.getBooleanExtra(EXTRA_REWIND_ENABLED, false)}"
@@ -265,8 +265,8 @@ class EmulatorActivity : SDLActivity() {
             "com.izzy2lost.neonsaturn.extra.ASPECT_RATIO"
         private const val EXTRA_TEXTURE_FILTER =
             "com.izzy2lost.neonsaturn.extra.TEXTURE_FILTER"
-        private const val EXTRA_RESOLUTION_SCALE =
-            "com.izzy2lost.neonsaturn.extra.RESOLUTION_SCALE"
+        private const val EXTRA_UPSCALE_FILTER =
+            "com.izzy2lost.neonsaturn.extra.UPSCALE_FILTER"
         private const val EXTRA_DEINTERLACE =
             "com.izzy2lost.neonsaturn.extra.DEINTERLACE"
         private const val EXTRA_TRANSPARENT_MESHES =
@@ -281,7 +281,7 @@ class EmulatorActivity : SDLActivity() {
             gameControllerDbPath: String? = null,
             aspectRatio: String = BootstrapStore.ASPECT_4_3,
             textureFilter: String = BootstrapStore.FILTER_NEAREST,
-            resolutionScale: Int = BootstrapStore.RESOLUTION_SCALE_1X,
+            upscaleFilter: Int = BootstrapStore.UPSCALE_OFF,
             deinterlace: Boolean = false,
             transparentMeshes: Boolean = false,
             rewindEnabled: Boolean = false
@@ -294,7 +294,7 @@ class EmulatorActivity : SDLActivity() {
                 putExtra(EXTRA_GAME_CONTROLLER_DB_PATH, gameControllerDbPath)
                 putExtra(EXTRA_ASPECT_RATIO, aspectRatio)
                 putExtra(EXTRA_TEXTURE_FILTER, textureFilter)
-                putExtra(EXTRA_RESOLUTION_SCALE, resolutionScale)
+                putExtra(EXTRA_UPSCALE_FILTER, upscaleFilter)
                 putExtra(EXTRA_DEINTERLACE, deinterlace)
                 putExtra(EXTRA_TRANSPARENT_MESHES, transparentMeshes)
                 putExtra(EXTRA_REWIND_ENABLED, rewindEnabled)

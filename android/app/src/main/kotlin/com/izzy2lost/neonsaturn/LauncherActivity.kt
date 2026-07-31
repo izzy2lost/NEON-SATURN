@@ -317,30 +317,18 @@ class LauncherActivity : AppCompatActivity() {
             store.saveTextureFilter(value)
         }
 
-        // Resolution scale chips
-        val scaleGroup = content.findViewById<com.google.android.material.chip.ChipGroup>(R.id.resolutionScaleChipGroup)
-        when (store.loadResolutionScale()) {
-            BootstrapStore.RESOLUTION_SCALE_2X -> scaleGroup.check(R.id.scaleChip2x)
-            BootstrapStore.RESOLUTION_SCALE_3X -> scaleGroup.check(R.id.scaleChip3x)
-            BootstrapStore.RESOLUTION_SCALE_4X -> scaleGroup.check(R.id.scaleChip4x)
-            BootstrapStore.RESOLUTION_SCALE_5X -> scaleGroup.check(R.id.scaleChip5x)
-            BootstrapStore.RESOLUTION_SCALE_6X -> scaleGroup.check(R.id.scaleChip6x)
-            BootstrapStore.RESOLUTION_SCALE_7X -> scaleGroup.check(R.id.scaleChip7x)
-            BootstrapStore.RESOLUTION_SCALE_8X -> scaleGroup.check(R.id.scaleChip8x)
-            else -> scaleGroup.check(R.id.scaleChip1x)
+        // Upscaling filter chips
+        val upscaleGroup = content.findViewById<com.google.android.material.chip.ChipGroup>(R.id.upscaleFilterChipGroup)
+        when (store.loadUpscaleFilter()) {
+            BootstrapStore.UPSCALE_XBRZ_6X -> upscaleGroup.check(R.id.upscaleChipXbrz)
+            else -> upscaleGroup.check(R.id.upscaleChipOff)
         }
-        scaleGroup.setOnCheckedStateChangeListener { _, checkedIds ->
+        upscaleGroup.setOnCheckedStateChangeListener { _, checkedIds ->
             val value = when (checkedIds.firstOrNull()) {
-                R.id.scaleChip2x -> BootstrapStore.RESOLUTION_SCALE_2X
-                R.id.scaleChip3x -> BootstrapStore.RESOLUTION_SCALE_3X
-                R.id.scaleChip4x -> BootstrapStore.RESOLUTION_SCALE_4X
-                R.id.scaleChip5x -> BootstrapStore.RESOLUTION_SCALE_5X
-                R.id.scaleChip6x -> BootstrapStore.RESOLUTION_SCALE_6X
-                R.id.scaleChip7x -> BootstrapStore.RESOLUTION_SCALE_7X
-                R.id.scaleChip8x -> BootstrapStore.RESOLUTION_SCALE_8X
-                else -> BootstrapStore.RESOLUTION_SCALE_1X
+                R.id.upscaleChipXbrz -> BootstrapStore.UPSCALE_XBRZ_6X
+                else -> BootstrapStore.UPSCALE_OFF
             }
-            store.saveResolutionScale(value)
+            store.saveUpscaleFilter(value)
         }
 
         val deinterlaceSwitch =
@@ -517,7 +505,7 @@ class LauncherActivity : AppCompatActivity() {
                         this, launchSelection, paths, gameControllerDbPath,
                         aspectRatio = store.loadAspectRatio(),
                         textureFilter = store.loadTextureFilter(),
-                        resolutionScale = store.loadResolutionScale(),
+                        upscaleFilter = store.loadUpscaleFilter(),
                         deinterlace = store.loadDeinterlaceEnabled(),
                         transparentMeshes = store.loadTransparentMeshesEnabled(),
                         rewindEnabled = store.loadRewindEnabled()

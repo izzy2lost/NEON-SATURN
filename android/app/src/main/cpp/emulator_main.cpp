@@ -3,6 +3,9 @@
 #include "audio_system.hpp"
 #include "rewind_buffer.hpp"
 #include "rom_loader.hpp"
+#include "xbrz6x_shader.hpp"
+
+#include <GLES3/gl31.h>
 
 #include <ymir/core/hash.hpp>
 #include <ymir/hw/scsp/scsp.hpp>
@@ -144,15 +147,15 @@ bool ParseBoolArg(std::string_view value) {
     return value == "1" || value == "true" || value == "yes" || value == "on";
 }
 
-int ParseResolutionScale(std::string_view value) {
-    int scale = 1;
+int ParseUpscaleFilter(std::string_view value) {
+    int filter = 0;
     const auto *begin = value.data();
     const auto *end = begin + value.size();
-    const auto result = std::from_chars(begin, end, scale);
+    const auto result = std::from_chars(begin, end, filter);
     if (result.ec != std::errc{}) {
-        return 1;
+        return 0;
     }
-    return std::clamp(scale, 1, 8);
+    return std::clamp(filter, 0, 1);
 }
 
 BootstrapConfig BootstrapConfigFromArgs(int argc, char **argv) {
@@ -173,8 +176,8 @@ BootstrapConfig BootstrapConfigFromArgs(int argc, char **argv) {
             config.aspectRatio.assign(value);
         } else if (const auto value = ArgValue(argument, "--texture-filter="); !value.empty()) {
             config.textureFilter.assign(value);
-        } else if (const auto value = ArgValue(argument, "--resolution-scale="); !value.empty()) {
-            config.resolutionScale = ParseResolutionScale(value);
+        } else if (const auto value = ArgValue(argument, "--upscale-filter="); !value.empty()) {
+            config.upscaleFilter = ParseUpscaleFilter(value);
         } else if (const auto value = ArgValue(argument, "--deinterlace="); !value.empty()) {
             config.deinterlace = ParseBoolArg(value);
         } else if (const auto value = ArgValue(argument, "--transparent-meshes="); !value.empty()) {
@@ -472,6 +475,8 @@ private:
     // of megabytes on a phone.
     static constexpr std::size_t kRewindFrameCapacity = 5 * 60;
 
+    static constexpr int kUpscaleFilterOff = 0;
+
     BootstrapConfig m_config;
     ymir::Saturn m_saturn{};
     app::AudioSystem m_audioSystem{};
@@ -480,8 +485,20 @@ private:
     SDL_Window *m_window = nullptr;
     SDL_Renderer *m_renderer = nullptr;
     SDL_Texture *m_texture = nullptr;
-    SDL_Texture *m_displayTexture = nullptr;
     SDL_Gamepad *m_gamepad = nullptr;
+
+    // GL presenter, used only when an upscaling filter is selected.
+    SDL_GLContext m_glContext = nullptr;
+    GLuint m_glProgram = 0;
+    GLuint m_glTexture = 0;
+    GLuint m_glVao = 0;
+    GLuint m_glVbo = 0;
+    GLint m_uniTexture = -1;
+    GLint m_uniDrawingSize = -1;
+    GLint m_uniTextureSize = -1;
+    std::uint32_t m_glTexWidth = 0;
+    std::uint32_t m_glTexHeight = 0;
+
     SDL_JoystickID m_gamepadId = 0;
     std::mutex m_coreMutex{};
     std::mutex m_inputMutex{};
@@ -491,8 +508,6 @@ private:
     std::uint32_t m_frameHeight = 224;
     std::uint32_t m_textureWidth = 0;
     std::uint32_t m_textureHeight = 0;
-    std::uint32_t m_displayTextureWidth = 0;
-    std::uint32_t m_displayTextureHeight = 0;
     bool m_frameDirty = false;
     std::atomic_bool m_running = true;
     std::atomic_bool m_paused = false;
@@ -546,11 +561,32 @@ private:
     }
 
     bool CreateWindowAndRenderer() {
-        m_window = SDL_CreateWindow(
-            "NEON SATURN", 1280, 720, SDL_WINDOW_FULLSCREEN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+        // The upscaling filter is a fragment shader, and SDL_Renderer cannot run custom
+        // shaders - so a filter means presenting through GL ourselves. Only that case
+        // pays for the GL path; with the filter off we keep the plain renderer, and a
+        // failure to set GL up falls back to it too.
+        const bool wantGL = m_config.upscaleFilter != kUpscaleFilterOff;
+
+        SDL_WindowFlags flags = SDL_WINDOW_FULLSCREEN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+        if (wantGL) {
+            SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+            SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+            SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
+            flags |= SDL_WINDOW_OPENGL;
+        }
+
+        m_window = SDL_CreateWindow("NEON SATURN", 1280, 720, flags);
         if (m_window == nullptr) {
             SDL_Log("SDL_CreateWindow failed: %s", SDL_GetError());
             return false;
+        }
+
+        if (wantGL) {
+            if (InitGLPresenter()) {
+                return true;
+            }
+            SDL_LogWarn(SDL_LOG_CATEGORY_RENDER, "Upscaling filter unavailable; using the plain renderer");
+            ShutdownGLPresenter();
         }
 
         if (!CreateRenderer("opengles2") && !CreateRenderer(nullptr)) {
@@ -559,6 +595,231 @@ private:
         }
 
         return EnsureTexture(m_frameWidth, m_frameHeight);
+    }
+
+    // ---- GL presenter (upscaling filter path) ----------------------------------
+
+    static GLuint CompileShader(GLenum type, const char *source) {
+        const GLuint shader = glCreateShader(type);
+        if (shader == 0) {
+            return 0;
+        }
+        glShaderSource(shader, 1, &source, nullptr);
+        glCompileShader(shader);
+
+        GLint compiled = GL_FALSE;
+        glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+        if (compiled != GL_TRUE) {
+            GLint length = 0;
+            glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &length);
+            std::string log(static_cast<std::size_t>(std::max(length, 1)), '\0');
+            glGetShaderInfoLog(shader, length, nullptr, log.data());
+            SDL_LogWarn(SDL_LOG_CATEGORY_RENDER, "Shader compile failed: %s", log.c_str());
+            glDeleteShader(shader);
+            return 0;
+        }
+        return shader;
+    }
+
+    bool BuildGLProgram() {
+        const GLuint vertex = CompileShader(GL_VERTEX_SHADER, shaders::kXbrz6xVertex);
+        if (vertex == 0) {
+            return false;
+        }
+        const GLuint fragment = CompileShader(GL_FRAGMENT_SHADER, shaders::kXbrz6xFragment);
+        if (fragment == 0) {
+            glDeleteShader(vertex);
+            return false;
+        }
+
+        m_glProgram = glCreateProgram();
+        glAttachShader(m_glProgram, vertex);
+        glAttachShader(m_glProgram, fragment);
+        glLinkProgram(m_glProgram);
+        glDeleteShader(vertex);
+        glDeleteShader(fragment);
+
+        GLint linked = GL_FALSE;
+        glGetProgramiv(m_glProgram, GL_LINK_STATUS, &linked);
+        if (linked != GL_TRUE) {
+            GLint length = 0;
+            glGetProgramiv(m_glProgram, GL_INFO_LOG_LENGTH, &length);
+            std::string log(static_cast<std::size_t>(std::max(length, 1)), '\0');
+            glGetProgramInfoLog(m_glProgram, length, nullptr, log.data());
+            SDL_LogWarn(SDL_LOG_CATEGORY_RENDER, "Shader link failed: %s", log.c_str());
+            glDeleteProgram(m_glProgram);
+            m_glProgram = 0;
+            return false;
+        }
+
+        m_uniTexture = glGetUniformLocation(m_glProgram, "Texture");
+        m_uniDrawingSize = glGetUniformLocation(m_glProgram, "DrawingSize");
+        m_uniTextureSize = glGetUniformLocation(m_glProgram, "TextureSize");
+        return true;
+    }
+
+    void BuildGLQuad() {
+        // Clip-space position + texture coordinate, as a triangle strip.
+        // Row 0 of the framebuffer is the top of the image, so v is flipped here.
+        static constexpr GLfloat kVertices[] = {
+            -1.0f, -1.0f, 0.0f, 1.0f, //
+            1.0f,  -1.0f, 1.0f, 1.0f, //
+            -1.0f, 1.0f,  0.0f, 0.0f, //
+            1.0f,  1.0f,  1.0f, 0.0f, //
+        };
+
+        glGenVertexArrays(1, &m_glVao);
+        glBindVertexArray(m_glVao);
+        glGenBuffers(1, &m_glVbo);
+        glBindBuffer(GL_ARRAY_BUFFER, m_glVbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(kVertices), kVertices, GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), nullptr);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(
+            1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), reinterpret_cast<const void *>(2 * sizeof(GLfloat)));
+        glBindVertexArray(0);
+    }
+
+    bool InitGLPresenter() {
+        m_glContext = SDL_GL_CreateContext(m_window);
+        if (m_glContext == nullptr) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_RENDER, "SDL_GL_CreateContext failed: %s", SDL_GetError());
+            return false;
+        }
+        if (!SDL_GL_MakeCurrent(m_window, m_glContext)) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_RENDER, "SDL_GL_MakeCurrent failed: %s", SDL_GetError());
+            return false;
+        }
+        SDL_GL_SetSwapInterval(1);
+
+        if (!BuildGLProgram()) {
+            return false;
+        }
+        BuildGLQuad();
+        SDL_Log("Upscaling filter active: 6x xBRZ");
+        return true;
+    }
+
+    void EnsureGLTexture(std::uint32_t width, std::uint32_t height) {
+        if (m_glTexture != 0 && m_glTexWidth == width && m_glTexHeight == height) {
+            return;
+        }
+        if (m_glTexture != 0) {
+            glDeleteTextures(1, &m_glTexture);
+            m_glTexture = 0;
+        }
+
+        glGenTextures(1, &m_glTexture);
+        glBindTexture(GL_TEXTURE_2D, m_glTexture);
+        // The shader reads via texelFetch, so filtering never applies; clamp is only for safety.
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(
+            GL_TEXTURE_2D, 0, GL_RGBA8, static_cast<GLsizei>(width), static_cast<GLsizei>(height), 0, GL_RGBA,
+            GL_UNSIGNED_BYTE, nullptr);
+        m_glTexWidth = width;
+        m_glTexHeight = height;
+    }
+
+    void PresentGL() {
+        int outW = 0;
+        int outH = 0;
+        SDL_GetWindowSizeInPixels(m_window, &outW, &outH);
+        if (outW <= 0 || outH <= 0) {
+            return;
+        }
+
+        glViewport(0, 0, outW, outH);
+        glDisable(GL_BLEND);
+        glDisable(GL_DEPTH_TEST);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        if (!m_framebuffer.empty() && m_frameWidth > 0 && m_frameHeight > 0) {
+            EnsureGLTexture(m_frameWidth, m_frameHeight);
+            if (m_frameDirty) {
+                glBindTexture(GL_TEXTURE_2D, m_glTexture);
+                glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+                glTexSubImage2D(
+                    GL_TEXTURE_2D, 0, 0, 0, static_cast<GLsizei>(m_frameWidth), static_cast<GLsizei>(m_frameHeight),
+                    GL_RGBA, GL_UNSIGNED_BYTE, m_framebuffer.data());
+                m_frameDirty = false;
+            }
+        }
+
+        if (m_glTexture != 0) {
+            const SDL_FRect dest = ComputeDestRect(static_cast<float>(outW), static_cast<float>(outH));
+            // GL's viewport origin is bottom-left, so flip the destination's y.
+            glViewport(
+                static_cast<GLint>(dest.x), static_cast<GLint>(static_cast<float>(outH) - dest.y - dest.h),
+                static_cast<GLsizei>(dest.w), static_cast<GLsizei>(dest.h));
+
+            glUseProgram(m_glProgram);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, m_glTexture);
+            if (m_uniTexture >= 0) {
+                glUniform1i(m_uniTexture, 0);
+            }
+            if (m_uniDrawingSize >= 0) {
+                glUniform2f(m_uniDrawingSize, static_cast<GLfloat>(m_frameWidth), static_cast<GLfloat>(m_frameHeight));
+            }
+            if (m_uniTextureSize >= 0) {
+                glUniform2f(m_uniTextureSize, static_cast<GLfloat>(m_glTexWidth), static_cast<GLfloat>(m_glTexHeight));
+            }
+            glBindVertexArray(m_glVao);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glBindVertexArray(0);
+        }
+
+        SDL_GL_SwapWindow(m_window);
+    }
+
+    void ShutdownGLPresenter() {
+        if (m_glContext == nullptr) {
+            return;
+        }
+        if (m_glVbo != 0) {
+            glDeleteBuffers(1, &m_glVbo);
+            m_glVbo = 0;
+        }
+        if (m_glVao != 0) {
+            glDeleteVertexArrays(1, &m_glVao);
+            m_glVao = 0;
+        }
+        if (m_glTexture != 0) {
+            glDeleteTextures(1, &m_glTexture);
+            m_glTexture = 0;
+        }
+        if (m_glProgram != 0) {
+            glDeleteProgram(m_glProgram);
+            m_glProgram = 0;
+        }
+        m_glTexWidth = 0;
+        m_glTexHeight = 0;
+        SDL_GL_DestroyContext(m_glContext);
+        m_glContext = nullptr;
+    }
+
+    /// Android can drop the GL objects when the app is backgrounded; rebuild them
+    /// rather than presenting to a dead program for the rest of the session.
+    void RestoreGLPresenterIfLost() {
+        if (m_glContext == nullptr || glIsProgram(m_glProgram) == GL_TRUE) {
+            return;
+        }
+        SDL_LogWarn(SDL_LOG_CATEGORY_RENDER, "GL objects were lost; rebuilding the upscaling filter");
+        m_glProgram = 0;
+        m_glVao = 0;
+        m_glVbo = 0;
+        m_glTexture = 0;
+        m_glTexWidth = 0;
+        m_glTexHeight = 0;
+        if (BuildGLProgram()) {
+            BuildGLQuad();
+            m_frameDirty = true;
+        }
     }
 
     bool CreateRenderer(const char *rendererName) {
@@ -756,6 +1017,7 @@ private:
             if (!m_paused.load() && m_audioStarted && !m_audioSystem.IsRunning()) {
                 m_audioSystem.Start();
             }
+            RestoreGLPresenterIfLost();
             break;
 
         case SDL_EVENT_GAMEPAD_ADDED:
@@ -975,69 +1237,37 @@ private:
         return true;
     }
 
-    bool EnsureDisplayTexture(std::uint32_t width, std::uint32_t height, int scale) {
-        if (m_renderer == nullptr || width == 0 || height == 0 || scale <= 1) {
-            return false;
+    /// Letterboxes the frame to the configured aspect ratio inside the output surface.
+    /// Shared by both presenters so they stay pixel-identical.
+    SDL_FRect ComputeDestRect(float outW, float outH) const {
+        if (m_config.aspectRatio == "stretch") {
+            return {.x = 0.0f, .y = 0.0f, .w = outW, .h = outH};
         }
 
-        const auto scaledWidth = static_cast<std::uint32_t>(width * static_cast<std::uint32_t>(scale));
-        const auto scaledHeight = static_cast<std::uint32_t>(height * static_cast<std::uint32_t>(scale));
-        if (m_displayTexture != nullptr && m_displayTextureWidth == scaledWidth &&
-            m_displayTextureHeight == scaledHeight) {
-            return true;
+        const float targetAspect = m_config.aspectRatio == "16:9" ? 16.0f / 9.0f : 4.0f / 3.0f;
+        const float windowAspect = outW / outH;
+
+        SDL_FRect dest{};
+        if (windowAspect > targetAspect) {
+            dest.h = outH;
+            dest.w = dest.h * targetAspect;
+            dest.x = (outW - dest.w) / 2.0f;
+            dest.y = 0.0f;
+        } else {
+            dest.w = outW;
+            dest.h = dest.w / targetAspect;
+            dest.x = 0.0f;
+            dest.y = (outH - dest.h) / 2.0f;
         }
-
-        DestroyDisplayTexture();
-        m_displayTexture = SDL_CreateTexture(
-            m_renderer, SDL_PIXELFORMAT_XBGR8888, SDL_TEXTUREACCESS_TARGET, static_cast<int>(scaledWidth),
-            static_cast<int>(scaledHeight));
-        if (m_displayTexture == nullptr) {
-            SDL_LogWarn(SDL_LOG_CATEGORY_RENDER, "SDL_CreateTexture target failed: %s", SDL_GetError());
-            return false;
-        }
-
-        SDL_SetTextureScaleMode(m_displayTexture, SDL_SCALEMODE_LINEAR);
-        m_displayTextureWidth = scaledWidth;
-        m_displayTextureHeight = scaledHeight;
-        return true;
-    }
-
-    SDL_Texture *PreparePresentTexture(SDL_FRect &sourceRect) {
-        const int scale = std::clamp(m_config.resolutionScale, 1, 8);
-        sourceRect = {
-            .x = 0.0f,
-            .y = 0.0f,
-            .w = static_cast<float>(m_frameWidth),
-            .h = static_cast<float>(m_frameHeight),
-        };
-
-        if (scale <= 1 || !EnsureDisplayTexture(m_frameWidth, m_frameHeight, scale)) {
-            return m_texture;
-        }
-
-        SDL_Texture *previousTarget = SDL_GetRenderTarget(m_renderer);
-        if (!SDL_SetRenderTarget(m_renderer, m_displayTexture)) {
-            SDL_LogWarn(SDL_LOG_CATEGORY_RENDER, "SDL_SetRenderTarget failed: %s", SDL_GetError());
-            return m_texture;
-        }
-
-        const SDL_FRect scaledDest{
-            .x = 0.0f,
-            .y = 0.0f,
-            .w = static_cast<float>(m_displayTextureWidth),
-            .h = static_cast<float>(m_displayTextureHeight),
-        };
-        SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 255);
-        SDL_RenderClear(m_renderer);
-        SDL_RenderTexture(m_renderer, m_texture, nullptr, &scaledDest);
-        SDL_SetRenderTarget(m_renderer, previousTarget);
-
-        sourceRect.w = static_cast<float>(m_displayTextureWidth);
-        sourceRect.h = static_cast<float>(m_displayTextureHeight);
-        return m_displayTexture;
+        return dest;
     }
 
     void Present() {
+        if (m_glContext != nullptr) {
+            PresentGL();
+            return;
+        }
+
         if (!EnsureTexture(m_frameWidth, m_frameHeight)) {
             m_running = false;
             return;
@@ -1052,60 +1282,24 @@ private:
         SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 255);
         SDL_RenderClear(m_renderer);
         if (m_texture != nullptr) {
-            SDL_FRect sourceRect{};
-            SDL_Texture *presentTexture = PreparePresentTexture(sourceRect);
-            if (m_config.aspectRatio == "stretch") {
-                SDL_RenderTexture(m_renderer, presentTexture, &sourceRect, nullptr);
-            } else {
-                int outW = 0;
-                int outH = 0;
-                SDL_GetRenderOutputSize(m_renderer, &outW, &outH);
-                if (outW <= 0 || outH <= 0) {
-                    SDL_RenderPresent(m_renderer);
-                    return;
-                }
-
-                const float targetAspect = m_config.aspectRatio == "16:9"
-                    ? 16.0f / 9.0f
-                    : 4.0f / 3.0f;
-                const float windowAspect =
-                    static_cast<float>(outW) / static_cast<float>(outH);
-
-                SDL_FRect dest{};
-                if (windowAspect > targetAspect) {
-                    dest.h = static_cast<float>(outH);
-                    dest.w = dest.h * targetAspect;
-                    dest.x = (static_cast<float>(outW) - dest.w) / 2.0f;
-                    dest.y = 0.0f;
-                } else {
-                    dest.w = static_cast<float>(outW);
-                    dest.h = dest.w / targetAspect;
-                    dest.x = 0.0f;
-                    dest.y = (static_cast<float>(outH) - dest.h) / 2.0f;
-                }
-                SDL_RenderTexture(m_renderer, presentTexture, &sourceRect, &dest);
+            int outW = 0;
+            int outH = 0;
+            SDL_GetRenderOutputSize(m_renderer, &outW, &outH);
+            if (outW > 0 && outH > 0) {
+                const SDL_FRect dest = ComputeDestRect(static_cast<float>(outW), static_cast<float>(outH));
+                SDL_RenderTexture(m_renderer, m_texture, nullptr, &dest);
             }
         }
         SDL_RenderPresent(m_renderer);
     }
 
     void DestroyTexture() {
-        DestroyDisplayTexture();
         if (m_texture != nullptr) {
             SDL_DestroyTexture(m_texture);
             m_texture = nullptr;
         }
         m_textureWidth = 0;
         m_textureHeight = 0;
-    }
-
-    void DestroyDisplayTexture() {
-        if (m_displayTexture != nullptr) {
-            SDL_DestroyTexture(m_displayTexture);
-            m_displayTexture = nullptr;
-        }
-        m_displayTextureWidth = 0;
-        m_displayTextureHeight = 0;
     }
 
     void Shutdown() {
@@ -1131,6 +1325,7 @@ private:
         m_audioSystem.Deinit();
 
         DestroyTexture();
+        ShutdownGLPresenter();
         if (m_renderer != nullptr) {
             SDL_DestroyRenderer(m_renderer);
             m_renderer = nullptr;
