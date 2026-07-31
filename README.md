@@ -1,133 +1,131 @@
-# Ymir
+# NEON SATURN
 
-[![Stable release](https://github.com/StrikerX3/Ymir/actions/workflows/stable-release.yaml/badge.svg)](https://github.com/StrikerX3/Ymir/actions/workflows/stable-release.yaml) [![Nightly release](https://github.com/StrikerX3/Ymir/actions/workflows/nightly-release.yaml/badge.svg)](https://github.com/StrikerX3/Ymir/actions/workflows/nightly-release.yaml) <a href="https://discord.gg/NN3A7n5dzn">![Discord Shield](https://discord.com/api/guilds/1368676375627694341/widget.png?style=shield)</a> <a href="https://patreon.com/StrikerX3">![Patreon Shield](https://img.shields.io/badge/Patreon-F96854?style=flat&logo=patreon&logoColor=white)</a>
+An Android port of [Ymir](https://github.com/StrikerX3/Ymir), StrikerX3's work-in-progress Sega Saturn emulator.
 
-A work-in-progress Sega Saturn emulator.
-
-Join the [Discord community](https://discord.gg/NN3A7n5dzn).
-
-Find the official compatibility list [here](https://docs.google.com/spreadsheets/d/1SLZzL9LelSlpEmTKy8cjaQnE7mew2uW1rfCgcekO58Q/edit?usp=sharing).
-
-Grab the latest release: [stable](https://github.com/StrikerX3/Ymir/releases/latest), [nightly](https://github.com/StrikerX3/Ymir/releases/latest-nightly).
-
-> [!IMPORTANT]
-> Windows users: install the latest [Microsoft Visual C++ Redistributable package](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist) ([x86_64 installer](https://aka.ms/vs/17/release/vc_redist.x64.exe), [AArch64/ARM64 installer](https://aka.ms/vs/17/release/vc_redist.arm64.exe)) before running the emulator.
-> This is **mandatory** to avoid crashes on startup.
->
-> macOS users: follow [these instructions](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac) to allow Ymir to run on your system. Ymir is signed with an ad-hoc certificate, flagging it as unverified.
->
-> Linux users: if you installed the Flatpak version, make sure to [grant it permission to access the filesystem](TROUBLESHOOTING.md#game-discs-dont-load-with-the-flatpak-release) or your disc images won't load properly.
-
-<div class="grid" markdown>
-  <img width="49.5%" src="https://github.com/StrikerX3/Ymir/blob/main/docs/images/cd-player.png"/>
-  <img width="49.5%" src="https://github.com/StrikerX3/Ymir/blob/main/docs/images/sonic-r.png"/>
-  <img width="49.5%" src="https://github.com/StrikerX3/Ymir/blob/main/docs/images/virtua-fighter-2.png"/>
-  <img width="49.5%" src="https://github.com/StrikerX3/Ymir/blob/main/docs/images/radiant-silvergun.png"/>
-  <img width="49.5%" src="https://github.com/StrikerX3/Ymir/blob/main/docs/images/panzer-dragoon-saga.png"/>
-  <img width="49.5%" src="https://github.com/StrikerX3/Ymir/blob/main/docs/images/nights-into-dreams.png"/>
-  <img width="100%" src="https://github.com/StrikerX3/Ymir/blob/main/docs/images/debugger.png"/>
-</div>
-
+NEON SATURN keeps Ymir's emulation core as-is and replaces the desktop frontend with a native Android
+one: a setup wizard, a cover-art game library, Saturn-style touch controls, and an in-game quick actions
+menu. Everything under `libs/ymir-core` is upstream Ymir; the port lives in [`android/`](android/).
 
 ## Features
 
-- Load games from MAME CHD, BIN+CUE, IMG+CCD, MDF+MDS or ISO files
-- Automatic IPL (BIOS) ROM detection
-- Automatic region switching
-- Up to two players with a variety of controllers on both ports
-- Fully customizable keybindings
-- Backup RAM, DRAM and ROM cartridges (more to come)
-- Integrated backup memory manager to import and export saves, and transfer between internal and cartridge RAM
-- Forwards-compatible save states
-- Rewinding (up to one minute at 60 fps), turbo speed, frame step (forwards and backwards)
-- Full screen mode with VRR support and low input lag
-- Graphics enhancements such as optional deinterlaced/progressive rendering of high resolution modes and transparent mesh polygon rendering
-- Optional low level CD block emulation
-- A work-in-progress feature-rich debugger
+### Library
 
-Ymir runs on Windows 10 or later, macOS 15 (Sequoia) or later, most modern and popular Linux distributions and FreeBSD, and supports x86-64 (Intel, AMD) and ARM CPUs.
+- Setup wizard for importing the IPL (BIOS) ROM and pointing the app at a games folder
+- Games folder is read through the Storage Access Framework, so it can live anywhere on the device
+- Three library views, cycled from the header: a list, NA box covers, and Japanese jewel cases
+- Coverflow with perspective, reflections and snap-to-centre paging
+- Cover art fetched and cached on demand, or downloaded in bulk from Settings
+- Animated starfield backdrop
+- Light / dark / follow-system theme, defaulting to dark
+
+### In game
+
+- Saturn-style touch control overlay: D-pad, analogue stick, A/B/C, X/Y/Z, L/R, Start
+- Fully repositionable layout, stored separately for portrait and landscape
+- Rewind and fast-forward buttons on the overlay
+- Quick actions menu (back button or gamepad Select): resume, save state, load state, exit
+- Physical gamepad and keyboard support via SDL, including a bundled controller database
+
+### Emulation options
+
+- Aspect ratio: 4:3, 16:9 or stretch
+- Texture filtering: sharp (nearest) or smooth (bilinear)
+- Upscaling filter: off, or 6x xBRZ
+- Deinterlaced rendering of high-resolution modes
+- Transparent mesh polygon rendering
+- Rewind buffer (about five seconds at 60 fps), off by default
+- Optional low-level CD block emulation when a CD block ROM is imported
+
+Requires **Android 9 (API 28) or later** on a **64-bit ARM** device.
 
 
 ## Usage
 
-Grab the latest release [here](https://github.com/StrikerX3/Ymir/releases/latest).
-Check the [Releases](https://github.com/StrikerX3/Ymir/releases) page for previous versions.
+Install the app. The setup wizard asks for two things:
 
-Ymir does not require installation. Simply download it to any directory and run the executable.
-On Windows you might also need to install the latest [Microsoft Visual C++ Redistributable package](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist) ([x86_64 installer](https://aka.ms/vs/17/release/vc_redist.x64.exe), [AArch64/ARM64 installer](https://aka.ms/vs/17/release/vc_redist.arm64.exe)).
+1. **IPL BIOS** — import a Saturn BIOS ROM (`.bin` or `.rom`). Required.
+2. **Games folder** — choose the folder holding your disc images. Required.
 
-The program accepts command-line arguments. Invoke `ymir-sdl3 --help` to list the options:
+A **CD Block ROM** can also be imported. It is optional, and enables low-level CD block emulation.
 
-```
-Ymir - Sega Saturn emulator
-Usage:
-  Ymir [OPTION...] path to disc image
+Once the BIOS and games folder are set, the library replaces the wizard. Tap a game to stage and launch
+it. The gear icon in the header opens Settings; the icon on the left cycles between list and cover views.
 
-  -d, --disc arg      Path to Saturn disc image (.ccd, .chd, .cue, .iso, 
-                      .mds)
-  -p, --profile arg   Path to profile directory
-  -u, --user          Force user profile
-  -h, --help          Display help text
-  -f, --fullscreen    Start in fullscreen mode
-  -P, --paused        Start paused
-  -F, --fast-forward  Start in fast-forward mode
-  -D, --debug         Start with debug tracing enabled
-  -E, --exceptions    Capture all unhandled exceptions
+Supported disc formats: **MAME CHD, BIN+CUE, IMG+CCD, MDF+MDS and ISO**. Multi-file formats need their
+companion track files present in the same folder — the launcher checks for them and refuses to start if
+they're missing.
 
-```
+### Where files live
 
-The options are case-sensitive -- lowercase `-p` sets the profile path, uppercase `-P` makes the emulator start paused.
+App data sits under `Android/data/com.izzy2lost.neonsaturn/files/neonsaturn/`:
 
-Pass a path to a valid Saturn disc image as an argument to `ymir-sdl3` to launch the emulator with the disc. `-d`/`--disc` is optional.
+| Directory | Contents |
+| --- | --- |
+| `ipl/` | Imported IPL (BIOS) ROMs |
+| `cdb/` | Imported CD block ROMs |
+| `disc/` | Games staged from the library before launch |
+| `state/` | Persistent SMPC data (BIOS settings, clock) |
+| `state/savestates/` | Save states, one directory per disc |
+| `saves/` | Internal backup RAM |
 
-Use `-p <profile-path>` to point to a separate set of configuration and state files, useful if you wish to have different user profiles (hence the name).
-
-The `-u` option forces usage of the OS's user profile folder (e.g. `C:\Users\<username>\AppData\Roaming\StrikerX3\Ymir` on Windows or `/home/<username>/.local/share/Ymir` on Linux).
-
-`-f` forces the emulator to start in fullscreen mode, ignoring the preference in Ymir.toml.
-
-`-D` starts the emulator with debug tracing enabled.
-
-`-F` starts the emulator in fast-forward mode.
-
-`-E` captures all unhandled exceptions, which can be useful to troubleshoot crashes or failure to start the emulator.
-
-Note that the Windows version does not output anything to the console, but it does honor the command line parameters. You can pipe the output of the command to a file:
-
-```sh
-ymir-sdl3 > out.txt
-```
-
-Ymir requires an IPL (BIOS) ROM to work. You can place the ROMs under the `roms\ipl` directory created alongside the executable on the first run.
-The emulator will scan and automatically select the IPL ROM matching the loaded disc. If no disc is loaded, it will use a ROM matching the first preferred region. Failing that, it will pick whatever is available.
-You can override the selection on Settings > IPL.
-
-Ymir can load game disc images from MAME CHD, BIN+CUE, IMG+CCD, MDF+MDS or ISO files. It does not support injecting .elf files directly at the moment.
-
-When using low level CD block emulation (LLE), Ymir also requires the CD block ROM to be placed in `roms\cdb`.
+Games are copied here from the games folder before launch so SDL and the emulator can open them as
+ordinary files rather than through content URIs.
 
 
-## Troubleshooting
+## Notes and limitations
 
-See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) if the emulator crashes or misbehaves.
+**Upscaling doesn't raise the internal resolution.** Ymir's core has only a software renderer and
+rasterises at Saturn-native resolution, so the upscaling filter is an edge-aware smoothing pass applied
+to the finished frame. It sharpens 2D sprites and backgrounds noticeably; it cannot add 3D detail. Real
+internal-resolution rendering would need a hardware renderer in the core, which does not exist yet.
 
-> [!NOTE]
-> The author (@StrikerX3) works primarily with Windows and Linux systems and only provides support for other platforms on a best-effort basis.
-> For Linux specifically, only the .tar.xz package on Ubuntu (both native and under WSL) is officially supported by the author.
-> If you use custom-built Linux systems or anything that deviates too much from the norm, you're most likely on your own.
->
-> The project relies on community support for other Linux packages, macOS and FreeBSD.
+**Rewind costs CPU and memory.** It saves emulator state every frame and keeps a few seconds of
+LZ4-compressed deltas, so it is off by default and its on-screen button is hidden until enabled.
+
+**Settings apply at launch.** Graphics and rewind options are read when a game starts, so changing them
+takes effect the next time you launch a game.
 
 
 ## Compiling
 
-See [COMPILING.md](COMPILING.md).
+Requires the Android SDK and a JDK, plus the toolchain Gradle pulls in:
+
+| | Version |
+| --- | --- |
+| Android Gradle Plugin | 9.2.1 |
+| Gradle | 9.4.1 |
+| NDK | 30.0.15729638 |
+| CMake | 3.30.3 |
+| compileSdk / targetSdk | 36 |
+
+AGP 9 has built-in Kotlin support, so no Kotlin Gradle plugin is declared.
+
+Native dependencies come from vcpkg (checked in as a submodule) and the vendored libraries under
+`vendor/`. Build from the `android/` directory:
+
+```sh
+cd android
+./gradlew assembleDebug
+```
+
+The APK lands in `android/app/build/outputs/apk/debug/`. Only `arm64-v8a` is built.
+
+> [!TIP]
+> Release builds compile the core with ThinLTO, which is memory-hungry. On a machine with limited RAM,
+> the parallel native build can exhaust memory — run it with reduced parallelism if that happens.
+
+For building upstream Ymir for desktop platforms, see [COMPILING.md](COMPILING.md).
 
 
-## Support my work
+## Credits and licence
 
-If you enjoy my projects and want to help me keep developing them, consider supporting me:
-- [Patreon](https://www.patreon.com/StrikerX3) for ongoing support
-- PIX for one-time donations in Brazil: ask me on Discord.
+NEON SATURN is licensed under the **GNU General Public License v3.0** — see [LICENSE](LICENSE).
 
-Your support is completely optional but genuinely appreciated. It helps me dedicate more time and energy to these passion projects while keeping everything open-source and free for everyone. Thank you!
+- **[Ymir](https://github.com/StrikerX3/Ymir)** by StrikerX3 — the emulator core and everything this port
+  is built on. If you like this, support the upstream author on
+  [Patreon](https://www.patreon.com/StrikerX3) and join the
+  [Discord](https://discord.gg/NN3A7n5dzn).
+- **[Kronos](https://github.com/FCare/Kronos)** / **Yabause** — the 6x xBRZ upscaling shader in
+  [`android/app/src/main/cpp/xbrz6x_shader.hpp`](android/app/src/main/cpp/xbrz6x_shader.hpp), used under
+  GPL-2.0-or-later. The original copyright notice is kept in that file.
+- **[SDL3](https://github.com/libsdl-org/SDL)** — windowing, audio, input and the Android activity.
