@@ -53,6 +53,17 @@
     <string name="quick_actions_save_state">Save State</string>
     <string name="quick_actions_load_state">Load State</string>
     <string name="quick_actions_exit">Exit Game</string>
+
+    <string name="save_state_select_save_slot">Save State</string>
+    <string name="save_state_select_load_slot">Load State</string>
+    <string name="save_state_slot_label">Slot %1$d</string>
+    <string name="save_state_empty_slot">Empty</string>
+    <string name="save_state_saved_at">Saved %1$s</string>
+    <string name="save_state_tap_to_enlarge">Tap the picture to enlarge</string>
+    <string name="save_state_no_preview">No preview</string>
+    <string name="save_state_preview_title">Slot %1$d · %2$s</string>
+    <string name="save_state_thumbnail_desc">Save state preview</string>
+    <string name="save_state_not_ready">The game is still starting</string>
     <string name="validation_missing_bios">Import or copy a Saturn BIOS first.</string>
     <string name="validation_missing_selected_bios">The selected BIOS file is missing. Reimport it or copy one into %1$s.</string>
     <string name="validation_missing_selected_cdb">The selected CD Block ROM is missing. Reimport it or remove it from %1$s.</string>

@@ -4,20 +4,27 @@ import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
 import android.os.Bundle
+import android.text.format.DateUtils
 import android.view.ContextThemeWrapper
 import android.view.KeyEvent
 import android.view.LayoutInflater
+import android.view.View
 import android.view.ViewGroup
+import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import org.libsdl.app.SDLActivity
+import java.io.File
 
 class EmulatorActivity : SDLActivity() {
     private lateinit var store: BootstrapStore
     private var quickActionsDialog: AlertDialog? = null
+    private var saveStateSlotsDialog: AlertDialog? = null
+    private var saveStateOperationRunning = false
     private var touchControlsView: TouchControlsView? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -43,12 +50,18 @@ class EmulatorActivity : SDLActivity() {
         if (quickActionsDialog?.isShowing == true) {
             quickActionsDialog?.dismiss()
         }
+        if (saveStateSlotsDialog?.isShowing == true) {
+            saveStateSlotsDialog?.dismiss()
+        }
         super.onPause()
     }
 
     override fun onDestroy() {
         if (quickActionsDialog?.isShowing == true) {
             quickActionsDialog?.dismiss()
+        }
+        if (saveStateSlotsDialog?.isShowing == true) {
+            saveStateSlotsDialog?.dismiss()
         }
         removeTouchControlsOverlay()
         if (currentInstance === this) {
@@ -96,8 +109,13 @@ class EmulatorActivity : SDLActivity() {
         return arguments.toTypedArray()
     }
 
+    private fun isMenuOpen(): Boolean =
+        quickActionsDialog?.isShowing == true ||
+            saveStateSlotsDialog?.isShowing == true ||
+            saveStateOperationRunning
+
     private fun showQuickActionsDialog() {
-        if (isFinishing || isDestroyed || quickActionsDialog?.isShowing == true) {
+        if (isFinishing || isDestroyed || isMenuOpen()) {
             return
         }
 
@@ -125,13 +143,16 @@ class EmulatorActivity : SDLActivity() {
         content.findViewById<MaterialButton>(R.id.resumeButton).setOnClickListener {
             dialog.dismiss()
         }
+        // The slot picker takes over from here and stays paused until it is done.
         content.findViewById<MaterialButton>(R.id.saveStateButton).setOnClickListener {
-            Toast.makeText(this, nativeSaveState(0), Toast.LENGTH_SHORT).show()
+            resumeOnDismiss = false
             dialog.dismiss()
+            showSaveStateSlotsDialog(save = true)
         }
         content.findViewById<MaterialButton>(R.id.loadStateButton).setOnClickListener {
-            Toast.makeText(this, nativeLoadState(0), Toast.LENGTH_SHORT).show()
+            resumeOnDismiss = false
             dialog.dismiss()
+            showSaveStateSlotsDialog(save = false)
         }
         content.findViewById<MaterialButton>(R.id.exitGameButton).setOnClickListener {
             resumeOnDismiss = false
@@ -150,6 +171,124 @@ class EmulatorActivity : SDLActivity() {
 
         quickActionsDialog = dialog
         dialog.show()
+    }
+
+    private fun resumeEmulation() {
+        nativeSetPaused(false)
+        resumeTouchControls()
+    }
+
+    private fun showSaveStateSlotsDialog(save: Boolean) {
+        val directory = nativeGetSaveStatesDirectory()
+        if (isFinishing || isDestroyed || directory.isEmpty()) {
+            if (directory.isEmpty()) {
+                Toast.makeText(this, R.string.save_state_not_ready, Toast.LENGTH_SHORT).show()
+            }
+            resumeEmulation()
+            return
+        }
+
+        val dialogContext = ContextThemeWrapper(this, R.style.ThemeOverlay_NeonSaturn_LibrarySurface)
+        val inflater = LayoutInflater.from(dialogContext)
+        val content = inflater.inflate(R.layout.dialog_save_state_slots, null, false)
+        val slotList = content.findViewById<LinearLayout>(R.id.saveStateSlotList)
+
+        var operationStarted = false
+        lateinit var dialog: AlertDialog
+        val thumbnailWidthPx = resources.getDimensionPixelSize(R.dimen.save_state_thumbnail_width)
+
+        for (slot in SaveStateSlot.listIn(File(directory))) {
+            val row = inflater.inflate(R.layout.item_save_state_slot, slotList, false)
+            val thumbnail = row.findViewById<ImageView>(R.id.saveStateThumbnail)
+            val hint = row.findViewById<TextView>(R.id.saveStateHint)
+
+            row.findViewById<TextView>(R.id.saveStateSlotLabel).text =
+                getString(R.string.save_state_slot_label, slot.number)
+            row.findViewById<TextView>(R.id.saveStateTimestamp).text =
+                if (slot.exists) getString(R.string.save_state_saved_at, formatSavedAt(slot)) else
+                    getString(R.string.save_state_empty_slot)
+
+            val bitmap = slot.decodeThumbnail(thumbnailWidthPx)
+            thumbnail.setImageBitmap(bitmap)
+            if (bitmap != null) {
+                hint.setText(R.string.save_state_tap_to_enlarge)
+                thumbnail.setOnClickListener { showSaveStatePreview(dialogContext, slot) }
+            } else {
+                hint.text = if (slot.exists) getString(R.string.save_state_no_preview) else ""
+                hint.visibility = if (slot.exists) View.VISIBLE else View.GONE
+            }
+
+            // Saving can target any slot; loading only makes sense for filled ones.
+            val selectable = save || slot.exists
+            row.isEnabled = selectable
+            row.isClickable = selectable
+            row.isFocusable = selectable
+            row.alpha = if (selectable) 1f else 0.45f
+            if (selectable) {
+                row.setOnClickListener {
+                    operationStarted = true
+                    dialog.dismiss()
+                    runSaveStateOperation(slot, save)
+                }
+            }
+            slotList.addView(row)
+        }
+
+        dialog = MaterialAlertDialogBuilder(dialogContext, R.style.ThemeOverlay_NeonSaturn_QuickActionsDialog)
+            .setTitle(if (save) R.string.save_state_select_save_slot else R.string.save_state_select_load_slot)
+            .setView(content)
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+        dialog.setOnDismissListener {
+            saveStateSlotsDialog = null
+            if (!operationStarted) {
+                resumeEmulation()
+            }
+        }
+
+        saveStateSlotsDialog = dialog
+        dialog.show()
+    }
+
+    private fun formatSavedAt(slot: SaveStateSlot): String =
+        DateUtils.formatDateTime(
+            this,
+            slot.savedAtMillis,
+            DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_SHOW_TIME or DateUtils.FORMAT_ABBREV_MONTH,
+        )
+
+    private fun showSaveStatePreview(dialogContext: Context, slot: SaveStateSlot) {
+        val bitmap = slot.decodeThumbnail() ?: return
+        val content = LayoutInflater.from(dialogContext).inflate(R.layout.dialog_save_state_preview, null, false)
+        content.findViewById<ImageView>(R.id.saveStatePreviewImage).setImageBitmap(bitmap)
+
+        MaterialAlertDialogBuilder(dialogContext, R.style.ThemeOverlay_NeonSaturn_QuickActionsDialog)
+            .setTitle(getString(R.string.save_state_preview_title, slot.number, formatSavedAt(slot)))
+            .setView(content)
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
+    }
+
+    /**
+     * Serializing a state is several megabytes of work, so it runs off the UI thread. The
+     * emulator stays paused throughout and resumes once the result is known.
+     */
+    private fun runSaveStateOperation(slot: SaveStateSlot, save: Boolean) {
+        saveStateOperationRunning = true
+        Thread({
+            val message = runCatching {
+                if (save) nativeSaveState(slot.index) else nativeLoadState(slot.index)
+            }.getOrElse { it.message ?: "Save state operation failed" }
+
+            runOnUiThread {
+                saveStateOperationRunning = false
+                if (isFinishing || isDestroyed) {
+                    return@runOnUiThread
+                }
+                Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+                resumeEmulation()
+            }
+        }, "NeonSaturn save state").start()
     }
 
     private fun isQuickActionsKey(event: KeyEvent): Boolean =
@@ -201,7 +340,7 @@ class EmulatorActivity : SDLActivity() {
         } else {
             store.loadTouchControlsLayout()
         }
-        overlay.inputSuspended = quickActionsDialog?.isShowing == true
+        overlay.inputSuspended = isMenuOpen()
     }
 
     private fun removeTouchControlsOverlay() {
@@ -242,6 +381,7 @@ class EmulatorActivity : SDLActivity() {
     private external fun nativeSetSpeedControls(rewind: Boolean, fastForward: Boolean)
     private external fun nativeSaveState(slotIndex: Int): String
     private external fun nativeLoadState(slotIndex: Int): String
+    private external fun nativeGetSaveStatesDirectory(): String
     private external fun nativeExitEmulator()
     private external fun nativeUpdateTouchControls(
         buttonMask: Int,

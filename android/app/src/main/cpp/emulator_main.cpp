@@ -23,6 +23,7 @@
 #include <cereal/archives/portable_binary.hpp>
 #include <jni.h>
 #include <serdes/cereal_savestate.hpp>
+#include <stb_image_write.h>
 
 #include <algorithm>
 #include <array>
@@ -259,6 +260,13 @@ public:
         ResetInputs();
         SetSpeedControls(false, false);
 
+        // The emulator thread paces itself by blocking in the audio callback until the device
+        // drains the buffer, and it does so while holding m_coreMutex mid-frame. A stopped device
+        // never drains, so without going silent first that thread would wait forever and every
+        // save/load (which needs the lock) would hang the UI. Silence releases the wait, the
+        // frame completes, and the run loop then parks on m_paused.
+        m_audioSystem.SetSilent(paused);
+
         if (paused) {
             if (m_audioStarted && m_audioSystem.IsRunning()) {
                 m_audioSystem.Stop();
@@ -279,9 +287,10 @@ public:
     }
 
     [[nodiscard]] ActionResult SaveStateToSlot(std::size_t slotIndex) {
-        if (slotIndex >= 10) {
+        if (slotIndex >= kSaveStateSlotCount) {
             return {.success = false, .message = "Invalid save state slot"};
         }
+        const std::string slotName = "Slot " + std::to_string(slotIndex + 1);
 
         try {
             std::scoped_lock lock{m_coreMutex};
@@ -293,65 +302,88 @@ public:
             const auto gameStatesPath = SaveStatesDirectory(state->discHash);
             std::filesystem::create_directories(gameStatesPath, error);
             if (error) {
+                SDL_Log("Save state: cannot create %s: %s", gameStatesPath.c_str(), error.message().c_str());
                 return {.success = false, .message = "Could not prepare save state storage"};
             }
 
-            const auto statePath = gameStatesPath / (std::to_string(slotIndex) + ".savestate");
-            std::ofstream out{statePath, std::ios::binary};
-            if (!out) {
-                return {.success = false, .message = "Could not open the save state slot"};
+            const bool written = WriteFileAtomically(SaveStatePath(gameStatesPath, slotIndex), [&](std::ostream &out) {
+                cereal::PortableBinaryOutputArchive archive{out};
+                archive(*state);
+            });
+            if (!written) {
+                return {.success = false, .message = "Could not write " + slotName};
             }
 
-            cereal::PortableBinaryOutputArchive archive{out};
-            archive(*state);
-            return {.success = true, .message = "State " + std::to_string(slotIndex) + " saved"};
-        } catch (const cereal::Exception &e) {
-            return {.success = false, .message = std::string{"Save failed: "} + e.what()};
+            // The thumbnail is cosmetic; a failure must not fail the save, but a stale one
+            // from an older state would be misleading, so drop it.
+            const auto thumbnailPath = ThumbnailPath(gameStatesPath, slotIndex);
+            if (!WriteThumbnail(thumbnailPath)) {
+                std::filesystem::remove(thumbnailPath, error);
+            }
+
+            return {.success = true, .message = "State saved to " + slotName};
         } catch (const std::exception &e) {
+            SDL_Log("Save state to slot %zu failed: %s", slotIndex, e.what());
             return {.success = false, .message = std::string{"Save failed: "} + e.what()};
         } catch (...) {
+            SDL_Log("Save state to slot %zu failed", slotIndex);
             return {.success = false, .message = "Save failed"};
         }
     }
 
     [[nodiscard]] ActionResult LoadStateFromSlot(std::size_t slotIndex) {
-        if (slotIndex >= 10) {
+        if (slotIndex >= kSaveStateSlotCount) {
             return {.success = false, .message = "Invalid save state slot"};
         }
+        const std::string slotName = "Slot " + std::to_string(slotIndex + 1);
 
         try {
             std::scoped_lock lock{m_coreMutex};
 
             const auto discHash = m_saturn.GetDiscHash();
-            const auto statePath = SaveStatesDirectory(discHash) / (std::to_string(slotIndex) + ".savestate");
+            const auto statePath = SaveStatePath(SaveStatesDirectory(discHash), slotIndex);
             std::ifstream in{statePath, std::ios::binary};
             if (!in) {
-                return {.success = false, .message = "State " + std::to_string(slotIndex) + " is empty"};
+                return {.success = false, .message = slotName + " is empty"};
             }
 
             auto state = std::make_unique<ymir::savestate::SaveState>();
-            cereal::PortableBinaryInputArchive archive{in};
-            archive(*state);
+            {
+                cereal::PortableBinaryInputArchive archive{in};
+                archive(*state);
+            }
 
             if (!state->ValidateDiscHash(discHash)) {
-                return {.success = false, .message = "That state belongs to a different game"};
+                SDL_Log("Load state: %s has a different disc hash", statePath.c_str());
+                return {.success = false, .message = slotName + " belongs to a different game"};
             }
 
             if (!m_saturn.LoadState(*state, true)) {
-                return {.success = false, .message = "Could not load that state"};
+                SDL_Log("Load state: core rejected %s", statePath.c_str());
+                return {.success = false, .message = "Could not load " + slotName};
             }
 
             ResetInputs();
             // The recorded timeline no longer connects to the state we just jumped to.
             m_rewindBuffer.Reset();
-            return {.success = true, .message = "State " + std::to_string(slotIndex) + " loaded"};
-        } catch (const cereal::Exception &e) {
-            return {.success = false, .message = std::string{"Load failed: "} + e.what()};
+            return {.success = true, .message = "State loaded from " + slotName};
         } catch (const std::exception &e) {
+            SDL_Log("Load state from slot %zu failed: %s", slotIndex, e.what());
             return {.success = false, .message = std::string{"Load failed: "} + e.what()};
         } catch (...) {
+            SDL_Log("Load state from slot %zu failed", slotIndex);
             return {.success = false, .message = "Load failed"};
         }
+    }
+
+    /// Directory holding the current game's save state slots and thumbnails, or empty if
+    /// no game is loaded yet.
+    [[nodiscard]] std::string CurrentSaveStatesDirectory() {
+        std::scoped_lock lock{m_coreMutex};
+        if (!m_coreInitialized) {
+            return {};
+        }
+        return SaveStatesDirectory(m_saturn.GetDiscHash()).string();
     }
 
     void RequestStop() {
@@ -477,6 +509,9 @@ private:
 
     static constexpr int kUpscaleFilterOff = 0;
 
+    // Slots are 0-based on disk ("0.savestate") and shown to the user as 1-10.
+    static constexpr std::size_t kSaveStateSlotCount = 10;
+
     BootstrapConfig m_config;
     ymir::Saturn m_saturn{};
     app::AudioSystem m_audioSystem{};
@@ -514,6 +549,7 @@ private:
     std::atomic_bool m_rewindRequested = false;
     std::atomic_bool m_fastForward = false;
     bool m_audioStarted = false;
+    bool m_coreInitialized = false; // guarded by m_coreMutex
 
     Button m_physicalButtons = Button::Default;
     Button m_touchButtons = Button::Default;
@@ -542,6 +578,85 @@ private:
 
     std::filesystem::path SaveStatesDirectory(const ymir::XXH128Hash &discHash) const {
         return SaveStatesRootDirectory() / ymir::ToString(discHash);
+    }
+
+    static std::filesystem::path SaveStatePath(const std::filesystem::path &dir, std::size_t slotIndex) {
+        return dir / (std::to_string(slotIndex) + ".savestate");
+    }
+
+    static std::filesystem::path ThumbnailPath(const std::filesystem::path &dir, std::size_t slotIndex) {
+        return dir / (std::to_string(slotIndex) + ".png");
+    }
+
+    /// Writes through a temporary file and renames it into place, so a failed or interrupted
+    /// write never destroys the state already in the slot.
+    template <typename TFnWrite>
+    static bool WriteFileAtomically(const std::filesystem::path &path, TFnWrite &&write) {
+        auto tempPath = path;
+        tempPath += ".tmp";
+
+        std::error_code error{};
+        {
+            std::ofstream out{tempPath, std::ios::binary | std::ios::trunc};
+            if (!out) {
+                SDL_Log("Cannot open %s for writing", tempPath.c_str());
+                return false;
+            }
+            write(out);
+            out.flush();
+            if (!out) {
+                SDL_Log("Failed writing %s", tempPath.c_str());
+                out.close();
+                std::filesystem::remove(tempPath, error);
+                return false;
+            }
+        }
+
+        std::filesystem::rename(tempPath, path, error);
+        if (error) {
+            SDL_Log("Cannot move %s into place: %s", tempPath.c_str(), error.message().c_str());
+            std::filesystem::remove(tempPath, error);
+            return false;
+        }
+        return true;
+    }
+
+    /// Saves the last emulated frame as a PNG, resampled to the display aspect ratio: Saturn
+    /// pixels are not square, so e.g. a 320x224 frame is meant to be seen at 4:3.
+    bool WriteThumbnail(const std::filesystem::path &path) const {
+        if (m_framebuffer.empty() || m_frameWidth == 0 || m_frameHeight == 0 ||
+            m_framebuffer.size() < static_cast<std::size_t>(m_frameWidth) * m_frameHeight) {
+            return false;
+        }
+
+        const double aspect = m_config.aspectRatio == "16:9" ? 16.0 / 9.0 : 4.0 / 3.0;
+        const auto outWidth =
+            std::max(m_frameWidth, static_cast<std::uint32_t>(std::lround(m_frameHeight * aspect)));
+        const auto outHeight = static_cast<std::uint32_t>(std::lround(outWidth / aspect));
+
+        // Framebuffer pixels are XBGR8888: R in the low byte.
+        std::vector<std::uint8_t> rgb(static_cast<std::size_t>(outWidth) * outHeight * 3);
+        std::uint8_t *dst = rgb.data();
+        for (std::uint32_t y = 0; y < outHeight; ++y) {
+            const std::uint32_t *srcRow = &m_framebuffer[static_cast<std::size_t>(y * m_frameHeight / outHeight) *
+                                                         m_frameWidth];
+            for (std::uint32_t x = 0; x < outWidth; ++x) {
+                const std::uint32_t pixel = srcRow[x * m_frameWidth / outWidth];
+                *dst++ = static_cast<std::uint8_t>(pixel);
+                *dst++ = static_cast<std::uint8_t>(pixel >> 8u);
+                *dst++ = static_cast<std::uint8_t>(pixel >> 16u);
+            }
+        }
+
+        return WriteFileAtomically(path, [&](std::ostream &out) {
+            const auto writeToStream = [](void *context, void *data, int size) {
+                static_cast<std::ostream *>(context)->write(static_cast<const char *>(data), size);
+            };
+            if (stbi_write_png_to_func(writeToStream, &out, static_cast<int>(outWidth), static_cast<int>(outHeight),
+                                       3, rgb.data(), static_cast<int>(outWidth * 3)) == 0) {
+                out.setstate(std::ios::failbit);
+            }
+        });
     }
 
     void LoadGameControllerDatabase() const {
@@ -957,7 +1072,11 @@ private:
             return false;
         }
 
-        m_saturn.LoadDisc(std::move(disc));
+        {
+            std::scoped_lock lock{m_coreMutex};
+            m_saturn.LoadDisc(std::move(disc));
+            m_coreInitialized = true;
+        }
 
         if (m_config.rewindEnabled) {
             m_rewindBuffer.Start();
@@ -1362,6 +1481,14 @@ Java_com_izzy2lost_neonsaturn_EmulatorActivity_nativeLoadState(JNIEnv *env, jobj
     }
 
     return env->NewStringUTF("Emulator is not ready yet");
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_izzy2lost_neonsaturn_EmulatorActivity_nativeGetSaveStatesDirectory(JNIEnv *env, jobject) {
+    if (auto *app = GetActiveApp(); app != nullptr) {
+        return env->NewStringUTF(app->CurrentSaveStatesDirectory().c_str());
+    }
+    return env->NewStringUTF("");
 }
 
 extern "C" JNIEXPORT void JNICALL

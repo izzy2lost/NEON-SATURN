@@ -4,4 +4,7 @@
          extra top padding at runtime to center the coverflow vertically; landscape
          overrides this in values-land/ to push the cover up since space is tight. -->
     <dimen name="coverflow_top_padding">64dp</dimen>
+    <!-- Save state slot thumbnails are 4:3 -->
+    <dimen name="save_state_thumbnail_width">104dp</dimen>
+    <dimen name="save_state_thumbnail_height">78dp</dimen>
 </resources>
