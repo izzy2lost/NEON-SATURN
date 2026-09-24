@@ -1,0 +1,21 @@
+====================
+Rarely used features
+====================
+
+VDP2 CRAM used as rotation coefficients table
+[VDP2 RAMCTL CRKTE=1]
+---------------------------------------------
+  FIFA - Road to World Cup 98
+
+
+VDP2 color calculation window
+[VDP2 WCTLD CCxxE=1]
+-----------------------------
+  Bottom of the 9th
+    ~W0
+    FMVs only, no real effect
+
+  Sega Sample Game (GAM1)
+    W0 & W1
+    Window Sample > Normal Box Window
+    Hole in magenta gradient at the intersection of windows 0 and 1.

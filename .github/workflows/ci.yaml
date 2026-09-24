@@ -2,23 +2,20 @@ name: CI build
 
 on:
   push:
-    branches:
-      - main
-    paths-ignore: &ignored-paths
+    paths-ignore:
       - '**/*.md'
       - 'docs/**'
-  pull_request:
-    paths-ignore: *ignored-paths
 
 permissions:
   packages: write
   contents: read
 
 env:
-  USERNAME: StrikerX3
+  USERNAME: ymir-emu
   VCPKG_EXE: ${{ github.workspace }}/vcpkg/vcpkg
-  FEED_URL: https://nuget.pkg.github.com/StrikerX3/index.json
-  VCPKG_BINARY_SOURCES: "clear;nuget,https://nuget.pkg.github.com/StrikerX3/index.json,readwrite"
+  FEED_URL: https://nuget.pkg.github.com/ymir-emu/index.json
+  VCPKG_BINARY_SOURCES: "clear;nuget,https://nuget.pkg.github.com/ymir-emu/index.json,readwrite"
+  VULKAN_SDK_VERSION: "1.4.357.0"
 
 jobs:
   build-windows:
@@ -44,8 +41,15 @@ jobs:
 
     steps:
       # Set up MASM for lzma
-      - uses: glslang/setup-masm@24a9c9d6949cb1d8fedd35c9bd3c974fde2b81b8
+      - name: Set up MASM
+        uses: glslang/setup-masm@bd171b9b0a619ff6237c164fab5fb920cc579889
         if: ${{ matrix.arch.name == 'x64' }}
+
+      - name: Set up Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@37effcfa045411f8bfbbda26df2fd1b3bf3436fa
+        with:
+          vulkan_version: ${{ env.VULKAN_SDK_VERSION }}
+          cache: true
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -130,8 +134,10 @@ jobs:
         arch:
           - name: x64
             runner: ubuntu-24.04
+            vulkan_arch: x86_64
           - name: a64
             runner: ubuntu-24.04-arm
+            vulkan_arch: aarch64
         build-set:
           - name: full
             library-only: "no"
@@ -139,6 +145,29 @@ jobs:
             library-only: "yes"
 
     steps:
+      - name: Cache Vulkan SDK with DXC build (AArch64)
+        if: matrix.arch.name == 'a64'
+        id: cache-dxc
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/vulkan-sdk/${{ env.VULKAN_SDK_VERSION }}
+          key: dxc-aarch64-${{ runner.os }}-${{ env.VULKAN_SDK_VERSION }}
+
+      - name: Set up Vulkan SDK
+        id: vulkan-sdk
+        if: steps.cache-dxc.outputs.cache-hit != 'true'
+        uses: jakoch/install-vulkan-sdk-action@37effcfa045411f8bfbbda26df2fd1b3bf3436fa
+        with:
+          vulkan_version: ${{ env.VULKAN_SDK_VERSION }}
+          cache: true
+
+      - name: Build DXC for Vulkan SDK (AArch64)
+        if: matrix.arch.name == 'a64'  && steps.cache-dxc.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          cd $VULKAN_SDK/..
+          ./vulkansdk --skip-deps --maxjobs dxc
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           submodules: recursive
@@ -172,7 +201,7 @@ jobs:
       - name: Cache vcpkg
         if: ${{ matrix.build-set.library-only == 'no' }}
         id: cache-vcpkg
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ github.workspace }}/vcpkg_cache
           key: linux-${{ matrix.arch.name }}-vcpkg-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-triplets/**') }}
@@ -180,8 +209,9 @@ jobs:
       - name: Configure CMake
         env:
           VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}/vcpkg_cache,readwrite'
+          VULKAN_SDK: '/home/runner/vulkan-sdk/${{ env.VULKAN_SDK_VERSION }}/${{ matrix.arch.vulkan_arch }}'
         run: |
-          if [ ${{ matrix.build-set.library-only}} = 'no' ]; then
+          if [ ${{ matrix.build-set.library-only }} = 'no' ]; then
             cmake -B ${{ steps.strings.outputs.build-output-dir }} \
               -DCMAKE_CXX_COMPILER=clang++-18 \
               -DCMAKE_C_COMPILER=clang-18 \
@@ -258,7 +288,8 @@ jobs:
             sudo pkg upgrade -y
             sudo pkg install -y cmake evdev-proto git gmake libX11 libXcursor libXext \
               libXfixes libXi libXrandr libXrender libXScrnSaver libXtst libglvnd \
-              libinotify llvm21 ninja patchelf pkgconf python3 vulkan-loader zip
+              libinotify llvm21 ninja patchelf pkgconf python3 vulkan-loader zip \
+              glslang shaderc vulkan-headers
 
             if [ ${{ matrix.build-set.library-only}} = 'no' ]; then
               ${{ github.workspace }}/vcpkg/bootstrap-vcpkg.sh
@@ -315,6 +346,13 @@ jobs:
             library-only: "yes"
 
     steps:
+      - name: Set up Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@37effcfa045411f8bfbbda26df2fd1b3bf3436fa
+        with:
+          vulkan_version: ${{ env.VULKAN_SDK_VERSION }}
+          cache: true
+          stripdown: true
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           submodules: recursive

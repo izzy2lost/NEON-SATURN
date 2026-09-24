@@ -48,10 +48,11 @@ permissions:
   contents: read
 
 env:
-  USERNAME: StrikerX3
+  USERNAME: ymir-emu
   VCPKG_EXE: ${{ github.workspace }}/vcpkg/vcpkg
-  FEED_URL: https://nuget.pkg.github.com/StrikerX3/index.json
-  VCPKG_BINARY_SOURCES: "clear;nuget,https://nuget.pkg.github.com/StrikerX3/index.json,readwrite"
+  FEED_URL: https://nuget.pkg.github.com/ymir-emu/index.json
+  VCPKG_BINARY_SOURCES: "clear;nuget,https://nuget.pkg.github.com/ymir-emu/index.json,readwrite"
+  VULKAN_SDK_VERSION: "1.4.357.0"
 
 jobs:
   get-project-version:
@@ -103,23 +104,33 @@ jobs:
             runner: windows-latest
             target: x64
             vcpkg_triplet: x64-win-llvm-static-md
+            dxc_arch: x64
           - name: "x86_64-AVX2"
             enable_avx2_option: "ON"
             runner: windows-latest
             target: x64
             vcpkg_triplet: x64-win-llvm-avx2-static-md
+            dxc_arch: x64
           - name: "ARM64"
             enable_avx2_option: "OFF"
             runner: windows-11-arm
             target: arm64
             vcpkg_triplet: arm64-windows
+            dxc_arch: arm64
         include:
           - c_compiler: clang
             cpp_compiler: clang
 
     steps:
       # Set up MASM for lzma
-      - uses: glslang/setup-masm@83f52fc3599c361e8428805627dc749f2717ce75
+      - name: Set up MASM
+        uses: glslang/setup-masm@bd171b9b0a619ff6237c164fab5fb920cc579889
+
+      - name: Set up Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@37effcfa045411f8bfbbda26df2fd1b3bf3436fa
+        with:
+          vulkan_version: ${{ env.VULKAN_SDK_VERSION }}
+          cache: true
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -232,7 +243,20 @@ jobs:
           Copy-Item -Path ".\LICENSE"                                           -Destination "$licensesDir\Ymir-LICENSE"
           Copy-Item -Path "${{ github.workspace }}\gcdb\LICENSE"                -Destination "$licensesDir\SDL_GameControllerDB-LICENSE"
           Copy-Item -Path "${{ github.workspace }}\gcdb\gamecontrollerdb.txt"   -Destination ".\gamecontrollerdb.txt"
-          Compress-Archive -Path "README.md","CHANGELOG.md","TROUBLESHOOTING.md","gamecontrollerdb.txt","$licensesDir/","build/apps/ymir-sdl3/ymir-sdl3.exe" -DestinationPath "${{ steps.strings.outputs.ymir-artifact-name }}.zip"
+
+          Invoke-WebRequest -Uri "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2607/dxc_2026_07_29.zip" -OutFile dxc.zip
+          Expand-Archive -Path dxc.zip -DestinationPath .\dxc
+
+          $items = @()
+          $items += "README.md"
+          $items += "CHANGELOG.md"
+          $items += "TROUBLESHOOTING.md"
+          $items += "gamecontrollerdb.txt"
+          $items += "$licensesDir/"
+          $items += "build/apps/ymir-sdl3/ymir-sdl3.exe"
+          $items += "dxc\bin\${{ matrix.architecture.dxc_arch }}\dxcompiler.dll"
+          $items += "dxc\bin\${{ matrix.architecture.dxc_arch }}\dxil.dll"
+          Compress-Archive -Path $items -DestinationPath "${{ steps.strings.outputs.ymir-artifact-name }}.zip"
 
       - name: Upload Ymir artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
@@ -267,18 +291,44 @@ jobs:
           - name: "x86_64-SSE2"
             enable_avx2_option: "OFF"
             runner: ubuntu-24.04
+            vulkan_arch: x86_64
           - name: "x86_64-AVX2"
             enable_avx2_option: "ON"
             runner: ubuntu-24.04
+            vulkan_arch: x86_64
           - name: "AArch64-NEON"
             enable_avx2_option: "OFF" # doesn't matter actually
             runner: ubuntu-24.04-arm
+            vulkan_arch: aarch64
         include:
           - compiler: clang
             c_compiler: "clang-18"
             cpp_compiler: "clang++-18"
 
     steps:
+      - name: Cache Vulkan SDK with DXC build (AArch64)
+        id: cache-dxc
+        if: matrix.architecture.name == 'AArch64-NEON'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/vulkan-sdk/${{ env.VULKAN_SDK_VERSION }}
+          key: dxc-aarch64-${{ runner.os }}-${{ env.VULKAN_SDK_VERSION }}
+
+      - name: Set up Vulkan SDK
+        id: vulkan-sdk
+        if: steps.cache-dxc.outputs.cache-hit != 'true'
+        uses: jakoch/install-vulkan-sdk-action@37effcfa045411f8bfbbda26df2fd1b3bf3436fa
+        with:
+          vulkan_version: ${{ env.VULKAN_SDK_VERSION }}
+          cache: true
+
+      - name: Build DXC for Vulkan SDK (AArch64)
+        if: matrix.architecture.name == 'AArch64-NEON' && steps.cache-dxc.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          cd $VULKAN_SDK/..
+          ./vulkansdk --skip-deps --maxjobs dxc
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           submodules: recursive
@@ -312,7 +362,7 @@ jobs:
 
       - name: Cache vcpkg
         id: cache-vcpkg
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ github.workspace }}/vcpkg_cache
           key: linux-${{ matrix.architecture.name }}-vcpkg-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-triplets/**') }}
@@ -327,6 +377,7 @@ jobs:
       - name: Configure CMake
         env:
           VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}/vcpkg_cache,readwrite'
+          VULKAN_SDK: '/home/runner/vulkan-sdk/${{ env.VULKAN_SDK_VERSION }}/${{ matrix.architecture.vulkan_arch }}'
         run: >
           cmake -B ${{ steps.strings.outputs.build-output-dir }}
           -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }}
@@ -423,6 +474,12 @@ jobs:
           #  isa_name: "'x86_64;arm64'"
 
     steps:
+      - name: Set up Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@37effcfa045411f8bfbbda26df2fd1b3bf3436fa
+        with:
+          vulkan_version: ${{ env.VULKAN_SDK_VERSION }}
+          cache: true
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           submodules: recursive
@@ -447,8 +504,8 @@ jobs:
         shell: bash
         env:
           VCPKG_EXE: ${{ github.workspace }}/vcpkg/vcpkg
-          USERNAME: StrikerX3
-          FEED_URL: https://nuget.pkg.github.com/StrikerX3/index.json
+          USERNAME: ymir-emu
+          FEED_URL: https://nuget.pkg.github.com/ymir-emu/index.json
         run: |
           nuget sources add \
             -Source "${{ env.FEED_URL }}" \
@@ -534,3 +591,4 @@ jobs:
         with:
           name: ${{ steps.strings.outputs.ymir-artifact-name }}
           path: ${{ steps.strings.outputs.ymir-artifact-name }}.zip
+          retention-days: 15

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <app/imgui_data.hpp>
 #include <app/settings.hpp>
 #include <app/shared_context.hpp>
 
@@ -141,8 +142,9 @@ namespace regions {
     }
 
     inline void HLECDBlockParams(MemoryViewerState *state) {
+        const YmirImGuiData *imguiData = GetYmirImGuiData();
         ImGui::TextColored(
-            state->sharedCtx.colors.notice,
+            imguiData->colors.notice,
             "NOTE: This debug view displays CR values in 18, 1C, 20 and 24 and RR values in 28, 2C, 30 and 34.\n"
             "On real hardware, reads from 18..24 return RR values and writes to the same range go to CR.");
     }

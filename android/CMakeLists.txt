@@ -61,7 +61,18 @@ add_link_options(
 # vendor/CMakeLists.txt, which this build does not use), so resolve it from vcpkg here
 find_package(fmt CONFIG REQUIRED)
 
+# ymir-core embeds its GPU renderer shaders through CMakeRC and compiles them with DXC.
+# Android only uses the software renderer, so keep DXC out of the picture: compile_shader()
+# then becomes a no-op and ymir-core::shaders is an empty resource library.
+# (A non-NOTFOUND false value stops find_program from searching.)
+set(DXC_EXECUTABLE_VULKAN OFF CACHE FILEPATH "" FORCE)
+set(DXC_EXECUTABLE OFF CACHE FILEPATH "" FORCE)
+include("${CMAKE_CURRENT_LIST_DIR}/../cmake/CMakeRC.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/../cmake/CompileShaders.cmake")
+
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../vendor/mio" "${CMAKE_BINARY_DIR}/vendor/mio" EXCLUDE_FROM_ALL)
+add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../vendor/stb" "${CMAKE_BINARY_DIR}/vendor/stb" EXCLUDE_FROM_ALL)
+add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../vendor/dr_libs" "${CMAKE_BINARY_DIR}/vendor/dr_libs" EXCLUDE_FROM_ALL)
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../vendor/concurrentqueue" "${CMAKE_BINARY_DIR}/vendor/concurrentqueue" EXCLUDE_FROM_ALL)
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../vendor/xxHash" "${CMAKE_BINARY_DIR}/vendor/xxHash" EXCLUDE_FROM_ALL)
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../vendor/lz4" "${CMAKE_BINARY_DIR}/vendor/lz4" EXCLUDE_FROM_ALL)

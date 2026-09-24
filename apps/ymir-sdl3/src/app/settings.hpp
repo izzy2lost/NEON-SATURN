@@ -12,7 +12,7 @@
 #include <app/input/input_context.hpp>
 #include <app/input/input_events.hpp>
 
-#include <app/services/graphics_types.hpp>
+#include <app/services/gfx/gfx_types.hpp>
 
 #include <app/profile.hpp>
 
@@ -485,6 +485,7 @@ struct Settings {
         enum class DisplayRotation { Normal, _90CW, _180, _90CCW };
 
         gfx::Backend graphicsBackend;
+        std::optional<gfx::AdapterID> graphicsAdapter;
 
         bool forceIntegerScaling;
         bool forceAspectRatio;
@@ -512,6 +513,8 @@ struct Settings {
 
         display::DisplayMode fullScreenMode;
         bool borderlessFullScreen;
+
+        util::Observable<bool> useHardwareAcceleration;
 
         struct SoftwareRenderer {
             util::Observable<bool> threadedVDP1;

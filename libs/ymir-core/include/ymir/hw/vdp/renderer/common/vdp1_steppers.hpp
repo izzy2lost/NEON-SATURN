@@ -450,9 +450,14 @@ struct LineStepper {
         return {AAX(), AAY()};
     }
 
-    // Retrieves the total number of steps in the slope, that is, the longest of the vertical and horizontal spans.
-    FORCE_INLINE uint32 Length() const {
+    // Retrieves the length of the major axis of the slope, that is, the longest of the vertical and horizontal spans.
+    FORCE_INLINE uint32 DMajor() const {
         return m_dmaj;
+    }
+
+    // Retrieves the total number of steps in the slope.
+    FORCE_INLINE uint32 Length() const {
+        return m_length;
     }
 
 private:

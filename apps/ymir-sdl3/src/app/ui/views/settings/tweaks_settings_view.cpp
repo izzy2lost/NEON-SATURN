@@ -4,6 +4,8 @@
 
 #include <app/events/emu_event_factory.hpp>
 
+#include <app/imgui_data.hpp>
+
 #include <misc/cpp/imgui_stdlib.h>
 
 #include <SDL3/SDL_clipboard.h>
@@ -14,7 +16,8 @@ TweaksSettingsView::TweaksSettingsView(SharedContext &context)
     : SettingsViewBase(context) {}
 
 void TweaksSettingsView::Display() {
-    const float availWidth = ImGui::GetContentRegionAvail().x;
+    const YmirImGuiData *imguiData = GetYmirImGuiData();
+    const float availWidth = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
 
     ImGui::PushTextWrapPos(availWidth);
     ImGui::TextUnformatted("The options listed in this tab affect emulation accuracy.\n"
@@ -107,7 +110,7 @@ void TweaksSettingsView::Display() {
         tweaksList = fmt::to_string(buf);
     }
 
-    ImGui::PushFont(m_context.fonts.monospace.regular, m_context.fontSizes.medium);
+    ImGui::PushFont(imguiData->fonts.monospace.regular, imguiData->fontSizes.medium);
     ImGui::InputTextMultiline("##tweaks_list", &tweaksList, ImVec2(availWidth, 0),
                               ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_AutoSelectAll);
     ImGui::PopFont();
@@ -121,9 +124,10 @@ void TweaksSettingsView::Display() {
 }
 
 void TweaksSettingsView::DisplayEnhancements() {
+    const YmirImGuiData *imguiData = GetYmirImGuiData();
     auto &settings = GetSettings();
 
-    ImGui::PushFont(m_context.fonts.sansSerif.bold, m_context.fontSizes.xlarge);
+    ImGui::PushFont(imguiData->fonts.sansSerif.bold, imguiData->fontSizes.xlarge);
     ImGui::SeparatorText("Enhancements");
     ImGui::PopFont();
 
@@ -162,7 +166,7 @@ void TweaksSettingsView::DisplayEnhancements() {
 
     // -----------------------------------------------------------------------------------------------------------------
 
-    ImGui::PushFont(m_context.fonts.sansSerif.bold, m_context.fontSizes.large);
+    ImGui::PushFont(imguiData->fonts.sansSerif.bold, imguiData->fontSizes.large);
     ImGui::SeparatorText("Video");
     ImGui::PopFont();
 
@@ -171,9 +175,10 @@ void TweaksSettingsView::DisplayEnhancements() {
 }
 
 void TweaksSettingsView::DisplayAccuracyOptions() {
+    const YmirImGuiData *imguiData = GetYmirImGuiData();
     auto &settings = GetSettings();
 
-    ImGui::PushFont(m_context.fonts.sansSerif.bold, m_context.fontSizes.xlarge);
+    ImGui::PushFont(imguiData->fonts.sansSerif.bold, imguiData->fontSizes.xlarge);
     ImGui::SeparatorText("Accuracy");
     ImGui::PopFont();
 
@@ -244,7 +249,7 @@ void TweaksSettingsView::DisplayAccuracyOptions() {
 
     // -----------------------------------------------------------------------------------------------------------------
 
-    ImGui::PushFont(m_context.fonts.sansSerif.bold, m_context.fontSizes.large);
+    ImGui::PushFont(imguiData->fonts.sansSerif.bold, imguiData->fontSizes.large);
     ImGui::SeparatorText("SH-2");
     ImGui::PopFont();
 
@@ -253,7 +258,7 @@ void TweaksSettingsView::DisplayAccuracyOptions() {
 
     // -----------------------------------------------------------------------------------------------------------------
 
-    ImGui::PushFont(m_context.fonts.sansSerif.bold, m_context.fontSizes.large);
+    ImGui::PushFont(imguiData->fonts.sansSerif.bold, imguiData->fontSizes.large);
     ImGui::SeparatorText("Audio");
     ImGui::PopFont();
 
@@ -262,7 +267,7 @@ void TweaksSettingsView::DisplayAccuracyOptions() {
 
     // -----------------------------------------------------------------------------------------------------------------
 
-    ImGui::PushFont(m_context.fonts.sansSerif.bold, m_context.fontSizes.large);
+    ImGui::PushFont(imguiData->fonts.sansSerif.bold, imguiData->fontSizes.large);
     ImGui::SeparatorText("CD Block");
     ImGui::PopFont();
 
@@ -271,9 +276,10 @@ void TweaksSettingsView::DisplayAccuracyOptions() {
 }
 
 void TweaksSettingsView::DisplayPerformanceOptions() {
+    const YmirImGuiData *imguiData = GetYmirImGuiData();
     auto &settings = GetSettings();
 
-    ImGui::PushFont(m_context.fonts.sansSerif.bold, m_context.fontSizes.xlarge);
+    ImGui::PushFont(imguiData->fonts.sansSerif.bold, imguiData->fontSizes.xlarge);
     ImGui::SeparatorText("Performance");
     ImGui::PopFont();
 
@@ -318,11 +324,11 @@ void TweaksSettingsView::DisplayPerformanceOptions() {
 
     // -----------------------------------------------------------------------------------------------------------------
 
-    ImGui::PushFont(m_context.fonts.sansSerif.bold, m_context.fontSizes.large);
+    ImGui::PushFont(imguiData->fonts.sansSerif.bold, imguiData->fontSizes.large);
     ImGui::SeparatorText("Video");
     ImGui::PopFont();
 
-    ImGui::PushFont(m_context.fonts.sansSerif.bold, m_context.fontSizes.medium);
+    ImGui::PushFont(imguiData->fonts.sansSerif.bold, imguiData->fontSizes.medium);
     ImGui::SeparatorText("Software renderer");
     ImGui::PopFont();
 
@@ -332,7 +338,7 @@ void TweaksSettingsView::DisplayPerformanceOptions() {
 
     // -----------------------------------------------------------------------------------------------------------------
 
-    ImGui::PushFont(m_context.fonts.sansSerif.bold, m_context.fontSizes.large);
+    ImGui::PushFont(imguiData->fonts.sansSerif.bold, imguiData->fontSizes.large);
     ImGui::SeparatorText("Audio");
     ImGui::PopFont();
 

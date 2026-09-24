@@ -882,8 +882,9 @@ private:
         m_saturn.configuration.cdblock.useLLE = !m_config.cdbPath.empty();
         m_saturn.configuration.NotifyObservers();
 
-        if (auto *renderer = m_saturn.VDP.UseSoftwareRenderer(); renderer == nullptr) {
-            SDL_Log("Failed to activate software renderer");
+        if (auto result = m_saturn.VDP.UseSoftwareRenderer(); !result || result.Value() == nullptr) {
+            SDL_Log("Failed to activate software renderer: %s",
+                    result.HasError() ? result.Error().message.c_str() : "unknown error");
             return false;
         }
 
@@ -892,8 +893,7 @@ private:
             .transparentMeshes = m_config.transparentMeshes,
         });
 
-        m_saturn.VDP.GetRenderer().Callbacks.VDP2ResolutionChanged =
-            util::MakeClassMemberOptionalCallback<&EmulatorApp::OnResolutionChanged>(this);
+        // Resolution changes are delivered alongside each completed frame
         m_saturn.VDP.SetSoftwareRenderCallback(
             util::MakeClassMemberOptionalCallback<&EmulatorApp::OnFrameComplete>(this));
 

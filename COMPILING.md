@@ -77,7 +77,16 @@ It is highly recommended to use [Ninja](https://ninja-build.org/) as it greatly 
 To build Ymir on Windows, you will need [Visual Studio 2022 Community](https://visualstudio.microsoft.com/vs/community/) or later and [CMake 3.28+](https://cmake.org/).
 Clang is highly recommended over MSVC as it produces much higher quality code, outperforming MSVC by 50-80%. However, MSVC tends to provide a better debugging experience.
 
-All dependencies are included through `vcpkg` and in the `vendor` directory, and are built together with the emulator. No external dependencies are needed.
+You may also want to install the [Vulkan SDK](https://vulkan.lunarg.com/sdk/home). You can do so by downloading and running the installer or with the following command:
+
+```sh
+winget install KhronosGroup.VulkanSDK
+```
+
+Vulkan is an optional dependency on Windows as Ymir always supports Direct3D 12 and 11 on this operating system.
+
+All other dependencies are included through `vcpkg` and in the `vendor` directory, and are built together with the emulator.
+The core library does not consume any vcpkg dependencies.
 
 You can choose to generate a .sln file with CMake or open the directory directly with Visual Studio.
 Both methods work, but opening the directory allows Visual Studio to use Ninja for significantly faster build times.
@@ -96,6 +105,10 @@ To build Ymir on Linux, first you will need to install SDL3's required dependenc
 You might also have to install additional packages:
 - `autoconf autoconf-archive automake libtool` for ALSA
 - `python3 python3-venv` for dbus
+
+Vulkan is an optional dependency which enables GPU-accelerated VDP1/VDP2 rendering. For that reason, it is highly recommended to install the [Vulkan SDK](https://vulkan.lunarg.com/sdk/home).
+If Vulkan is enabled, you will also need `dxc` to allow Ymir to compile shaders offline. DXC is usually included with the SDK. shaderc (`glslc`) is not supported due to usage of modern HLSL features in some shaders (e.g. 64-bit integers).
+You can opt to install the Vulkan dependencies from your system's package manager instead of the SDK. For example, on Ubuntu: `libvulkan-dev vulkan-tools vulkan-validationlayers spirv-tools-dev glslc glslang-tools`.
 
 The compiler of choice for this platform is Clang. GCC is also supported, but produces slightly slower code.
 
@@ -123,7 +136,7 @@ Install required packages:
 ```sh
 pkg install cmake evdev-proto git gmake libX11 libXcursor libXext libXfixes libXi \
     libXrandr libXrender libXScrnSaver libXtst libglvnd libinotify llvm19 ninja patchelf \
-    pkgconf python3 vulkan-loader zip
+    pkgconf python3 vulkan-loader zip glslang shaderc vulkan-headers
 ```
 
 Notes:
@@ -362,7 +375,7 @@ It is recommended to keep your vendored dependencies in a subdirectory of your r
 `third_party`. Inside it, run these commands:
 
 ```sh
-git submodule add https://github.com/StrikerX3/Ymir.git
+git submodule add https://github.com/ymir-emu/Ymir.git
 git submodule update --init --recursive
 ```
 
@@ -388,7 +401,7 @@ include(FetchContent)
 
 FetchContent_Declare(
     ymir
-    GIT_REPOSITORY https://github.com/StrikerX3/Ymir
+    GIT_REPOSITORY https://github.com/ymir-emu/Ymir
     GIT_TAG        v0.3.2   # ideally, a specific tag or commit, but `main` also works
 )
 
