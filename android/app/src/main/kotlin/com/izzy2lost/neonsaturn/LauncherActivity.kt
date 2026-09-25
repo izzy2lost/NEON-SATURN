@@ -395,6 +395,19 @@ class LauncherActivity : AppCompatActivity() {
             startActivity(Intent(this, TouchControlsEditorActivity::class.java))
         }
 
+        content.findViewById<TextView>(R.id.aboutVersionText).text =
+            getString(R.string.about_version, AboutDialogs.appVersion(this))
+        // These open on top of Settings so backing out returns there.
+        content.findViewById<MaterialButton>(R.id.aboutCreditsButton).setOnClickListener {
+            AboutDialogs.showCredits(this)
+        }
+        content.findViewById<MaterialButton>(R.id.aboutLicensesButton).setOnClickListener {
+            AboutDialogs.showLicences(this)
+        }
+        content.findViewById<MaterialButton>(R.id.aboutSourceButton).setOnClickListener {
+            AboutDialogs.openSource(this)
+        }
+
         dialog.setOnDismissListener {
             librarySettingsDialog = null
         }

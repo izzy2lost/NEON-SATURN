@@ -41,6 +41,15 @@
     <string name="settings_touch_controls_enabled">Show Saturn-style on-screen controls during gameplay</string>
     <string name="settings_edit_touch_controls">Edit Touch Controls Layout</string>
     <string name="settings_redo_setup">Redo Setup</string>
+
+    <string name="about_section_title">About</string>
+    <string name="about_version">NEON SATURN %1$s</string>
+    <string name="about_summary">An Android port of Ymir, the Sega Saturn emulator by StrikerX3. Free software under the GNU General Public License v3.0.</string>
+    <string name="about_credits">Credits</string>
+    <string name="about_licenses">Open-Source Licenses</string>
+    <string name="about_source_code">Source Code</string>
+    <string name="about_open_website">Website</string>
+    <string name="about_trademark_notice">Sega and Sega Saturn are trademarks of SEGA Corporation. NEON SATURN is not affiliated with or endorsed by SEGA. No BIOS or game files are included.</string>
     <string name="library_empty">No supported Saturn games were found in the selected folder yet.</string>
     <string name="library_scan_error_inline">Unable to scan the selected folder: %1$s</string>
     <string name="not_set">Not imported yet</string>
