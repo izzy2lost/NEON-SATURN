@@ -338,5 +338,13 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
             android:text="@string/about_source_code" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/aboutPrivacyPolicyButton"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/about_privacy_policy" />
     </LinearLayout>
 </ScrollView>

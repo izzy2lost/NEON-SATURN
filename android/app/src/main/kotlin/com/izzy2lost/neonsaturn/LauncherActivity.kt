@@ -407,6 +407,9 @@ class LauncherActivity : AppCompatActivity() {
         content.findViewById<MaterialButton>(R.id.aboutSourceButton).setOnClickListener {
             AboutDialogs.openSource(this)
         }
+        content.findViewById<MaterialButton>(R.id.aboutPrivacyPolicyButton).setOnClickListener {
+            AboutDialogs.openPrivacyPolicy(this)
+        }
 
         dialog.setOnDismissListener {
             librarySettingsDialog = null

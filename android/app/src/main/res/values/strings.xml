@@ -48,6 +48,7 @@
     <string name="about_credits">Credits</string>
     <string name="about_licenses">Open-Source Licenses</string>
     <string name="about_source_code">Source Code</string>
+    <string name="about_privacy_policy">Privacy Policy</string>
     <string name="about_open_website">Website</string>
     <string name="about_trademark_notice">Sega and Sega Saturn are trademarks of SEGA Corporation. NEON SATURN is not affiliated with or endorsed by SEGA. No BIOS or game files are included.</string>
     <string name="library_empty">No supported Saturn games were found in the selected folder yet.</string>

@@ -24,6 +24,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
  */
 object AboutDialogs {
     const val SOURCE_URL = "https://github.com/izzy2lost/NEON-SATURN"
+    const val PRIVACY_POLICY_URL = "https://www.izzy2lost.com/neonsaturn-privacy"
 
     private data class Credit(val name: String, val role: String, val url: String? = null)
 
@@ -134,6 +135,8 @@ object AboutDialogs {
     }
 
     fun openSource(activity: Activity) = openUrl(activity, SOURCE_URL)
+
+    fun openPrivacyPolicy(activity: Activity) = openUrl(activity, PRIVACY_POLICY_URL)
 
     private fun showLicenceText(activity: Activity, component: Component) {
         val text = component.assetFiles.joinToString("\n\n────────────────────\n\n") { file ->
