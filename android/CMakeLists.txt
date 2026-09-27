@@ -61,12 +61,35 @@ add_link_options(
 # vendor/CMakeLists.txt, which this build does not use), so resolve it from vcpkg here
 find_package(fmt CONFIG REQUIRED)
 
-# ymir-core embeds its GPU renderer shaders through CMakeRC and compiles them with DXC.
-# Android only uses the software renderer, so keep DXC out of the picture: compile_shader()
-# then becomes a no-op and ymir-core::shaders is an empty resource library.
-# (A non-NOTFOUND false value stops find_program from searching.)
-set(DXC_EXECUTABLE_VULKAN OFF CACHE FILEPATH "" FORCE)
-set(DXC_EXECUTABLE OFF CACHE FILEPATH "" FORCE)
+# The Vulkan VDP renderer runs ymir-core's HLSL compute shaders, compiled to SPIR-V at build time by DXC and
+# embedded through CMakeRC. DXC comes from vcpkg as a host tool (see vcpkg.json).
+set(Ymir_ENABLE_VULKAN_RENDERER ON CACHE BOOL "" FORCE)
+
+# vcpkg installs host tools under vcpkg_installed/<host triplet>; the host triplet is only known to CMake when it's
+# passed explicitly, so look the tool up instead.
+file(GLOB NEONSATURN_DXC_TOOL "${VCPKG_INSTALLED_DIR}/*/tools/directx-dxc/dxc" "${VCPKG_INSTALLED_DIR}/*/tools/directx-dxc/dxc.exe")
+if (NOT NEONSATURN_DXC_TOOL)
+    message(FATAL_ERROR "DXC not found in ${VCPKG_INSTALLED_DIR}/*/tools/directx-dxc; it should be installed by vcpkg")
+endif ()
+list(GET NEONSATURN_DXC_TOOL 0 NEONSATURN_DXC_TOOL)
+if (CMAKE_HOST_WIN32)
+    # The Windows package places the DLLs next to dxc.exe
+    set(NEONSATURN_DXC "${NEONSATURN_DXC_TOOL}")
+else ()
+    # Depending on the port version, the Linux dxc binary may look for libdxcompiler.so in ../lib relative to itself,
+    # which doesn't match the vcpkg layout (tools/directx-dxc/dxc and lib/libdxcompiler.so), so run it through a
+    # wrapper that sets the library path.
+    get_filename_component(NEONSATURN_DXC_LIB_DIR "${NEONSATURN_DXC_TOOL}/../../../lib" ABSOLUTE)
+    set(NEONSATURN_DXC "${CMAKE_BINARY_DIR}/dxc-wrapper.sh")
+    file(WRITE "${NEONSATURN_DXC}"
+        "#!/bin/sh\n"
+        "LD_LIBRARY_PATH=\"${NEONSATURN_DXC_LIB_DIR}\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}\" "
+        "exec \"${NEONSATURN_DXC_TOOL}\" \"\$@\"\n"
+    )
+    file(CHMOD "${NEONSATURN_DXC}" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE)
+endif ()
+set(DXC_EXECUTABLE_VULKAN "${NEONSATURN_DXC}" CACHE FILEPATH "" FORCE)
+set(DXC_EXECUTABLE "${NEONSATURN_DXC}" CACHE FILEPATH "" FORCE)
 include("${CMAKE_CURRENT_LIST_DIR}/../cmake/CMakeRC.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/../cmake/CompileShaders.cmake")
 

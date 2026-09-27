@@ -1,6 +1,10 @@
 {
   "dependencies": [
     "cereal",
-    "fmt"
+    "fmt",
+    {
+      "name": "directx-dxc",
+      "host": true
+    }
   ]
 }

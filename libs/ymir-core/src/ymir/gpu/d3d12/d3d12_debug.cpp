@@ -4,6 +4,13 @@
 
 namespace ymir::gpu::d3d12 {
 
+namespace static_config {
+    /// @brief Enables GPU-based validation.
+    /// Has a significant memory cost and causes initialization to take several seconds to complete, but can catch
+    /// subtle bugs in shaders and GPU state management.
+    static constexpr bool gpuBasedValidation = false;
+} // namespace static_config
+
 DebugLayer DebugLayer::s_instance{};
 
 DebugLayer::~DebugLayer() {
@@ -23,6 +30,9 @@ bool DebugLayer::Init() {
         return false;
     }
     m_d3d12Debug->EnableDebugLayer();
+    if constexpr (static_config::gpuBasedValidation) {
+        m_d3d12Debug->SetEnableGPUBasedValidation(TRUE);
+    }
     m_dxgiDebug->EnableLeakTrackingForThread();
 #endif
     return true;
@@ -34,6 +44,9 @@ void DebugLayer::Shutdown() {
         return;
     }
     ReportLiveObjects();
+    if constexpr (static_config::gpuBasedValidation) {
+        m_d3d12Debug->SetEnableGPUBasedValidation(FALSE);
+    }
     m_dxgiDebug.reset();
     m_d3d12Debug.reset();
 #endif

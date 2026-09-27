@@ -103,6 +103,7 @@ class EmulatorActivity : SDLActivity() {
         intent.getStringExtra(EXTRA_ASPECT_RATIO)?.let { arguments += "--aspect-ratio=$it" }
         intent.getStringExtra(EXTRA_TEXTURE_FILTER)?.let { arguments += "--texture-filter=$it" }
         arguments += "--upscale-filter=${intent.getIntExtra(EXTRA_UPSCALE_FILTER, BootstrapStore.UPSCALE_OFF)}"
+        arguments += "--resolution-scale=${intent.getIntExtra(EXTRA_RESOLUTION_SCALE, BootstrapStore.RESOLUTION_SOFTWARE)}"
         arguments += "--deinterlace=${intent.getBooleanExtra(EXTRA_DEINTERLACE, false)}"
         arguments += "--transparent-meshes=${intent.getBooleanExtra(EXTRA_TRANSPARENT_MESHES, false)}"
         arguments += "--rewind=${intent.getBooleanExtra(EXTRA_REWIND_ENABLED, false)}"
@@ -407,6 +408,8 @@ class EmulatorActivity : SDLActivity() {
             "com.izzy2lost.neonsaturn.extra.TEXTURE_FILTER"
         private const val EXTRA_UPSCALE_FILTER =
             "com.izzy2lost.neonsaturn.extra.UPSCALE_FILTER"
+        private const val EXTRA_RESOLUTION_SCALE =
+            "com.izzy2lost.neonsaturn.extra.RESOLUTION_SCALE"
         private const val EXTRA_DEINTERLACE =
             "com.izzy2lost.neonsaturn.extra.DEINTERLACE"
         private const val EXTRA_TRANSPARENT_MESHES =
@@ -422,6 +425,7 @@ class EmulatorActivity : SDLActivity() {
             aspectRatio: String = BootstrapStore.ASPECT_4_3,
             textureFilter: String = BootstrapStore.FILTER_NEAREST,
             upscaleFilter: Int = BootstrapStore.UPSCALE_OFF,
+            resolutionScale: Int = BootstrapStore.RESOLUTION_SOFTWARE,
             deinterlace: Boolean = false,
             transparentMeshes: Boolean = false,
             rewindEnabled: Boolean = false
@@ -435,6 +439,7 @@ class EmulatorActivity : SDLActivity() {
                 putExtra(EXTRA_ASPECT_RATIO, aspectRatio)
                 putExtra(EXTRA_TEXTURE_FILTER, textureFilter)
                 putExtra(EXTRA_UPSCALE_FILTER, upscaleFilter)
+                putExtra(EXTRA_RESOLUTION_SCALE, resolutionScale)
                 putExtra(EXTRA_DEINTERLACE, deinterlace)
                 putExtra(EXTRA_TRANSPARENT_MESHES, transparentMeshes)
                 putExtra(EXTRA_REWIND_ENABLED, rewindEnabled)

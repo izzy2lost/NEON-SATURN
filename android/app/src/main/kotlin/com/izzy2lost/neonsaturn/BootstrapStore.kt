@@ -76,12 +76,24 @@ class BootstrapStore(context: Context) {
 
     /**
      * Edge-aware upscaling filter applied to the finished frame. This is a display filter,
-     * not an internal render resolution - the core rasterises at Saturn-native size and
-     * has no hardware renderer, so no filter can add real 3D detail.
+     * not an internal render resolution (see [loadResolutionScale]); it can't add real 3D
+     * detail and is skipped when the GPU renderer runs above native resolution.
      */
     fun loadUpscaleFilter(): Int =
         preferences.getInt(KEY_UPSCALE_FILTER, UPSCALE_OFF)
             .coerceIn(UPSCALE_OFF, UPSCALE_XBRZ_6X)
+
+    fun saveResolutionScale(value: Int) {
+        preferences.edit().putInt(KEY_RESOLUTION_SCALE, value.coerceIn(RESOLUTION_SOFTWARE, RESOLUTION_MAX)).apply()
+    }
+
+    /**
+     * Renderer and internal resolution: [RESOLUTION_SOFTWARE] selects the software renderer,
+     * 1 to [RESOLUTION_MAX] select the Vulkan renderer at that multiple of the native resolution.
+     */
+    fun loadResolutionScale(): Int =
+        preferences.getInt(KEY_RESOLUTION_SCALE, RESOLUTION_SOFTWARE)
+            .coerceIn(RESOLUTION_SOFTWARE, RESOLUTION_MAX)
 
     fun saveDeinterlaceEnabled(enabled: Boolean) {
         preferences.edit().putBoolean(KEY_DEINTERLACE_ENABLED, enabled).apply()
@@ -226,6 +238,9 @@ class BootstrapStore(context: Context) {
         const val UPSCALE_OFF = 0
         const val UPSCALE_XBRZ_6X = 1
 
+        const val RESOLUTION_SOFTWARE = 0
+        const val RESOLUTION_MAX = 4
+
         private const val KEY_IPL_PATH = "ipl_path"
         private const val KEY_CDB_PATH = "cdb_path"
         private const val KEY_DISC_PATH = "disc_path"
@@ -233,6 +248,7 @@ class BootstrapStore(context: Context) {
         private const val KEY_ASPECT_RATIO = "aspect_ratio"
         private const val KEY_TEXTURE_FILTER = "texture_filter"
         private const val KEY_UPSCALE_FILTER = "upscale_filter"
+        private const val KEY_RESOLUTION_SCALE = "resolution_scale"
         private const val KEY_DEINTERLACE_ENABLED = "deinterlace_enabled"
         private const val KEY_TRANSPARENT_MESHES_ENABLED = "transparent_meshes_enabled"
         private const val KEY_REWIND_ENABLED = "rewind_enabled"

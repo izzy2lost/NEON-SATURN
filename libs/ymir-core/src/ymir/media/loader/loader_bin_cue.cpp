@@ -388,6 +388,14 @@ bool Load(std::filesystem::path cuePath, Disc &disc, bool preloadToRAM, CbLoader
                 std::shared_ptr<IBinaryReader> fileReader;
                 std::error_code err{};
 
+                auto loadFile = [&] {
+                    if (preloadToRAM) {
+                        fileReader = std::make_shared<MemoryBinaryReader>(file.path, err);
+                    } else {
+                        fileReader = std::make_shared<MemoryMappedBinaryReader>(file.path, err);
+                    }
+                };
+
                 if (file.format == "MP3" || file.format == "OGG") {
                     // MP3 or OGG files have to be fully preloaded as they cannot be randomly accessed without being
                     // fully decoded to memory.
@@ -498,6 +506,8 @@ bool Load(std::filesystem::path cuePath, Disc &disc, bool preloadToRAM, CbLoader
                 } else if (file.format == "WAVE") {
                     // Check if wave file is raw, uncompressed 16-bit PCM stereo at 44100 Hz and grab a subview if so
                     [&] {
+                        loadFile();
+
                         std::array<uint8, 4> buf{};
 
                         auto readBuf = [&](uintmax_t offset, std::span<uint8> out) {
@@ -614,11 +624,7 @@ bool Load(std::filesystem::path cuePath, Disc &disc, bool preloadToRAM, CbLoader
                         }
                     }();
                 } else {
-                    if (preloadToRAM) {
-                        fileReader = std::make_shared<MemoryBinaryReader>(file.path, err);
-                    } else {
-                        fileReader = std::make_shared<MemoryMappedBinaryReader>(file.path, err);
-                    }
+                    loadFile();
                 }
 
                 if (err) {

@@ -1,17 +1,6 @@
-#include <ymir/hw/vdp/renderer/vdp_renderer_hw_d3d12.hpp>
+#include <ymir/hw/vdp/renderer/vdp_renderer_hw_vulkan.hpp>
 
 #include <ymir/hw/vdp/renderer/common/vdp1_steppers.hpp>
-
-#include <ymir/gpu/d3d12/d3d12_commands.hpp>
-#include <ymir/gpu/d3d12/d3d12_descriptor_heap.hpp>
-#include <ymir/gpu/d3d12/d3d12_descriptor_heap_allocator.hpp>
-#include <ymir/gpu/d3d12/d3d12_device.hpp>
-#include <ymir/gpu/d3d12/d3d12_fence.hpp>
-#include <ymir/gpu/d3d12/d3d12_pipeline_state.hpp>
-#include <ymir/gpu/d3d12/d3d12_resource.hpp>
-#include <ymir/gpu/d3d12/d3d12_root_signature.hpp>
-
-#include <ymir/gpu/shaders/gpu_shaders.hpp>
 
 #include <ymir/util/bit_ops.hpp>
 #include <ymir/util/dev_assert.hpp>
@@ -19,35 +8,48 @@
 #include <ymir/util/dirty_bitmap.hpp>
 #include <ymir/util/inline.hpp>
 #include <ymir/util/scope_guard.hpp>
-#include <ymir/util/string.hpp>
 
-#include <d3d12.h>
+#include <vulkan/vulkan.h>
+
+#if defined(__ANDROID__)
+    #include <android/log.h>
+#endif
 
 #include <fmt/format.h>
 
 #include <cmrc/cmrc.hpp>
 CMRC_DECLARE(ymir_core_shaders);
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <concepts>
+#include <cstdlib>
+#include <cstring>
 #include <deque>
-#include <unordered_map>
-#include <unordered_set>
+#include <initializer_list>
+#include <span>
+#include <string>
+#include <string_view>
 #include <vector>
 
-using namespace ymir::gpu::d3d12;
+// This renderer is a port of the Direct3D 12 renderer (vdp_renderer_hw_d3d12.cpp) and runs the same HLSL shaders,
+// compiled to SPIR-V. The VDP1 command processing and VDP2 parameter calculations are kept identical to that renderer
+// so that fixes can be carried over between the two; only the GPU resource management and command submission differ.
+//
+// Differences from the Direct3D 12 renderer:
+// - Root constants are push constants.
+// - Every image stays in VK_IMAGE_LAYOUT_GENERAL, so resource transitions reduce to execution and memory
+//   dependencies. BarrierTracker emits a single global memory barrier whenever a command was recorded since the last
+//   barrier, which covers every hazard the Direct3D 12 renderer handles with its per-resource transitions.
+// - Fence values are emulated with one VkFence per frame, since timeline semaphores are not available on every
+//   Vulkan 1.1 device.
+// - The finished frame is copied into a host-visible buffer and handed to the frontend on the CPU one frame later
+//   instead of being copied into a frontend-provided texture.
+// - Vulkan does not zero-initialize memory, so every resource is cleared on creation.
 
 namespace ymir::vdp {
-
-namespace static_config {
-
-    /// @brief Selects the method for copying the composite output texture to the frontend.
-    /// `false` copies only the display region (HRes by VRes).
-    /// `true` copies the entire resource.
-    static constexpr bool copyFullCompositeResource = false;
-
-} // namespace static_config
 
 namespace grp {
 
@@ -56,37 +58,52 @@ namespace grp {
 
     // Hierarchy:
     //
-    // dx12_base
-    //   dx12_upload
-    //   dx12_vdp1
-    //   dx12_vdp2
+    // vk_base
+    //   vk_upload
+    //   vk_vdp1
+    //   vk_vdp2
 
-    struct dx12_base {
+    struct vk_base {
         static constexpr bool enabled = true;
         static constexpr devlog::Level level = devlog::level::debug;
-        static constexpr std::string_view name = "VDP-DX12";
+        static constexpr std::string_view name = "VDP-VK";
     };
 
-    struct dx12_upload : public dx12_base {
+    struct vk_upload : public vk_base {
         // static constexpr devlog::Level level = devlog::level::trace;
-        static constexpr std::string_view name = "VDP-DX12-Upload";
+        static constexpr std::string_view name = "VDP-VK-Upload";
     };
 
-    struct dx12_vdp1 : public dx12_base {
-        static constexpr std::string_view name = "VDP1-DX12";
+    struct vk_vdp1 : public vk_base {
+        static constexpr std::string_view name = "VDP1-VK";
     };
 
-    struct dx12_vdp2 : public dx12_base {
-        static constexpr std::string_view name = "VDP2-DX12";
+    struct vk_vdp2 : public vk_base {
+        static constexpr std::string_view name = "VDP2-VK";
     };
 
 } // namespace grp
 
 // ---------------------------------------------------------------------------------------------------------------------
-// TODO: most of these are likely to be shared across all backends. Move to a shared header.
 
-/// @brief Name of the entrypoint function for all compute shaders.
-static constexpr const char *kCSEntrypoint = "CSMain";
+/// @brief Reports a renderer problem. Development logs are compiled out of release frontends, so problems are also
+/// sent to the system log where one is available (logcat on Android).
+/// @tparam Group the dev log group
+template <typename Group, typename... Args>
+static void Report(devlog::Level level, fmt::format_string<Args...> format, Args &&...args) {
+    const std::string message = fmt::format(format, std::forward<Args>(args)...);
+    if (level == devlog::level::info) {
+        devlog::info<Group>("{}", message);
+    } else {
+        devlog::warn<Group>("{}", message);
+    }
+#if defined(__ANDROID__)
+    __android_log_print(level == devlog::level::info ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR, "YmirVulkan", "%s",
+                        message.c_str());
+#endif
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 
 /// @brief Contains the compiled shader files from res/shaders/src.
 cmrc::embedded_filesystem g_fsShaders = cmrc::ymir_core_shaders::get_filesystem();
@@ -180,14 +197,746 @@ struct alignas(16) VDP2RotParamBase {
 static_assert(sizeof(VDP2RotParamBase) == sizeof(uint32) * 4);
 
 // ---------------------------------------------------------------------------------------------------------------------
-// TODO: these could be useful in multiple backends. Make them generic and reusable, and move to a shared header.
 
 /// @brief Maximum number of frames in flight.
 static constexpr size_t kNumFrames = 3;
 
 /// @brief Size of the upload buffers, in bytes.
 /// Should be large enough to fit multiple worst case single transfers, but not waste space needlessly.
-static constexpr UINT64 kUploadBufferSize = 16 * 1024 * 1024;
+static constexpr VkDeviceSize kUploadBufferSize = (4 + 4 * kNumFrames) * 1024 * 1024;
+
+// Descriptor bindings follow the shader registers. The shaders are compiled with -fvk-u-shift 16, so SRVs (t#) map to
+// binding # and UAVs (u#) map to binding 16 + #.
+static constexpr uint32 SRV(uint32 reg) {
+    return reg;
+}
+static constexpr uint32 UAV(uint32 reg) {
+    return 16 + reg;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Vulkan helpers
+
+static const char *VkResultName(VkResult result) {
+    switch (result) {
+    case VK_SUCCESS: return "VK_SUCCESS";
+    case VK_NOT_READY: return "VK_NOT_READY";
+    case VK_TIMEOUT: return "VK_TIMEOUT";
+    case VK_INCOMPLETE: return "VK_INCOMPLETE";
+    case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+    case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+    case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
+    case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
+    case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";
+    case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";
+    case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
+    case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
+    case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
+    case VK_ERROR_TOO_MANY_OBJECTS: return "VK_ERROR_TOO_MANY_OBJECTS";
+    case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+    case VK_ERROR_FRAGMENTED_POOL: return "VK_ERROR_FRAGMENTED_POOL";
+    case VK_ERROR_OUT_OF_POOL_MEMORY: return "VK_ERROR_OUT_OF_POOL_MEMORY";
+    default: return "VkResult error";
+    }
+}
+
+static util::ErrorMessage VkError(std::string_view what, VkResult result) {
+    return util::ErrorMessage{fmt::format("{} ({} {})", what, VkResultName(result), static_cast<sint32>(result))};
+}
+
+/// @brief Intended use of a memory allocation.
+enum class MemoryUsage {
+    DeviceLocal, ///< GPU-only resources
+    Upload,      ///< CPU-written staging memory
+    Readback,    ///< CPU-read results
+};
+
+/// @brief Owns the Vulkan instance and device used by the renderer.
+struct VulkanDevice {
+    VkInstance instance = VK_NULL_HANDLE;
+    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+    VkDevice device = VK_NULL_HANDLE;
+    VkQueue queue = VK_NULL_HANDLE;
+    uint32 queueFamily = 0;
+    VkPhysicalDeviceProperties properties{};
+    VkPhysicalDeviceMemoryProperties memoryProperties{};
+
+    VulkanDevice() = default;
+    VulkanDevice(const VulkanDevice &) = delete;
+    VulkanDevice &operator=(const VulkanDevice &) = delete;
+
+    ~VulkanDevice() {
+        if (device != VK_NULL_HANDLE) {
+            vkDestroyDevice(device, nullptr);
+        }
+        if (instance != VK_NULL_HANDLE) {
+            vkDestroyInstance(instance, nullptr);
+        }
+    }
+
+    util::VoidResult<> Create() {
+        // Optional validation layer for development (YMIR_VULKAN_VALIDATION=1)
+        std::vector<const char *> layers{};
+        if (const char *validation = std::getenv("YMIR_VULKAN_VALIDATION");
+            validation != nullptr && std::string_view{validation} == "1") {
+            uint32 count = 0;
+            vkEnumerateInstanceLayerProperties(&count, nullptr);
+            std::vector<VkLayerProperties> available(count);
+            vkEnumerateInstanceLayerProperties(&count, available.data());
+            for (const VkLayerProperties &layer : available) {
+                if (std::string_view{layer.layerName} == "VK_LAYER_KHRONOS_validation") {
+                    layers.push_back("VK_LAYER_KHRONOS_validation");
+                    break;
+                }
+            }
+        }
+
+        const VkApplicationInfo appInfo{
+            .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+            .pApplicationName = "Ymir",
+            .applicationVersion = VK_MAKE_VERSION(Ymir_VERSION_MAJOR, Ymir_VERSION_MINOR, Ymir_VERSION_PATCH),
+            .pEngineName = "Ymir VDP renderer",
+            .engineVersion = 1,
+            .apiVersion = VK_API_VERSION_1_1,
+        };
+        const VkInstanceCreateInfo instanceInfo{
+            .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+            .pApplicationInfo = &appInfo,
+            .enabledLayerCount = static_cast<uint32>(layers.size()),
+            .ppEnabledLayerNames = layers.data(),
+        };
+        if (VkResult res = vkCreateInstance(&instanceInfo, nullptr, &instance); res != VK_SUCCESS) {
+            instance = VK_NULL_HANDLE;
+            return VkError("Could not create Vulkan instance", res);
+        }
+
+        uint32 deviceCount = 0;
+        vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
+        std::vector<VkPhysicalDevice> devices(deviceCount);
+        vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
+        if (devices.empty()) {
+            return util::ErrorMessage{"No Vulkan devices found"};
+        }
+
+        // Pick the best suitable device: real GPUs over software implementations. A specific device can be requested
+        // by name for testing with YMIR_VULKAN_DEVICE=<substring>.
+        const char *requestedName = std::getenv("YMIR_VULKAN_DEVICE");
+        std::string rejections{};
+        int bestScore = -1;
+        for (VkPhysicalDevice candidate : devices) {
+            VkPhysicalDeviceProperties props{};
+            vkGetPhysicalDeviceProperties(candidate, &props);
+            if (requestedName != nullptr && std::string_view{props.deviceName}.find(requestedName) == std::string_view::npos) {
+                continue;
+            }
+            uint32 family = 0;
+            if (auto result = CheckDeviceSupport(candidate, family); !result) {
+                rejections += fmt::format("\n  {}: {}", props.deviceName, result.Error().message);
+                continue;
+            }
+            int score = 0;
+            switch (props.deviceType) {
+            case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: score = 4; break;
+            case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: score = 3; break;
+            case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU: score = 2; break;
+            case VK_PHYSICAL_DEVICE_TYPE_CPU: score = 0; break;
+            default: score = 1; break;
+            }
+            if (score > bestScore) {
+                bestScore = score;
+                physicalDevice = candidate;
+                queueFamily = family;
+            }
+        }
+        if (physicalDevice == VK_NULL_HANDLE) {
+            return util::ErrorMessage{fmt::format("No suitable Vulkan device found:{}", rejections)};
+        }
+
+        vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+        vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
+
+        // Scalar block layout is core in Vulkan 1.2; older devices expose it through an extension
+        std::vector<const char *> extensions{};
+        if (properties.apiVersion < VK_API_VERSION_1_2) {
+            extensions.push_back(VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME);
+        }
+
+        VkPhysicalDeviceScalarBlockLayoutFeatures scalarBlockLayoutFeatures{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES,
+            .scalarBlockLayout = VK_TRUE,
+        };
+        VkPhysicalDeviceFeatures2 features{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+            .pNext = &scalarBlockLayoutFeatures,
+        };
+        features.features.shaderInt64 = VK_TRUE;
+        features.features.shaderStorageImageExtendedFormats = VK_TRUE;
+        // Direct3D 12 bounds-checks buffer accesses in shaders (out-of-bounds reads return zero and writes are
+        // discarded), and the shaders were written with that in mind. robustBufferAccess is supported by every Vulkan
+        // implementation and provides the same guarantee, which also prevents stray writes from corrupting memory.
+        features.features.robustBufferAccess = VK_TRUE;
+
+        const float queuePriority = 1.0f;
+        const VkDeviceQueueCreateInfo queueInfo{
+            .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            .queueFamilyIndex = queueFamily,
+            .queueCount = 1,
+            .pQueuePriorities = &queuePriority,
+        };
+        const VkDeviceCreateInfo deviceInfo{
+            .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+            .pNext = &features,
+            .queueCreateInfoCount = 1,
+            .pQueueCreateInfos = &queueInfo,
+            .enabledExtensionCount = static_cast<uint32>(extensions.size()),
+            .ppEnabledExtensionNames = extensions.data(),
+        };
+        if (VkResult res = vkCreateDevice(physicalDevice, &deviceInfo, nullptr, &device); res != VK_SUCCESS) {
+            device = VK_NULL_HANDLE;
+            return VkError(fmt::format("Could not create Vulkan device on {}", properties.deviceName), res);
+        }
+        vkGetDeviceQueue(device, queueFamily, 0, &queue);
+
+        Report<grp::vk_base>(devlog::level::info, "Using {} (Vulkan {}.{}.{})", properties.deviceName,
+                                   VK_API_VERSION_MAJOR(properties.apiVersion),
+                                   VK_API_VERSION_MINOR(properties.apiVersion),
+                                   VK_API_VERSION_PATCH(properties.apiVersion));
+        return {};
+    }
+
+    /// @brief Checks if the given physical device supports every feature, format and limit the renderer needs.
+    /// @param[in] candidate the physical device to check
+    /// @param[out] outQueueFamily receives the index of a queue family with compute support
+    /// @return nothing if the device is suitable, the reason why it's not otherwise
+    static util::VoidResult<> CheckDeviceSupport(VkPhysicalDevice candidate, uint32 &outQueueFamily) {
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(candidate, &props);
+        if (props.apiVersion < VK_API_VERSION_1_1) {
+            return util::ErrorMessage{"Vulkan 1.1 is required"};
+        }
+
+        if (props.apiVersion < VK_API_VERSION_1_2) {
+            uint32 count = 0;
+            vkEnumerateDeviceExtensionProperties(candidate, nullptr, &count, nullptr);
+            std::vector<VkExtensionProperties> exts(count);
+            vkEnumerateDeviceExtensionProperties(candidate, nullptr, &count, exts.data());
+            const bool hasScalarBlockLayout = std::any_of(exts.begin(), exts.end(), [](const VkExtensionProperties &e) {
+                return std::string_view{e.extensionName} == VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME;
+            });
+            if (!hasScalarBlockLayout) {
+                return util::ErrorMessage{"VK_EXT_scalar_block_layout is not supported"};
+            }
+        }
+
+        VkPhysicalDeviceScalarBlockLayoutFeatures scalarBlockLayoutFeatures{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES,
+        };
+        VkPhysicalDeviceFeatures2 features{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+            .pNext = &scalarBlockLayoutFeatures,
+        };
+        vkGetPhysicalDeviceFeatures2(candidate, &features);
+        if (!features.features.shaderInt64) {
+            return util::ErrorMessage{"shaderInt64 is not supported"};
+        }
+        if (!features.features.shaderStorageImageExtendedFormats) {
+            return util::ErrorMessage{"shaderStorageImageExtendedFormats is not supported"};
+        }
+        if (!scalarBlockLayoutFeatures.scalarBlockLayout) {
+            return util::ErrorMessage{"scalarBlockLayout is not supported"};
+        }
+
+        // The largest texel buffers are the VDP1 internal sprite output and OIT list heads
+        if (props.limits.maxTexelBufferElements < kVDP1FBRAMSize * 2 * 2) {
+            return util::ErrorMessage{
+                fmt::format("maxTexelBufferElements is too small ({})", props.limits.maxTexelBufferElements)};
+        }
+
+        struct FormatRequirement {
+            VkFormat format;
+            VkFormatFeatureFlags optimalTiling;
+            VkFormatFeatureFlags buffer;
+            const char *name;
+        };
+        static constexpr FormatRequirement kFormats[] = {
+            {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT, 0,
+             "R8G8B8A8_UNORM"},
+            {VK_FORMAT_R8G8B8A8_UINT, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT,
+             VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT, "R8G8B8A8_UINT"},
+            {VK_FORMAT_R16_UINT, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, 0,
+             "R16_UINT"},
+            {VK_FORMAT_R8_UINT, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, 0, "R8_UINT"},
+            {VK_FORMAT_R32_UINT, 0,
+             VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT | VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT |
+                 VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_ATOMIC_BIT,
+             "R32_UINT"},
+        };
+        for (const FormatRequirement &req : kFormats) {
+            VkFormatProperties formatProps{};
+            vkGetPhysicalDeviceFormatProperties(candidate, req.format, &formatProps);
+            if ((formatProps.optimalTilingFeatures & req.optimalTiling) != req.optimalTiling ||
+                (formatProps.bufferFeatures & req.buffer) != req.buffer) {
+                return util::ErrorMessage{fmt::format("Format {} lacks required features", req.name)};
+            }
+        }
+
+        uint32 familyCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(candidate, &familyCount, nullptr);
+        std::vector<VkQueueFamilyProperties> families(familyCount);
+        vkGetPhysicalDeviceQueueFamilyProperties(candidate, &familyCount, families.data());
+        // Prefer a graphics+compute family: it is usually the fastest one and always supports transfers
+        for (uint32 pass = 0; pass < 2; ++pass) {
+            for (uint32 i = 0; i < familyCount; ++i) {
+                const VkQueueFlags flags = families[i].queueFlags;
+                const bool compute = (flags & VK_QUEUE_COMPUTE_BIT) != 0;
+                const bool graphics = (flags & VK_QUEUE_GRAPHICS_BIT) != 0;
+                if (compute && (graphics || pass == 1)) {
+                    outQueueFamily = i;
+                    return {};
+                }
+            }
+        }
+        return util::ErrorMessage{"No compute queue"};
+    }
+
+    /// @brief Finds a memory type for an allocation.
+    /// @param[in] typeBits the memory types allowed by the resource
+    /// @param[in] usage the intended use of the memory
+    /// @param[out] outCoherent receives whether the selected memory type is host-coherent
+    /// @return the memory type index, or an error if no suitable type exists
+    util::ValueResult<uint32> FindMemoryType(uint32 typeBits, MemoryUsage usage, bool &outCoherent) const {
+        struct Candidate {
+            VkMemoryPropertyFlags flags;
+        };
+        std::vector<VkMemoryPropertyFlags> candidates{};
+        switch (usage) {
+        case MemoryUsage::DeviceLocal:
+            candidates = {VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0};
+            break;
+        case MemoryUsage::Upload:
+            candidates = {VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
+            break;
+        case MemoryUsage::Readback:
+            candidates = {
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                    VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            };
+            break;
+        }
+        for (VkMemoryPropertyFlags required : candidates) {
+            for (uint32 i = 0; i < memoryProperties.memoryTypeCount; ++i) {
+                const VkMemoryPropertyFlags flags = memoryProperties.memoryTypes[i].propertyFlags;
+                if ((typeBits & (1u << i)) && (flags & required) == required) {
+                    outCoherent = (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+                    return i;
+                }
+            }
+        }
+        return util::ErrorMessage{"No suitable memory type"};
+    }
+};
+
+/// @brief Owns a Vulkan object destroyed with a `vkDestroy*(VkDevice, T, const VkAllocationCallbacks *)` function.
+template <typename T, auto fnDestroy>
+class UniqueVk {
+public:
+    UniqueVk() = default;
+    UniqueVk(const UniqueVk &) = delete;
+    UniqueVk &operator=(const UniqueVk &) = delete;
+
+    ~UniqueVk() {
+        Reset();
+    }
+
+    void Assign(VkDevice device, T handle) {
+        Reset();
+        m_device = device;
+        m_handle = handle;
+    }
+
+    void Reset() {
+        if (m_handle != VK_NULL_HANDLE) {
+            fnDestroy(m_device, m_handle, nullptr);
+            m_handle = VK_NULL_HANDLE;
+        }
+    }
+
+    T Get() const {
+        return m_handle;
+    }
+
+    operator T() const {
+        return m_handle;
+    }
+
+private:
+    VkDevice m_device = VK_NULL_HANDLE;
+    T m_handle = VK_NULL_HANDLE;
+};
+
+using UniquePipeline = UniqueVk<VkPipeline, vkDestroyPipeline>;
+using UniqueCommandPool = UniqueVk<VkCommandPool, vkDestroyCommandPool>;
+using UniqueFence = UniqueVk<VkFence, vkDestroyFence>;
+using UniqueDescriptorPool = UniqueVk<VkDescriptorPool, vkDestroyDescriptorPool>;
+
+/// @brief A buffer with its own memory allocation and optional texel buffer view.
+struct GpuBuffer {
+    VkDevice device = VK_NULL_HANDLE;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkBufferView view = VK_NULL_HANDLE;
+    VkDeviceSize size = 0;
+    void *mapped = nullptr;
+    bool coherent = true;
+
+    GpuBuffer() = default;
+    GpuBuffer(const GpuBuffer &) = delete;
+    GpuBuffer &operator=(const GpuBuffer &) = delete;
+
+    ~GpuBuffer() {
+        if (view != VK_NULL_HANDLE) {
+            vkDestroyBufferView(device, view, nullptr);
+        }
+        if (buffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(device, buffer, nullptr);
+        }
+        if (memory != VK_NULL_HANDLE) {
+            vkFreeMemory(device, memory, nullptr); // also unmaps
+        }
+    }
+
+    /// @brief Creates the buffer and allocates its memory. Host-visible buffers are persistently mapped.
+    util::VoidResult<> Create(const VulkanDevice &dev, VkDeviceSize bufferSize, VkBufferUsageFlags usage,
+                              MemoryUsage memUsage, std::string_view name) {
+        device = dev.device;
+        size = bufferSize;
+        const VkBufferCreateInfo bufferInfo{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = bufferSize,
+            .usage = usage,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        };
+        if (VkResult res = vkCreateBuffer(device, &bufferInfo, nullptr, &buffer); res != VK_SUCCESS) {
+            buffer = VK_NULL_HANDLE;
+            return VkError(fmt::format("Could not create {}", name), res);
+        }
+
+        VkMemoryRequirements reqs{};
+        vkGetBufferMemoryRequirements(device, buffer, &reqs);
+        auto memType = dev.FindMemoryType(reqs.memoryTypeBits, memUsage, coherent);
+        if (!memType) {
+            return util::ErrorMessage{fmt::format("Could not find memory for {}", name)};
+        }
+        const VkMemoryAllocateInfo allocInfo{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = reqs.size,
+            .memoryTypeIndex = memType.Value(),
+        };
+        if (VkResult res = vkAllocateMemory(device, &allocInfo, nullptr, &memory); res != VK_SUCCESS) {
+            memory = VK_NULL_HANDLE;
+            return VkError(fmt::format("Could not allocate memory for {}", name), res);
+        }
+        if (VkResult res = vkBindBufferMemory(device, buffer, memory, 0); res != VK_SUCCESS) {
+            return VkError(fmt::format("Could not bind memory for {}", name), res);
+        }
+        if (memUsage != MemoryUsage::DeviceLocal) {
+            if (VkResult res = vkMapMemory(device, memory, 0, VK_WHOLE_SIZE, 0, &mapped); res != VK_SUCCESS) {
+                mapped = nullptr;
+                return VkError(fmt::format("Could not map {}", name), res);
+            }
+        }
+        return {};
+    }
+
+    /// @brief Creates a texel buffer view over the entire buffer.
+    util::VoidResult<> CreateView(VkFormat format, std::string_view name) {
+        const VkBufferViewCreateInfo viewInfo{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
+            .buffer = buffer,
+            .format = format,
+            .offset = 0,
+            .range = VK_WHOLE_SIZE,
+        };
+        if (VkResult res = vkCreateBufferView(device, &viewInfo, nullptr, &view); res != VK_SUCCESS) {
+            view = VK_NULL_HANDLE;
+            return VkError(fmt::format("Could not create view for {}", name), res);
+        }
+        return {};
+    }
+
+    /// @brief Makes device writes visible to the CPU mapping for non-coherent memory.
+    void Invalidate() const {
+        if (!coherent && mapped != nullptr) {
+            const VkMappedMemoryRange range{
+                .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+                .memory = memory,
+                .offset = 0,
+                .size = VK_WHOLE_SIZE,
+            };
+            vkInvalidateMappedMemoryRanges(device, 1, &range);
+        }
+    }
+};
+
+/// @brief A 2D image or image array with its own memory allocation and a view of all layers.
+/// Images are kept in VK_IMAGE_LAYOUT_GENERAL for their entire lifetime.
+struct GpuImage {
+    VkDevice device = VK_NULL_HANDLE;
+    VkImage image = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    uint32 width = 0;
+    uint32 height = 0;
+    uint32 layers = 0;
+
+    GpuImage() = default;
+    GpuImage(const GpuImage &) = delete;
+    GpuImage &operator=(const GpuImage &) = delete;
+
+    ~GpuImage() {
+        if (view != VK_NULL_HANDLE) {
+            vkDestroyImageView(device, view, nullptr);
+        }
+        if (image != VK_NULL_HANDLE) {
+            vkDestroyImage(device, image, nullptr);
+        }
+        if (memory != VK_NULL_HANDLE) {
+            vkFreeMemory(device, memory, nullptr);
+        }
+    }
+
+    /// @brief Creates the image, its memory and view.
+    /// @param[in] array whether to create an array view (for Texture2DArray/RWTexture2DArray) or a 2D view
+    util::VoidResult<> Create(const VulkanDevice &dev, uint32 w, uint32 h, uint32 numLayers, bool array,
+                              VkFormat format, VkImageUsageFlags usage, std::string_view name) {
+        device = dev.device;
+        width = w;
+        height = h;
+        layers = numLayers;
+        const VkImageCreateInfo imageInfo{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = format,
+            .extent = {w, h, 1},
+            .mipLevels = 1,
+            .arrayLayers = numLayers,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = usage,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+        if (VkResult res = vkCreateImage(device, &imageInfo, nullptr, &image); res != VK_SUCCESS) {
+            image = VK_NULL_HANDLE;
+            return VkError(fmt::format("Could not create {}", name), res);
+        }
+
+        VkMemoryRequirements reqs{};
+        vkGetImageMemoryRequirements(device, image, &reqs);
+        bool coherent = false;
+        auto memType = dev.FindMemoryType(reqs.memoryTypeBits, MemoryUsage::DeviceLocal, coherent);
+        if (!memType) {
+            return util::ErrorMessage{fmt::format("Could not find memory for {}", name)};
+        }
+        const VkMemoryAllocateInfo allocInfo{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = reqs.size,
+            .memoryTypeIndex = memType.Value(),
+        };
+        if (VkResult res = vkAllocateMemory(device, &allocInfo, nullptr, &memory); res != VK_SUCCESS) {
+            memory = VK_NULL_HANDLE;
+            return VkError(fmt::format("Could not allocate memory for {}", name), res);
+        }
+        if (VkResult res = vkBindImageMemory(device, image, memory, 0); res != VK_SUCCESS) {
+            return VkError(fmt::format("Could not bind memory for {}", name), res);
+        }
+
+        const VkImageViewCreateInfo viewInfo{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = image,
+            .viewType = array ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D,
+            .format = format,
+            .subresourceRange =
+                {
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .baseMipLevel = 0,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = numLayers,
+                },
+        };
+        if (VkResult res = vkCreateImageView(device, &viewInfo, nullptr, &view); res != VK_SUCCESS) {
+            view = VK_NULL_HANDLE;
+            return VkError(fmt::format("Could not create view for {}", name), res);
+        }
+        return {};
+    }
+};
+
+/// @brief A descriptor binding in a compute pipeline layout.
+struct LayoutBinding {
+    uint32 binding;
+    VkDescriptorType type;
+};
+
+/// @brief Descriptor set layout and pipeline layout for a family of compute shaders.
+/// This is the equivalent of a Direct3D 12 root signature with 32-bit root constants and one descriptor table.
+struct ComputeLayout {
+    VkDevice device = VK_NULL_HANDLE;
+    VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    uint32 pushConstantSize = 0;
+
+    ComputeLayout() = default;
+    ComputeLayout(const ComputeLayout &) = delete;
+    ComputeLayout &operator=(const ComputeLayout &) = delete;
+
+    ~ComputeLayout() {
+        if (pipelineLayout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        }
+        if (setLayout != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(device, setLayout, nullptr);
+        }
+    }
+
+    util::VoidResult<> Create(VkDevice dev, std::initializer_list<LayoutBinding> bindings, uint32 pcSize,
+                              std::string_view name) {
+        device = dev;
+        pushConstantSize = pcSize;
+
+        std::vector<VkDescriptorSetLayoutBinding> vkBindings{};
+        for (const LayoutBinding &binding : bindings) {
+            vkBindings.push_back({
+                .binding = binding.binding,
+                .descriptorType = binding.type,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+            });
+        }
+        const VkDescriptorSetLayoutCreateInfo setLayoutInfo{
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .bindingCount = static_cast<uint32>(vkBindings.size()),
+            .pBindings = vkBindings.data(),
+        };
+        if (VkResult res = vkCreateDescriptorSetLayout(device, &setLayoutInfo, nullptr, &setLayout);
+            res != VK_SUCCESS) {
+            setLayout = VK_NULL_HANDLE;
+            return VkError(fmt::format("Could not create {} descriptor set layout", name), res);
+        }
+
+        const VkPushConstantRange pcRange{
+            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+            .offset = 0,
+            .size = pcSize,
+        };
+        const VkPipelineLayoutCreateInfo layoutInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = 1,
+            .pSetLayouts = &setLayout,
+            .pushConstantRangeCount = pcSize > 0 ? 1u : 0u,
+            .pPushConstantRanges = &pcRange,
+        };
+        if (VkResult res = vkCreatePipelineLayout(device, &layoutInfo, nullptr, &pipelineLayout); res != VK_SUCCESS) {
+            pipelineLayout = VK_NULL_HANDLE;
+            return VkError(fmt::format("Could not create {} pipeline layout", name), res);
+        }
+        return {};
+    }
+};
+
+/// @brief Batches descriptor set updates.
+class DescriptorWriter {
+public:
+    /// @brief Writes a storage buffer (StructuredBuffer, ByteAddressBuffer and their RW variants).
+    DescriptorWriter &StorageBuffer(VkDescriptorSet set, uint32 binding, const GpuBuffer &buffer) {
+        const VkDescriptorBufferInfo &info = m_bufferInfos.emplace_back(VkDescriptorBufferInfo{
+            .buffer = buffer.buffer,
+            .offset = 0,
+            .range = VK_WHOLE_SIZE,
+        });
+        m_writes.push_back({
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = set,
+            .dstBinding = binding,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .pBufferInfo = &info,
+        });
+        return *this;
+    }
+
+    /// @brief Writes a uniform texel buffer (Buffer<T>).
+    DescriptorWriter &UniformTexelBuffer(VkDescriptorSet set, uint32 binding, const GpuBuffer &buffer) {
+        return TexelBuffer(set, binding, buffer, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER);
+    }
+
+    /// @brief Writes a storage texel buffer (RWBuffer<T>).
+    DescriptorWriter &StorageTexelBuffer(VkDescriptorSet set, uint32 binding, const GpuBuffer &buffer) {
+        return TexelBuffer(set, binding, buffer, VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER);
+    }
+
+    /// @brief Writes a sampled image (Texture2D<T>, Texture2DArray<T>).
+    DescriptorWriter &SampledImage(VkDescriptorSet set, uint32 binding, const GpuImage &image) {
+        return Image(set, binding, image, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
+    }
+
+    /// @brief Writes a storage image (RWTexture2D<T>, RWTexture2DArray<T>).
+    DescriptorWriter &StorageImage(VkDescriptorSet set, uint32 binding, const GpuImage &image) {
+        return Image(set, binding, image, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+    }
+
+    void Commit(VkDevice device) {
+        vkUpdateDescriptorSets(device, static_cast<uint32>(m_writes.size()), m_writes.data(), 0, nullptr);
+        m_writes.clear();
+        m_bufferInfos.clear();
+        m_imageInfos.clear();
+        m_bufferViews.clear();
+    }
+
+private:
+    std::vector<VkWriteDescriptorSet> m_writes;
+    // Deques keep element addresses stable as they grow
+    std::deque<VkDescriptorBufferInfo> m_bufferInfos;
+    std::deque<VkDescriptorImageInfo> m_imageInfos;
+    std::deque<VkBufferView> m_bufferViews;
+
+    DescriptorWriter &TexelBuffer(VkDescriptorSet set, uint32 binding, const GpuBuffer &buffer,
+                                  VkDescriptorType type) {
+        assert(buffer.view != VK_NULL_HANDLE);
+        const VkBufferView &view = m_bufferViews.emplace_back(buffer.view);
+        m_writes.push_back({
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = set,
+            .dstBinding = binding,
+            .descriptorCount = 1,
+            .descriptorType = type,
+            .pTexelBufferView = &view,
+        });
+        return *this;
+    }
+
+    DescriptorWriter &Image(VkDescriptorSet set, uint32 binding, const GpuImage &image, VkDescriptorType type) {
+        const VkDescriptorImageInfo &info = m_imageInfos.emplace_back(VkDescriptorImageInfo{
+            .sampler = VK_NULL_HANDLE,
+            .imageView = image.view,
+            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+        });
+        m_writes.push_back({
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = set,
+            .dstBinding = binding,
+            .descriptorCount = 1,
+            .descriptorType = type,
+            .pImageInfo = &info,
+        });
+        return *this;
+    }
+};
+
+// ---------------------------------------------------------------------------------------------------------------------
 
 /// @brief A single allocation in an upload buffer.
 struct UploadAllocation {
@@ -199,32 +948,23 @@ struct UploadAllocation {
 /// @brief Chunk of data allocated for a frame in an upload buffer.
 struct UploadFrameChunk {
     size_t endOffset;  ///< One past last byte used
-    UINT64 fenceValue; ///< Fence value of the frame that owns this chunk
+    uint64 fenceValue; ///< Fence value of the frame that owns this chunk
 };
 
 /// @brief Manages per-frame allocations in an upload ring buffer.
 class UploadRingBuffer {
 public:
-    ~UploadRingBuffer() {
-        if (m_buffer) {
-            m_buffer->Unmap(0, nullptr);
-        }
-    }
-
     /// @brief Creates the upload ring buffer.
     /// @param[in] device the device that will own the buffer
     /// @param[in] size the size (in bytes) of the upload buffer
     /// @return nothing on success, an error message otherwise
-    util::VoidResult<> Create(D3D12Device &device, size_t size) {
-        auto builder = m_buffer.BufferBuilder(size);
-        builder.HeapType(D3D12_HEAP_TYPE_UPLOAD);
-        builder.InitialState(D3D12_RESOURCE_STATE_GENERIC_READ);
-        if (HRESULT hr = builder.BuildCommitted(device); FAILED(hr)) {
-            return util::ErrorMessage{fmt::format("Could not create upload buffer, error code {:X}", (uint32)hr)};
+    util::VoidResult<> Create(const VulkanDevice &device, size_t size) {
+        if (auto result = m_buffer.Create(device, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, MemoryUsage::Upload,
+                                          "upload buffer");
+            !result) {
+            return result;
         }
-        if (HRESULT hr = m_buffer->Map(0, nullptr, reinterpret_cast<void **>(&m_basePtr)); FAILED(hr)) {
-            return util::ErrorMessage{fmt::format("Could not map upload buffer, error code {:X}", (uint32)hr)};
-        }
+        m_basePtr = static_cast<uint8 *>(m_buffer.mapped);
         m_size = size;
         m_head = 0;
         m_tail = 0;
@@ -232,10 +972,10 @@ public:
         return {};
     }
 
-    /// @brief Retrieves a reference to the buffer resource.
-    /// @return the buffer resource
-    D3D12Resource &GetBufferResource() {
-        return m_buffer;
+    /// @brief Retrieves the buffer handle.
+    /// @return the buffer handle
+    VkBuffer GetBuffer() const {
+        return m_buffer.buffer;
     }
 
     /// @brief Retrieves the allocated upload buffer size.
@@ -262,7 +1002,7 @@ public:
     /// @param[in] completedFenceValue the latest completed fence value, for reclaiming chunks from completed frames
     /// @param[out] outAlloc receives the allocation information
     /// @return `true` if allocation succeeded, `false` if there's no more room for allocations
-    bool Allocate(size_t size, size_t alignment, UINT64 completedFenceValue, UploadAllocation &outAlloc) {
+    bool Allocate(size_t size, size_t alignment, uint64 completedFenceValue, UploadAllocation &outAlloc) {
         ReclaimCompletedChunks(completedFenceValue);
 
         // Check if there's enough contiguous space of the requested size starting from the aligned head position.
@@ -277,9 +1017,8 @@ public:
         outAlloc.offset = alignedHead;
         outAlloc.data = static_cast<void *>(m_basePtr + alignedHead);
         outAlloc.size = size;
-        devlog::trace<grp::dx12_upload>("[{}] Allocated {:X}..{:X}, fence {} / {}", m_debugName, outAlloc.offset,
-                                        outAlloc.offset + outAlloc.size, completedFenceValue,
-                                        m_lastSubmittedFenceValue);
+        devlog::trace<grp::vk_upload>("[{}] Allocated {:X}..{:X}, fence {} / {}", m_debugName, outAlloc.offset,
+                                      outAlloc.offset + outAlloc.size, completedFenceValue, m_lastSubmittedFenceValue);
 
         // Update head position; wrap back to zero if needed
         m_head = alignedHead + size;
@@ -294,7 +1033,7 @@ public:
     /// @param[in] size the requested size
     /// @param[in] alignment the requested alignment
     /// @return the minimum fence number to wait for which frees up enough space for the requested allocation
-    UINT64 FindFenceValueForAllocation(size_t size, size_t alignment) {
+    uint64 FindFenceValueForAllocation(size_t size, size_t alignment) {
         // Common early bail-outs:
         // - there's already enough room for the buffer, so there's no need to wait
         // - the chunk list is empty
@@ -308,7 +1047,7 @@ public:
 
         size_t queuePos = 0;
         size_t tail = m_tail;
-        UINT64 fenceValue = m_lastCompletedFenceValue;
+        uint64 fenceValue = m_lastCompletedFenceValue;
         do {
             if (HasContiguousSpace(alignedHead, size, tail)) {
                 return fenceValue;
@@ -322,32 +1061,32 @@ public:
 
     /// @brief Records the end of a frame.
     /// @param[in] fenceValue the frame's fence value
-    void EndFrame(UINT64 fenceValue) {
+    void EndFrame(uint64 fenceValue) {
         UploadFrameChunk &chunk = m_chunks.emplace_back();
         chunk.endOffset = m_head;
         chunk.fenceValue = fenceValue;
-        devlog::trace<grp::dx12_upload>("[{}] Frame ended, fence {}", m_debugName, fenceValue);
+        devlog::trace<grp::vk_upload>("[{}] Frame ended, fence {}", m_debugName, fenceValue);
         m_lastSubmittedFenceValue = std::max(m_lastSubmittedFenceValue, fenceValue);
     }
 
 private:
-    D3D12Resource m_buffer;
+    GpuBuffer m_buffer;
     uint8 *m_basePtr = nullptr;
     size_t m_size = 0;
     size_t m_head = 0;
     size_t m_tail = 0;
     std::deque<UploadFrameChunk> m_chunks;
-    UINT64 m_lastSubmittedFenceValue = 0;
-    UINT64 m_lastCompletedFenceValue = 0;
+    uint64 m_lastSubmittedFenceValue = 0;
+    uint64 m_lastCompletedFenceValue = 0;
     std::string m_debugName;
 
     /// @brief Reclaims allocated chunks from previously completed frames.
     /// @param[in] fenceValue the latest completed fence value
-    void ReclaimCompletedChunks(UINT64 fenceValue) {
+    void ReclaimCompletedChunks(uint64 fenceValue) {
         while (!m_chunks.empty() && m_chunks.front().fenceValue <= fenceValue) {
             m_tail = m_chunks.front().endOffset;
-            devlog::trace<grp::dx12_upload>("[{}] Reclaimed fence {}, tail={:X}", m_debugName,
-                                            m_chunks.front().fenceValue, m_tail);
+            devlog::trace<grp::vk_upload>("[{}] Reclaimed fence {}, tail={:X}", m_debugName,
+                                          m_chunks.front().fenceValue, m_tail);
             m_chunks.pop_front();
         }
         m_lastCompletedFenceValue = std::max(m_lastCompletedFenceValue, fenceValue);
@@ -389,409 +1128,74 @@ private:
     }
 };
 
-// ---------------------------------------------------------------------------------------------------------------------
-
-/// @brief Converts the given shader into a `D3D12_SHADER_BYTECODE` structure.
-/// @tparam stage the shader stage
-/// @param[in] shader the compiler shader
-/// @return a `D3D12_SHADER_BYTECODE` with a reference to the shader's bytecode
-template <gpu::ShaderStage stage>
-D3D12_SHADER_BYTECODE ToShaderBytecode(const gpu::CompiledShader<stage> &shader) {
-    return D3D12_SHADER_BYTECODE{
-        .pShaderBytecode = shader.bytecode.data(),
-        .BytecodeLength = shader.bytecode.size(),
-    };
-}
-
-static constexpr D3D12_BARRIER_SUBRESOURCE_RANGE kTexRangeAll{
-    .IndexOrFirstMipLevel = 0xFFFFFFFF,
-    .NumMipLevels = 0,
-};
-
-/// @brief Determines if a barrier access grants write access.
-/// NOTE: Only concerned with bits valid for compute tasks.
-/// @param[in] access the access bitmask to check
-/// @return `true` if any of the provided access bits grant write access, `false` if read-only.
-static bool IsBarrierAccessWrite(D3D12_BARRIER_ACCESS access) {
-    return access == D3D12_BARRIER_ACCESS_COMMON ||
-           (access & (D3D12_BARRIER_ACCESS_UNORDERED_ACCESS | D3D12_BARRIER_ACCESS_COPY_DEST));
-}
-
-/// @brief Manages a set of transition barriers and emits them to command lists.
-struct BarrierTracker {
-    /// @brief Configures the use of enhanced barriers.
-    /// @param[in] use whether to use enhanced barriers
-    void UseEnhancedBarriers(bool use) {
-        m_enhancedBarriers = use;
+/// @brief Inserts memory barriers between dependent GPU commands.
+///
+/// Every command recorded through the renderer's helpers marks the tracker as pending. `Flush` then emits one global
+/// memory barrier covering compute and transfer work, which orders the pending commands before any following ones.
+/// The Direct3D 12 renderer flushes its barrier tracker before every command that depends on previous work, so
+/// flushing at the same points gives the same guarantees.
+class BarrierTracker {
+public:
+    /// @brief Marks that a command was recorded since the last barrier.
+    void MarkPending() {
+        m_pending = true;
     }
 
-    /// @brief Registers and initializes state tracking for the given buffer.
-    /// No commands are emitted for this.
-    /// @param[in] resource the buffer resource
-    /// @param[in] state the initial resource state (legacy)
-    /// @param[in] sync the initial barrier sync state
-    /// @param[in] access the initial barrier access mode
-    void InitializeBuffer(ID3D12Resource *resource, D3D12_RESOURCE_STATES state, D3D12_BARRIER_SYNC sync,
-                          D3D12_BARRIER_ACCESS access) {
-        assert(!m_currentBufferStates.contains(resource));
-        assert(resource->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER);
-        m_currentBufferStates[resource] = {
-            .state = state,
-            .sync = sync,
-            .access = access,
-        };
-    }
-
-    /// @brief Registers and initializes state tracking for the given texture.
-    /// No commands are emitted for this.
-    /// @param[in] resource the buffer resource
-    /// @param[in] state the initial resource state (legacy)
-    /// @param[in] sync the initial barrier sync state
-    /// @param[in] access the initial barrier access mode
-    /// @param[in] layout the initial barrier layout
-    void InitializeTexture(ID3D12Resource *resource, D3D12_RESOURCE_STATES state, D3D12_BARRIER_SYNC sync,
-                           D3D12_BARRIER_ACCESS access, D3D12_BARRIER_LAYOUT layout) {
-        assert(!m_currentTextureStates.contains(resource));
-        assert(resource->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D ||
-               resource->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
-               resource->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D);
-        m_currentTextureStates[resource] = {
-            .state = state,
-            .sync = sync,
-            .access = access,
-            .layout = layout,
-        };
-    }
-
-    /// @brief Registers a buffer transition.
-    ///
-    /// @param[in] buffer pointer to the buffer resource
-    /// @param[in] newState new resource state to apply
-    /// @param[in] newAccess new access bits corresponding with resource usage to apply
-    /// @param[in] newState new usage bits to apply
-    /// @return this barrier set
-    BarrierTracker &TransitionBuffer(ID3D12Resource *buffer, D3D12_RESOURCE_STATES newState, D3D12_BARRIER_SYNC newSync,
-                                     D3D12_BARRIER_ACCESS newAccess) {
-        m_desiredBufferStates[buffer] = {
-            .state = newState,
-            .sync = newSync,
-            .access = newAccess,
-        };
-        return *this;
-    }
-
-    /// @brief Registers a buffer UAV barrier.
-    /// @param[in] buffer pointer to the buffer resource
-    /// @return this barrier set
-    BarrierTracker &UAVBuffer(ID3D12Resource *buffer) {
-        m_uavBufferBarriers.insert(buffer);
-        return *this;
-    }
-
-    /// @brief Adds a texture barrier to this set.
-    ///
-    /// `sync*` and `access*` parameters are used with enhanced barriers, while `state*` parameters are used with legacy
-    /// barriers.
-    ///
-    /// @param[in] texture pointer to the texture resource
-    /// @param[in] newState new resource state to apply
-    /// @param[in] newAccess new access bits corresponding with resource usage to apply
-    /// @param[in] newState new usage bits to apply
-    /// @param[in] newLayout new texture layout to apply
-    /// @return this barrier set
-    BarrierTracker &TransitionTexture(ID3D12Resource *texture, D3D12_RESOURCE_STATES newState,
-                                      D3D12_BARRIER_SYNC newSync, D3D12_BARRIER_ACCESS newAccess,
-                                      D3D12_BARRIER_LAYOUT newLayout) {
-        m_desiredTextureStates[texture] = {
-            .state = newState,
-            .sync = newSync,
-            .access = newAccess,
-            .layout = newLayout,
-        };
-        return *this;
-    }
-
-    /// @brief Registers a texture UAV barrier.
-    /// @param[in] texture pointer to the texture resource
-    /// @return this barrier set
-    BarrierTracker &UAVTexture(ID3D12Resource *texture) {
-        m_uavTextureBarriers.insert(texture);
-        return *this;
-    }
-
-    /// @brief Emits a barrier command into the command list if any relevant changes to barriers are detected and
-    /// updates the current states of all affected barriers.
-    /// @param[in] cmdList the command list
-    void Flush(D3D12GraphicsCommandList &cmdList) {
-        if (auto *enhCmdList = GetCommandListForEnhancedBarriers(cmdList)) {
-            std::vector<D3D12_BARRIER_GROUP> groups{};
-
-            std::vector<D3D12_BUFFER_BARRIER> bufferBarriers{};
-            for (auto &[buffer, newState] : m_desiredBufferStates) {
-                BufferState oldState{};
-                auto it = m_currentBufferStates.find(buffer);
-                if (it != m_currentBufferStates.end()) {
-                    oldState = it->second;
-                }
-
-                const bool changed = oldState.sync != newState.sync || oldState.access != newState.access;
-                if (!changed) {
-                    continue;
-                }
-
-                // Emit barrier on relevant changes.
-                // Read-after-read does not need a barrier.
-                if (IsBarrierAccessWrite(oldState.access) || IsBarrierAccessWrite(newState.access)) {
-                    bufferBarriers.push_back({
-                        .SyncBefore = oldState.sync,
-                        .SyncAfter = newState.sync,
-                        .AccessBefore = oldState.access,
-                        .AccessAfter = newState.access,
-                        .pResource = buffer,
-                        .Offset = 0,
-                        .Size = UINT64_MAX,
-                    });
-                }
-
-                // Update current state
-                m_currentBufferStates[buffer] = newState;
-            }
-            m_desiredBufferStates.clear();
-            for (ID3D12Resource *buffer : m_uavBufferBarriers) {
-                bufferBarriers.push_back({
-                    .SyncBefore = D3D12_BARRIER_SYNC_COMPUTE_SHADING,
-                    .SyncAfter = D3D12_BARRIER_SYNC_COMPUTE_SHADING,
-                    .AccessBefore = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS,
-                    .AccessAfter = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS,
-                    .pResource = buffer,
-                    .Offset = 0,
-                    .Size = UINT64_MAX,
-                });
-            }
-            m_uavBufferBarriers.clear();
-            if (!bufferBarriers.empty()) {
-                groups.push_back({
-                    .Type = D3D12_BARRIER_TYPE_BUFFER,
-                    .NumBarriers = static_cast<UINT32>(bufferBarriers.size()),
-                    .pBufferBarriers = bufferBarriers.data(),
-                });
-            }
-
-            std::vector<D3D12_TEXTURE_BARRIER> textureBarriers{};
-            for (auto &[texture, newState] : m_desiredTextureStates) {
-                TextureState oldState{};
-                auto it = m_currentTextureStates.find(texture);
-                if (it != m_currentTextureStates.end()) {
-                    oldState = it->second;
-                }
-
-                const bool layoutChanged = oldState.layout != newState.layout;
-                const bool changed =
-                    oldState.sync != newState.sync || oldState.access != newState.access || layoutChanged;
-                if (!changed) {
-                    continue;
-                }
-
-                // Emit barrier on relevant changes
-                // Read-after-read does not need a barrier unless the texture layout changed.
-                if (layoutChanged || IsBarrierAccessWrite(oldState.access) || IsBarrierAccessWrite(newState.access)) {
-                    // Add barrier to list
-                    textureBarriers.push_back({
-                        .SyncBefore = oldState.sync,
-                        .SyncAfter = newState.sync,
-                        .AccessBefore = oldState.access,
-                        .AccessAfter = newState.access,
-                        .LayoutBefore = oldState.layout,
-                        .LayoutAfter = newState.layout,
-                        .pResource = texture,
-                        .Subresources = kTexRangeAll,
-                        .Flags = D3D12_TEXTURE_BARRIER_FLAG_NONE,
-                    });
-                }
-
-                // Update current state
-                m_currentTextureStates[texture] = newState;
-            }
-            m_desiredTextureStates.clear();
-            for (ID3D12Resource *texture : m_uavTextureBarriers) {
-                textureBarriers.push_back({
-                    .SyncBefore = D3D12_BARRIER_SYNC_COMPUTE_SHADING,
-                    .SyncAfter = D3D12_BARRIER_SYNC_COMPUTE_SHADING,
-                    .AccessBefore = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS,
-                    .AccessAfter = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS,
-                    .LayoutBefore = D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS,
-                    .LayoutAfter = D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS,
-                    .pResource = texture,
-                    .Subresources = kTexRangeAll,
-                    .Flags = D3D12_TEXTURE_BARRIER_FLAG_NONE,
-                });
-            }
-            m_uavTextureBarriers.clear();
-            if (!textureBarriers.empty()) {
-                groups.push_back({
-                    .Type = D3D12_BARRIER_TYPE_TEXTURE,
-                    .NumBarriers = static_cast<UINT32>(textureBarriers.size()),
-                    .pTextureBarriers = textureBarriers.data(),
-                });
-            }
-
-            if (!groups.empty()) {
-                enhCmdList->Barrier(groups.size(), groups.data());
-            }
-        } else {
-            std::vector<D3D12_RESOURCE_BARRIER> barriers{};
-
-            for (auto &[buffer, newState] : m_desiredBufferStates) {
-                BufferState oldState{};
-                auto it = m_currentBufferStates.find(buffer);
-                if (it != m_currentBufferStates.end()) {
-                    oldState = it->second;
-                }
-
-                if (oldState.state == newState.state) {
-                    // No changes
-                    continue;
-                }
-
-                barriers.push_back({
-                    .Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
-                    .Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE,
-                    .Transition =
-                        {
-                            .pResource = buffer,
-                            .Subresource = 0,
-                            .StateBefore = oldState.state,
-                            .StateAfter = newState.state,
-                        },
-                });
-
-                // Update current state
-                m_currentBufferStates[buffer] = newState;
-            }
-            m_desiredBufferStates.clear();
-
-            for (auto &[texture, newState] : m_desiredTextureStates) {
-                TextureState oldState{};
-                auto it = m_currentTextureStates.find(texture);
-                if (it != m_currentTextureStates.end()) {
-                    oldState = it->second;
-                }
-
-                if (oldState.state == newState.state) {
-                    // No changes
-                    continue;
-                }
-
-                barriers.push_back({
-                    .Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
-                    .Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE,
-                    .Transition =
-                        {
-                            .pResource = texture,
-                            .Subresource = 0,
-                            .StateBefore = oldState.state,
-                            .StateAfter = newState.state,
-                        },
-                });
-
-                // Update current state
-                m_currentTextureStates[texture] = newState;
-            }
-            m_desiredTextureStates.clear();
-
-            for (ID3D12Resource *resource : m_uavBufferBarriers) {
-                barriers.push_back({
-                    .Type = D3D12_RESOURCE_BARRIER_TYPE_UAV,
-                    .Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE,
-                    .UAV =
-                        {
-                            .pResource = resource,
-                        },
-                });
-            }
-            m_uavBufferBarriers.clear();
-
-            for (ID3D12Resource *resource : m_uavTextureBarriers) {
-                barriers.push_back({
-                    .Type = D3D12_RESOURCE_BARRIER_TYPE_UAV,
-                    .Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE,
-                    .UAV =
-                        {
-                            .pResource = resource,
-                        },
-                });
-            }
-            m_uavTextureBarriers.clear();
-
-            cmdList->ResourceBarrier(barriers.size(), barriers.data());
+    /// @brief Emits a barrier if any commands were recorded since the last one.
+    /// @param[in] cmd the command buffer
+    void Flush(VkCommandBuffer cmd) {
+        if (!m_pending || cmd == VK_NULL_HANDLE) {
+            return;
         }
+        m_pending = false;
+        const VkMemoryBarrier barrier{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT |
+                             VK_ACCESS_TRANSFER_WRITE_BIT,
+        };
+        static constexpr VkPipelineStageFlags kStages =
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
+        vkCmdPipelineBarrier(cmd, kStages, kStages, 0, 1, &barrier, 0, nullptr, 0, nullptr);
     }
 
 private:
-    bool m_enhancedBarriers;
-
-    struct BufferState {
-        D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COMMON;
-
-        D3D12_BARRIER_SYNC sync = D3D12_BARRIER_SYNC_ALL;
-        D3D12_BARRIER_ACCESS access = D3D12_BARRIER_ACCESS_COMMON;
-    };
-    std::unordered_map<ID3D12Resource *, BufferState> m_currentBufferStates;
-    std::unordered_map<ID3D12Resource *, BufferState> m_desiredBufferStates;
-
-    struct TextureState {
-        D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COMMON;
-
-        D3D12_BARRIER_SYNC sync = D3D12_BARRIER_SYNC_NONE;
-        D3D12_BARRIER_ACCESS access = D3D12_BARRIER_ACCESS_NO_ACCESS;
-        D3D12_BARRIER_LAYOUT layout = D3D12_BARRIER_LAYOUT_UNDEFINED;
-    };
-    std::unordered_map<ID3D12Resource *, TextureState> m_currentTextureStates;
-    std::unordered_map<ID3D12Resource *, TextureState> m_desiredTextureStates;
-
-    std::unordered_set<ID3D12Resource *> m_uavBufferBarriers;
-    std::unordered_set<ID3D12Resource *> m_uavTextureBarriers;
-
-    /// @brief Retrieves a pointer to the specified command list if enhanced barriers are supported.
-    /// @param[in] cmdList the command list
-    /// @param[in] enhancedBarriers whether enhanced barriers are supported
-    /// @return a pointer to the command list converted to `ID3D12GraphicsCommandList7` for enhanced barriers
-    /// operations, or `nullptr` if the feature is not supported by the device
-    ID3D12GraphicsCommandList7 *GetCommandListForEnhancedBarriers(D3D12GraphicsCommandList &cmdList) const {
-        return m_enhancedBarriers ? cmdList.As7() : nullptr;
-    }
+    bool m_pending = false;
 };
 
 // ---------------------------------------------------------------------------------------------------------------------
 
-struct Direct3D12VDPRenderer::Impl {
-    Impl(const Direct3D12RendererCallbacks &hwCallbacks, VDPState &state,
+struct VulkanVDPRenderer::Impl {
+    Impl(const VulkanRendererCallbacks &hwCallbacks, VDPState &state,
          const config::VDP2AccessPatternsConfig &vdp2AccessPatternsConfig,
-         const config::VDP2DebugRender &vdp2DebugRenderOptions, const config::Enhancements &enhancements)
+         const config::VDP2DebugRender &vdp2DebugRenderOptions, const config::Enhancements &enhancements,
+         uint32 resolutionScale)
         : vdpState(state)
         , enhancements(enhancements)
         , hwCallbacks(hwCallbacks)
+        , resolutionScale(resolutionScale)
         , vdp2(vdp2AccessPatternsConfig, vdp2DebugRenderOptions) {}
+
+    ~Impl() {
+        Shutdown();
+    }
+
+    // Declared first so that it is destroyed after every other Vulkan object
+    VulkanDevice vk;
 
     VDPState &vdpState;
     const config::Enhancements &enhancements;
 
-    const Direct3D12RendererCallbacks &hwCallbacks;
+    const VulkanRendererCallbacks &hwCallbacks;
 
-    D3D12Device device;
+    /// @brief Internal resolution scale factor. 1 renders at the native resolution.
+    const uint32 resolutionScale;
 
-    struct Features {
-        bool enhancedBarriers = false;
-    } features;
-
-    D3D12CommandQueue cmdQueue;
-    D3D12Fence computeFence;
-
-    D3D12DescriptorHeap offlineHeap;
-    DescriptorHeapAllocator offlineHeapAlloc;
-
-    D3D12DescriptorHeap resourceHeap;
-    DescriptorHeapAllocator resourceHeapAlloc;
+    /// @brief Retrieves the size of a single VDP1 framebuffer scaled by the internal resolution.
+    /// @return the size in bytes of a scaled VDP1 framebuffer
+    size_t ScaledFBSize() const {
+        return kVDP1FBRAMSize * resolutionScale * resolutionScale;
+    }
 
     // =================================================================================================================
     // Common rendering parameters
@@ -799,6 +1203,7 @@ struct Direct3D12VDPRenderer::Impl {
     struct EnhancementsParams {
         HLSLuint deinterlace : 1;       //     0  Deinterlace
         HLSLuint transparentMeshes : 1; //     1  Render mesh sprites as transparent
+        HLSLuint resolutionScale : 3;   //   2-4  Internal resolution scale minus one
     };
     static_assert(sizeof(EnhancementsParams) == sizeof(HLSLuint));
 
@@ -967,11 +1372,12 @@ struct Direct3D12VDPRenderer::Impl {
         /// @param[in] address the base address
         /// @param[in] size the length of the range
         FORCE_INLINE void MarkRange(uint32 address, uint32 size) {
-            size = std::max(size, 1u);
-            uint32 first = address >> blockSizeBits;
-            uint32 last = (address + size - 1) >> blockSizeBits;
-            for (uint32 i = first; i <= last; ++i) {
-                m_usage[i] = m_currGen;
+            // Zero-sized textures still read one texel, and texture reads wrap around the end of the memory
+            size = std::clamp<uint32>(size, 1u, memorySize);
+            const uint32 first = (address % memorySize) >> blockSizeBits;
+            const uint32 count = ((((address % memorySize) & (kBlockSize - 1)) + size - 1) >> blockSizeBits) + 1;
+            for (uint32 i = 0; i < std::min(count, kArraySize); ++i) {
+                m_usage[(first + i) % kArraySize] = m_currGen;
             }
         }
 
@@ -979,7 +1385,7 @@ struct Direct3D12VDPRenderer::Impl {
         /// @param[in] address the address to check
         /// @return `true` if the address is marked, `false` if not.
         FORCE_INLINE bool IsInUse(uint32 address) const {
-            return m_usage[address >> blockSizeBits] == m_currGen;
+            return m_usage[(address % memorySize) >> blockSizeBits] == m_currGen;
         }
 
     private:
@@ -998,9 +1404,7 @@ struct Direct3D12VDPRenderer::Impl {
         // 16-bit units.
 
         /// @brief VRAM buffer.
-        D3D12Resource vramBuffer;
-        /// @brief VRAM buffer SRV (offline).
-        DescriptorRange vramSRV;
+        GpuBuffer vramBuffer;
 
         /// @brief Bit shift for the granularity for VRAM dirty bitmap chunks.
         static constexpr size_t kVRAMDirtyBitmapChunkSizeShift = 8;
@@ -1011,7 +1415,7 @@ struct Direct3D12VDPRenderer::Impl {
         /// @brief Number of bits in the VRAM dirty bitmap.
         static constexpr size_t kVRAMDirtyBitmapSize = kVDP1VRAMSize / kVRAMDirtyBitmapChunkSize;
 
-        // D3D12 buffer transfers must be done in multiples of 4 bytes.
+        // Buffer transfers must be done in multiples of 4 bytes.
         // The chunk must not be larger than VDP1 VRAM itself. In fact, it shouldn't be too large as it wastes memory
         // and time with unnecessary copies of VRAM data.
         static_assert(kVRAMDirtyBitmapChunkSize >= sizeof(uint32) && kVRAMDirtyBitmapChunkSize <= kVDP1VRAMSize,
@@ -1030,31 +1434,22 @@ struct Direct3D12VDPRenderer::Impl {
         //   [3] Alternate mesh field
 
         /// @brief FBRAM buffer.
-        D3D12Resource fbramBuffer;
-        /// @brief FBRAM buffer SRV (offline).
-        DescriptorRange fbramSRV;
-        /// @brief FBRAM buffer UAV (offline).
-        DescriptorRange fbramUAV;
+        GpuBuffer fbramBuffer;
 
         /// @brief FBRAM dirty bitmap.
         util::DirtyBitmap<kVDP1FBRAMSize> fbramDirty;
         /// @brief FBRAM writes buffer.
-        D3D12Resource fbramWritesBuffer;
-        /// @brief FBRAM writes buffer SRV (offline).
-        DescriptorRange fbramWritesSRV;
+        GpuBuffer fbramWritesBuffer;
 
         /// @brief FBRAM download buffer.
-        D3D12Resource fbramDownloadBuffer;
-        /// @brief Permanently mapped view of the FBRAM download buffer.
-        void *fbramDownloadBufferPtr = nullptr;
+        GpuBuffer fbramDownloadBuffer;
+        /// @brief Current version of downloaded FBRAM.
+        /// @brief Set when GPU work may have modified FBRAM since it was last copied to the download buffer.
+        bool fbramReadbackDirty = false;
+        /// @brief Set when a copy of FBRAM to the download buffer was recorded but not yet read by the CPU.
+        bool fbramReadbackCopyPending = false;
         /// @brief Set by `VDP1DebugSyncFB` to lazily sync FBRAM when convenient.
         std::atomic_bool fbramDebugSyncRequest{false};
-        /// @brief Set to `true` when submitting spans to indicate that FBRAM contents may have been modified by the
-        /// GPU, requiring a download to synchronize the readback buffer.
-        bool fbramReadbackDirty = false;
-        /// @brief Whether the FBRAM readback buffer has new content to copy. Set when the FBRAM download command is
-        /// submitted.
-        uint32 fbramReadbackCopyPending = false;
 
         // ---------------------------------------------------------------------
 
@@ -1067,19 +1462,15 @@ struct Direct3D12VDPRenderer::Impl {
         /// @brief Polygon drawing parameters, uploaded as 32-bit root constants.
         VDP1PolyDrawParams cpuPolyDrawParams{};
 
-        /// @brief Compute shader for writing to the framebuffer.
-        gpu::ComputeShader fbramWriteShader;
         /// @brief Root signature for writing to the framebuffer.
-        D3D12RootSignature fbramWriteRootSig;
+        ComputeLayout fbramWriteRootSig;
         /// @brief Descriptor range for writing to the framebuffer.
-        DescriptorRange fbramWriteDescs;
+        VkDescriptorSet fbramWriteSet = VK_NULL_HANDLE;
         /// @brief Pipeline state object for writing to the framebuffer.
-        D3D12PipelineState fbramWritePSO;
+        UniquePipeline fbramWritePSO;
 
-        /// @brief Compute shader for erasing the framebuffer.
-        gpu::ComputeShader eraseShader;
         /// @brief Root signature for erasing the framebuffer.
-        D3D12RootSignature eraseRootSig;
+        ComputeLayout eraseRootSig;
 
         // The polygon drawing shader operates on consecutive polygons span batches that share the same properties:
         // - System and user clipping areas
@@ -1092,14 +1483,12 @@ struct Direct3D12VDPRenderer::Impl {
         //     - OIT: Half-Transparency mode
         //     - MSB: MSB mode
 
-        /// @brief Compute shaders for drawing polygons.
-        std::array<gpu::ComputeShader, 2 * 4> polyDrawShaders;
         /// @brief Root signature for drawing polygons.
         /// Applies to all non-OIT variants of the polygon drawing shader.
-        D3D12RootSignature polyDrawRootSig;
+        ComputeLayout polyDrawRootSig;
         /// @brief Root signature for drawing polygons.
         /// Applies to the OIT variant of the polygon drawing shader.
-        D3D12RootSignature polyDrawOITRootSig;
+        ComputeLayout polyDrawOITRootSig;
 
         // The polygon output merger shader applies the output of the polygon drawing shader to FBRAM, operating on
         // 32-bit values at a time.
@@ -1111,12 +1500,31 @@ struct Direct3D12VDPRenderer::Impl {
         //   - OIT: Half-Transparency mode
         // TODO: OIT might need a dedicated root signature
 
-        /// @brief Compute shaders for merging polygon outputs.
-        std::array<gpu::ComputeShader, 2 * 3> outputMergerShaders;
         /// @brief Root signature for merging polygon outputs (non-OIT variants).
-        D3D12RootSignature outputMergerRootSig;
+        ComputeLayout outputMergerRootSig;
         /// @brief Root signature for merging polygon outputs (OIT variant only).
-        D3D12RootSignature outputMergerOITRootSig;
+        ComputeLayout outputMergerOITRootSig;
+
+        /// @brief Root signature for drawing polygons (MSB variants).
+        ComputeLayout polyDrawMSBRootSig;
+
+        /// @brief Native FBRAM contents downsampled from the scaled framebuffers (internal resolution scaling only).
+        GpuBuffer fbramNativeBuffer;
+        /// @brief Root signature for downsampling the framebuffers.
+        ComputeLayout fbramDownsampleRootSig;
+        /// @brief Pipeline for downsampling the framebuffers.
+        UniquePipeline fbramDownsamplePSO;
+        /// @brief Descriptor set for downsampling the framebuffers.
+        VkDescriptorSet fbramDownsampleSet = VK_NULL_HANDLE;
+
+        /// @brief Descriptor set for erasing the framebuffer.
+        VkDescriptorSet eraseSet = VK_NULL_HANDLE;
+        /// @brief Pipeline for erasing the framebuffer.
+        UniquePipeline erasePSO;
+        /// @brief Pipelines for drawing polygons.
+        std::array<UniquePipeline, 2 * 4> polyDrawPSOs;
+        /// @brief Pipelines for the output merger.
+        std::array<UniquePipeline, 2 * 3> outputMergerPSOs;
 
         // ---------------------------------------------------------------------
         // Rendering state
@@ -1793,11 +2201,11 @@ struct Direct3D12VDPRenderer::Impl {
     using CRAMColorCache = std::array<ColorR8G8B8A8, kVDP2CRAMColorCacheEntries>;
 
     /// @brief Size of the VDP2 CRAM color buffer, in bytes.
-    static constexpr UINT kVDP2CRAMColorBufferSize = sizeof(CRAMColorCache);
+    static constexpr uint32 kVDP2CRAMColorBufferSize = sizeof(CRAMColorCache);
 
     /// @brief Size of the VDP2 CRAM rotation coefficients buffer, in bytes.
     /// The second half of CRAM can be used for that purpose.
-    static constexpr UINT kVDP2CRAMRotCoeffBufferSize = kVDP2CRAMSize / 2;
+    static constexpr uint32 kVDP2CRAMRotCoeffBufferSize = kVDP2CRAMSize / 2;
 
     struct VDP2Resources {
         VDP2Resources(const config::VDP2AccessPatternsConfig &accessPatternsConfig,
@@ -1809,9 +2217,7 @@ struct Direct3D12VDPRenderer::Impl {
         // 16-bit and 32-bit units.
 
         /// @brief VRAM data buffer.
-        D3D12Resource vramBuffer;
-        /// @brief VRAM data buffer SRV (offline).
-        DescriptorRange vramSRV;
+        GpuBuffer vramBuffer;
 
         /// @brief Bit shift for the granularity for VRAM dirty bitmap chunks.
         static constexpr size_t kVRAMDirtyBitmapChunkSizeShift = 8;
@@ -1822,7 +2228,7 @@ struct Direct3D12VDPRenderer::Impl {
         /// @brief Number of bits in the VRAM dirty bitmap.
         static constexpr size_t kVRAMDirtyBitmapSize = kVDP2VRAMSize / kVRAMDirtyBitmapChunkSize;
 
-        // D3D12 buffer transfers must be done in multiples of 4 bytes.
+        // Buffer transfers must be done in multiples of 4 bytes.
         // The chunk must not be larger than VDP2 VRAM itself. In fact, it shouldn't be too large as it wastes memory
         // and time with unnecessary copies of VRAM data.
         static_assert(kVRAMDirtyBitmapChunkSize >= sizeof(uint32) && kVRAMDirtyBitmapChunkSize <= kVDP2VRAMSize,
@@ -1849,9 +2255,7 @@ struct Direct3D12VDPRenderer::Impl {
 
         /// @brief 2D texture for the composited VDP2 output.
         /// This cannot be instantiated per frame because interlaced graphics are weaved into the same output frame.
-        D3D12Resource compositeOutTexture;
-        /// @brief Composited VDP2 output UAV (offline).
-        DescriptorRange compositeOutUAV;
+        GpuImage compositeOutTexture;
 
         // ---------------------------------------------------------------------
 
@@ -1864,20 +2268,19 @@ struct Direct3D12VDPRenderer::Impl {
         /// @brief CPU-side layer composition parameters.
         VDP2ComposeParams cpuComposeParams{};
 
-        /// @brief Compute shader for drawing the sprite layer.
-        gpu::ComputeShader drawSpriteShader;
         /// @brief Root signature for drawing the sprite layer.
-        D3D12RootSignature drawSpriteRootSig;
+        ComputeLayout drawSpriteRootSig;
 
-        /// @brief Compute shader for drawing background layers.
-        gpu::ComputeShader drawBGsShader;
         /// @brief Root signature for drawing background layers.
-        D3D12RootSignature drawBGsRootSig;
+        ComputeLayout drawBGsRootSig;
 
-        /// @brief Compute shader for compositing layers.
-        gpu::ComputeShader composeShader;
         /// @brief Root signature for compositing layers.
-        D3D12RootSignature composeRootSig;
+        ComputeLayout composeRootSig;
+
+        /// @brief Pipelines for drawing the sprite layer, background layers and compositing layers.
+        UniquePipeline drawSpritePSO;
+        UniquePipeline drawBGsPSO;
+        UniquePipeline composePSO;
 
         // ---------------------------------------------------------------------
         // Rendering state
@@ -1897,23 +2300,86 @@ struct Direct3D12VDPRenderer::Impl {
 
     BarrierTracker barrierTracker;
 
-    /// @brief Resources for a single frame.
-    struct FrameContext {
-        D3D12CommandAllocator cmdAlloc;
-        UINT64 signaledValue = 0; // fence value associated with this frame. 0 means never used
-
-        // -------------------------------------------------------------------------------------------------------------
-        // VDP1
+    /// @brief GPU resources used while rendering.
+    /// The GPU processes frames in submission order and every update to these resources is recorded into the command
+    /// stream, so a single instance is shared by all frames in flight. This keeps memory usage in check with internal
+    /// resolution scaling.
+    struct SharedResources {
 
         /// @brief Span parameters buffer.
-        D3D12Resource spanParamsBuffer;
-        /// @brief Span parameters buffer SRV (offline).
-        DescriptorRange spanParamsSRV;
-
+        GpuBuffer spanParamsBuffer;
         /// @brief Span prefix sum buffer.
-        D3D12Resource spanPrefixSumsBuffer;
-        /// @brief Span prefix sum buffer SRV (offline).
-        DescriptorRange spanPrefixSumsSRV;
+        GpuBuffer spanPrefixSumsBuffer;
+
+        /// @brief Command parameters buffer.
+        GpuBuffer cmdParamsBuffer;
+
+        /// @brief Internal sprite data output buffer.
+        GpuBuffer internalSpriteOutBuffer;
+        /// @brief Internal OIT fragments list heads buffer.
+        GpuBuffer oitListHeadsBuffer;
+        /// @brief Internal OIT fragment nodes buffer.
+        GpuBuffer oitFragmentsBuffer;
+        /// @brief Internal OIT counter buffer.
+        GpuBuffer oitCounterBuffer;
+
+        /// @brief Descriptor set for drawing polygons (Copy and Shift variants).
+        VkDescriptorSet polyDrawSet = VK_NULL_HANDLE;
+        /// @brief Descriptor set for drawing polygons (OIT variants).
+        VkDescriptorSet polyDrawOITSet = VK_NULL_HANDLE;
+        /// @brief Descriptor set for drawing polygons (MSB variants).
+        VkDescriptorSet polyDrawMSBSet = VK_NULL_HANDLE;
+        /// @brief Descriptor set for the output merger (non-OIT variants).
+        VkDescriptorSet outputMergerSet = VK_NULL_HANDLE;
+        /// @brief Descriptor set for the output merger (OIT variants).
+        VkDescriptorSet outputMergerOITSet = VK_NULL_HANDLE;
+
+        /// @brief CRAM color buffer.
+        GpuBuffer cramColorBuffer;
+        /// @brief Raw CRAM rotation coefficients buffer.
+        GpuBuffer cramRotCoeffBuffer;
+        /// @brief CRAM generation of the color buffer (dirty tracking).
+        uint32 cramGeneration = 0xFFFFFFFF;
+        /// @brief CRAM generation of the rotation coefficients buffer (dirty tracking).
+        uint32 cramRotCoeffGeneration = 0xFFFFFFFF;
+
+        /// @brief 2D texture array for the outputs of NBG0-3, RBG0-1, sprite and mesh layers (in that order).
+        GpuImage layerOutTexture;
+        /// @brief 2D texture array for RBG0-1 line color outputs (in that order).
+        GpuImage rbgLineColorOutTexture;
+        /// @brief Color calculation window 2D texture.
+        GpuImage colorCalcWindowTexture;
+        /// @brief LNCL/BACK screen buffer.
+        GpuBuffer lnclBackBuffer;
+        /// @brief VDP2 rotation parameter base values buffer.
+        GpuBuffer rotParamBasesBuffer;
+        /// @brief VDP2 sprite attributes 2D texture array (sprite then mesh).
+        GpuImage spriteAttrsTexture;
+
+        /// @brief Layer rendering parameters buffer.
+        GpuBuffer layerRenderParamsBuffer;
+        /// @brief Current layer rendering parameters generation (dirty tracking).
+        uint32 layerRenderParamsGeneration = 0xFFFFFFFF;
+
+        /// @brief Layer composition parameters buffer.
+        GpuBuffer composeParamsBuffer;
+        /// @brief Current composition parameters generation (dirty tracking).
+        uint32 composeParamsGeneration = 0xFFFFFFFF;
+
+        /// @brief Descriptor set for drawing the sprite layer.
+        VkDescriptorSet drawSpriteSet = VK_NULL_HANDLE;
+        /// @brief Descriptor set for drawing background layers.
+        VkDescriptorSet drawBGsSet = VK_NULL_HANDLE;
+        /// @brief Descriptor set for compositing layers.
+        VkDescriptorSet composeSet = VK_NULL_HANDLE;
+    } shared;
+
+    /// @brief Resources for a single frame.
+    struct FrameContext {
+        UniqueCommandPool cmdPool;
+        VkCommandBuffer cmdBuffer = VK_NULL_HANDLE;
+        UniqueFence fence;
+        uint64 signaledValue = 0; // fence value associated with this frame. 0 means never used
 
         /// @brief CPU-side span parameters buffer.
         std::array<VDP1SpanParams, kMaxVDP1Spans> cpuSpanParams{};
@@ -1922,157 +2388,29 @@ struct Direct3D12VDPRenderer::Impl {
         std::array<HLSLuint, kMaxVDP1Spans + 1> cpuSpanPrefixSums{};
         /// @brief Number of spans allocated so far.
         size_t cpuSpanCount = 0;
-
-        /// @brief Command parameters buffer.
-        D3D12Resource cmdParamsBuffer;
-        /// @brief Command parameters buffer SRV (offline).
-        DescriptorRange cmdParamsSRV;
         /// @brief CPU-side command parameters buffer.
         std::array<VDP1CommandParams, kMaxVDP1Commands> cpuCmdParams{};
         /// @brief Number of commands allocated so far.
         size_t cpuCmdCount = 0;
 
-        /// @brief Internal sprite data output buffer.
-        D3D12Resource internalSpriteOutBuffer;
-        /// @brief Internal sprite data output buffer UAV (offline).
-        DescriptorRange internalSpriteOutUAV;
-
-        /// @brief Internal OIT fragments list heads buffer.
-        D3D12Resource oitListHeadsBuffer;
-        /// @brief Internal OIT fragments list heads UAV (offline).
-        DescriptorRange oitListHeadsUAV;
-
-        /// @brief Internal OIT fragment nodes buffer.
-        D3D12Resource oitFragmentsBuffer;
-        /// @brief Internal OIT fragment nodes SRV (offline).
-        DescriptorRange oitFragmentsSRV;
-        /// @brief Internal OIT fragment nodes UAV (offline).
-        DescriptorRange oitFragmentsUAV;
-
-        /// @brief Internal OIT counter buffer.
-        D3D12Resource oitCounterBuffer;
-        /// @brief Internal OIT counter UAV (offline).
-        DescriptorRange oitCounterUAV;
-
-        /// @brief Descriptor range for erasing the framebuffer.
-        DescriptorRange eraseDescs;
-        /// @brief Pipeline state object for erasing the framebuffer.
-        D3D12PipelineState erasePSO;
-
-        /// @brief Descriptor range for drawing polygons (Copy and Shift variants).
-        DescriptorRange polyDrawDescs;
-        /// @brief Descriptor range for drawing polygons (OIT variants).
-        DescriptorRange polyDrawOITDescs;
-        /// @brief Descriptor range for drawing polygons (MSB variants).
-        DescriptorRange polyDrawMSBDescs;
-        /// @brief Pipeline state objects for drawing polygons.
-        std::array<D3D12PipelineState, 2 * 4> polyDrawPSOs;
-
-        /// @brief Descriptor range for the output merger (non-OIT variants).
-        DescriptorRange outputMergerDescs;
-        /// @brief Descriptor range for the output merger (OIT variants).
-        DescriptorRange outputMergerOITDescs;
-        /// @brief Pipeline state objects for the output merger.
-        std::array<D3D12PipelineState, 2 * 3> outputMergerPSOs;
-
-        // -------------------------------------------------------------------------------------------------------------
-        // VDP2
-
-        /// @brief CRAM color buffer.
-        D3D12Resource cramColorBuffer;
-        /// @brief CRAM color buffer SRV (offline).
-        DescriptorRange cramColorSRV;
-
-        /// @brief Raw CRAM rotation coefficients buffer.
-        D3D12Resource cramRotCoeffBuffer;
-        /// @brief Raw CRAM rotation coefficients buffer SRV (offline).
-        DescriptorRange cramRotCoeffSRV;
-
-        /// @brief Current CRAM generation of this frame (dirty tracking).
-        uint32 cramGeneration = 0xFFFFFFFF;
-
-        /// @brief 2D texture array for the outputs of NBG0-3, RBG0-1, sprite and mesh layers (in that order).
-        /// Contains the intermediate per-layer outputs of the VDP2 rendering process.
-        D3D12Resource layerOutTexture;
-        /// @brief Layer outputs SRV (offline).
-        DescriptorRange layerOutSRV;
-        /// @brief Layer outputs UAV (offline).
-        DescriptorRange layerOutUAV;
-
-        /// @brief 2D texture array for RBG0-1 line color outputs (in that order).
-        D3D12Resource rbgLineColorOutTexture;
-        /// @brief RBG0-1 line color outputs SRV (offline).
-        DescriptorRange rbgLineColorOutSRV;
-        /// @brief RBG0-1 line color outputs UAV (offline).
-        DescriptorRange rbgLineColorOutUAV;
-
-        /// @brief Color calculation window 2D texture.
-        D3D12Resource colorCalcWindowTexture;
-        /// @brief Color calculation window SRV (offline).
-        DescriptorRange colorCalcWindowSRV;
-        /// @brief Color calculation window UAV (offline).
-        DescriptorRange colorCalcWindowUAV;
-
-        /// @brief LNCL/BACK screen buffer.
-        D3D12Resource lnclBackBuffer;
-        /// @brief LNCL/BACK screen buffer SRV (offline).
-        DescriptorRange lnclBackSRV;
-
-        /// @brief VDP2 rotation parameter base values buffer.
-        D3D12Resource rotParamBasesBuffer;
-        /// @brief VDP2 rotation parameter base values buffer SRV (offline).
-        DescriptorRange rotParamBasesSRV;
-
-        /// @brief VDP2 sprite attributes 2D texture array (sprite then mesh).
-        D3D12Resource spriteAttrsTexture;
-        /// @brief VDP2 sprite attributes SRV (offline).
-        DescriptorRange spriteAttrsSRV;
-        /// @brief VDP2 sprite attributes UAV (offline).
-        DescriptorRange spriteAttrsUAV;
-
-        // ---------------------------------------------------------------------
-
-        /// @brief Layer rendering parameters buffer.
-        D3D12Resource layerRenderParamsBuffer;
-        /// @brief Layer rendering parameters buffer SRV (offline).
-        DescriptorRange layerRenderParamsSRV;
-        /// @brief Current layer rendering parameters generation (dirty tracking).
-        uint32 layerRenderParamsGeneration = 0xFFFFFFFF;
-
-        /// @brief Layer composition parameters buffer.
-        D3D12Resource composeParamsBuffer;
-        /// @brief Layer composition parameters buffer SRV (offline).
-        DescriptorRange composeParamsSRV;
-        /// @brief Current composition parameters generation (dirty tracking).
-        uint32 composeParamsGeneration = 0xFFFFFFFF;
-
-        /// @brief Pipeline state object for drawing the sprite layer.
-        D3D12PipelineState drawSpritePSO;
-        /// @brief Descriptor range for drawing the sprite layer.
-        DescriptorRange drawSpriteDescs;
-
-        /// @brief Pipeline state object for drawing background layers.
-        D3D12PipelineState drawBGsPSO;
-        /// @brief Descriptor range for drawing background layers.
-        DescriptorRange drawBGsDescs;
-
-        /// @brief Pipeline state object for compositing layers.
-        D3D12PipelineState composePSO;
-        /// @brief Descriptor range for compositing layers.
-        DescriptorRange composeDescs;
-
-        void Reset() {
-            cmdAlloc->Reset();
-        }
+        /// @brief Host-visible copy of the composited output of this frame.
+        GpuBuffer readbackBuffer;
+        /// @brief Whether the readback buffer holds a frame that has not been delivered to the frontend yet.
+        bool readbackPending = false;
+        /// @brief Dimensions of the frame in the readback buffer.
+        uint32 readbackWidth = 0;
+        uint32 readbackHeight = 0;
     };
 
     /// @brief Ring buffer of frame resources.
+    /// Emulates a monotonically increasing fence value (like a Direct3D 12 fence) with one VkFence per frame.
     /// @tparam count number of frames
     template <size_t count>
     struct FrameSet {
         std::array<FrameContext, count> frames;
         size_t frameIndex = 0;
-        UINT64 currFenceValue = 0;
+        uint64 currFenceValue = 0;
+        uint64 completedValue = 0;
 
         FrameContext &GetCurrentFrame() {
             return frames[frameIndex];
@@ -2081,68 +2419,46 @@ struct Direct3D12VDPRenderer::Impl {
             return frames[frameIndex];
         }
 
-        UINT64 GetNextFenceValue() const {
+        uint64 GetNextFenceValue() const {
             return currFenceValue + 1;
         }
 
-        util::ValueResult<UINT64> IncrementFence(D3D12Fence &fence, D3D12CommandQueue &cmdQueue) {
-            // Schedule a signal command in the queue
-            FrameContext &currFrame = GetCurrentFrame();
-            const UINT64 signalValue = currFenceValue + 1;
-            if (FAILED(fence.Signal(cmdQueue, signalValue))) {
-                return util::ErrorMessage{"Failed to signal fence"};
+        /// @brief Retrieves the latest fence value known to be completed by the GPU.
+        uint64 GetCompletedValue(VkDevice device) {
+            // Submissions to a single queue complete in order, so the highest signaled value covers all prior ones
+            for (FrameContext &frame : frames) {
+                if (frame.signaledValue > completedValue && vkGetFenceStatus(device, frame.fence) == VK_SUCCESS) {
+                    completedValue = frame.signaledValue;
+                }
             }
-            currFrame.signaledValue = signalValue;
-
-            // Set the fence value for the current frame
-            currFenceValue = signalValue;
-
-            return signalValue;
+            return completedValue;
         }
 
-        util::VoidResult<> MoveToNextFrame(D3D12Fence &fence, D3D12CommandQueue &cmdQueue) {
-            IncrementFence(fence, cmdQueue);
-
-            // Update the frame index
-            ++frameIndex;
-            if (frameIndex >= count) {
-                frameIndex = 0;
+        /// @brief Blocks until the GPU completes the frame with the given fence value.
+        void WaitForValue(VkDevice device, uint64 value) {
+            if (GetCompletedValue(device) >= value) {
+                return;
             }
-
-            // Wait for next frame
-            FrameContext &nextFrame = GetCurrentFrame();
-            if (fence->GetCompletedValue() < nextFrame.signaledValue) {
-                fence.Wait(INFINITE, nextFrame.signaledValue);
+            FrameContext *target = nullptr;
+            for (FrameContext &frame : frames) {
+                if (frame.signaledValue >= value && (target == nullptr || frame.signaledValue < target->signaledValue)) {
+                    target = &frame;
+                }
             }
-
-            // Reset frame
-            nextFrame.Reset();
-
-            return {};
+            if (target == nullptr) {
+                // Not submitted yet; nothing to wait for
+                return;
+            }
+            VkFence fence = target->fence;
+            if (VkResult res = vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX); res != VK_SUCCESS) {
+                Report<grp::vk_base>(devlog::level::warn, "Waiting for GPU work failed: {} ({})", VkResultName(res),
+                                     static_cast<sint32>(res));
+            }
+            completedValue = std::max(completedValue, target->signaledValue);
         }
 
-        util::VoidResult<> WaitForGPU(D3D12Fence &fence, D3D12CommandQueue &cmdQueue) {
-            FrameContext &currFrame = GetCurrentFrame();
-
-            // Schedule a signal command in the queue
-            const UINT64 signalValue = currFenceValue + 1;
-            if (FAILED(fence.Signal(cmdQueue, signalValue))) {
-                return util::ErrorMessage{"Failed to signal fence"};
-            }
-
-            // Wait until the fence has been processed
-            fence.Wait(INFINITE, signalValue);
-
-            // Increment the fence value for the current frame
-            currFenceValue = signalValue;
-
-            return {};
-        }
-
-        void WaitForLatestFrame(D3D12Fence &fence, D3D12CommandQueue &cmdQueue) {
-            if (fence.GetCompletedValue() < currFenceValue) {
-                fence.Wait(INFINITE, currFenceValue);
-            }
+        void WaitForLatestFrame(VkDevice device) {
+            WaitForValue(device, currFenceValue);
         }
 
         FrameContext &operator[](size_t index) {
@@ -2160,90 +2476,319 @@ struct Direct3D12VDPRenderer::Impl {
     /// @brief Per-frame resources.
     FrameSet<kNumFrames> frames;
 
-    /// @brief Command list.
-    D3D12GraphicsCommandList cmdList;
+    /// @brief Command buffer currently being recorded.
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
 
     /// @brief Upload ring buffer.
     UploadRingBuffer uploadBuffer;
 
+    /// @brief Descriptor pool for all descriptor sets.
+    UniqueDescriptorPool descriptorPool;
+
+    /// @brief Whether initialization completed successfully.
+    bool initialized = false;
+
+    /// @brief Set when the GPU fails to execute work (for example, VK_ERROR_DEVICE_LOST). No more commands are
+    /// recorded afterwards.
+    bool deviceLost = false;
+
+    // =================================================================================================================
+    // Command helpers
+
+    /// @brief Records a copy between two buffers.
+    void CopyBuffer(VkBuffer src, VkDeviceSize srcOffset, VkBuffer dst, VkDeviceSize dstOffset, VkDeviceSize size) {
+        if (cmd == VK_NULL_HANDLE) {
+            return;
+        }
+        const VkBufferCopy region{
+            .srcOffset = srcOffset,
+            .dstOffset = dstOffset,
+            .size = size,
+        };
+        vkCmdCopyBuffer(cmd, src, dst, 1, &region);
+        barrierTracker.MarkPending();
+    }
+
+    /// @brief Records a copy from the upload buffer.
+    void CopyFromUpload(const GpuBuffer &dst, VkDeviceSize dstOffset, const UploadAllocation &alloc, VkDeviceSize size) {
+        CopyBuffer(uploadBuffer.GetBuffer(), alloc.offset, dst.buffer, dstOffset, size);
+    }
+
+    /// @brief Records a fill of a buffer region with a repeated 32-bit value.
+    void FillBuffer(const GpuBuffer &dst, VkDeviceSize offset, VkDeviceSize size, uint32 value) {
+        if (cmd == VK_NULL_HANDLE) {
+            return;
+        }
+        vkCmdFillBuffer(cmd, dst.buffer, offset, size, value);
+        barrierTracker.MarkPending();
+    }
+
+    /// @brief Records a compute dispatch with the given pipeline, descriptor set and push constants.
+    void Dispatch(VkPipeline pipeline, const ComputeLayout &layout, VkDescriptorSet set, const void *pushConstants,
+                  uint32 pushConstantsSize, uint32 x, uint32 y, uint32 z) {
+        assert(pushConstantsSize <= layout.pushConstantSize);
+        if (cmd == VK_NULL_HANDLE) {
+            return;
+        }
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout.pipelineLayout, 0, 1, &set, 0, nullptr);
+        if (pushConstantsSize > 0) {
+            vkCmdPushConstants(cmd, layout.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, pushConstantsSize,
+                               pushConstants);
+        }
+        if (x > 0 && y > 0 && z > 0) {
+            vkCmdDispatch(cmd, x, y, z);
+        }
+        barrierTracker.MarkPending();
+    }
+
+    /// @brief Begins recording the current frame's command buffer.
+    util::VoidResult<> BeginCommands() {
+        if (deviceLost) {
+            // Nothing can be rendered anymore; commands are dropped until the renderer is recreated
+            return {};
+        }
+        FrameContext &frame = frames.GetCurrentFrame();
+        if (VkResult res = vkResetCommandPool(vk.device, frame.cmdPool, 0); res != VK_SUCCESS) {
+            return VkError("Could not reset command pool", res);
+        }
+        const VkCommandBufferBeginInfo beginInfo{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        };
+        if (VkResult res = vkBeginCommandBuffer(frame.cmdBuffer, &beginInfo); res != VK_SUCCESS) {
+            return VkError("Could not begin command buffer", res);
+        }
+        cmd = frame.cmdBuffer;
+        // Commands from previous submissions must complete before this command buffer uses their results
+        barrierTracker.MarkPending();
+        return {};
+    }
+
+    /// @brief Makes the results of recorded transfers visible to CPU reads once the command buffer completes.
+    void RecordHostReadBarrier() {
+        if (cmd == VK_NULL_HANDLE) {
+            return;
+        }
+        const VkMemoryBarrier hostBarrier{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+        };
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &hostBarrier, 0, nullptr, 0, nullptr);
+    }
+
+    /// @brief Ends and submits the current command buffer, signaling the next fence value.
+    util::VoidResult<> SubmitCommands() {
+        FrameContext &frame = frames.GetCurrentFrame();
+        if (cmd == VK_NULL_HANDLE) {
+            return {};
+        }
+        if (VkResult res = vkEndCommandBuffer(frame.cmdBuffer); res != VK_SUCCESS) {
+            cmd = VK_NULL_HANDLE;
+            deviceLost = true;
+            return VkError("Could not end command buffer", res);
+        }
+        VkFence fence = frame.fence;
+        vkResetFences(vk.device, 1, &fence);
+        const VkSubmitInfo submitInfo{
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &frame.cmdBuffer,
+        };
+        const uint64 signalValue = frames.GetNextFenceValue();
+        uploadBuffer.EndFrame(signalValue);
+        frame.signaledValue = signalValue;
+        frames.currFenceValue = signalValue;
+        cmd = VK_NULL_HANDLE;
+        if (VkResult res = vkQueueSubmit(vk.queue, 1, &submitInfo, fence); res != VK_SUCCESS) {
+            // Typically VK_ERROR_DEVICE_LOST: the GPU faulted or timed out. Stop rendering instead of crashing.
+            deviceLost = true;
+            frame.signaledValue = 0;
+            return VkError("Could not submit command buffer; GPU rendering stopped", res);
+        }
+        return {};
+    }
+
+    /// @brief Hands a finished frame to the frontend, waiting for the GPU to finish it if necessary.
+    void DeliverFrame(FrameContext &frame) {
+        if (!frame.readbackPending) {
+            return;
+        }
+        frame.readbackPending = false;
+        if (deviceLost) {
+            return;
+        }
+        frames.WaitForValue(vk.device, frame.signaledValue);
+        frame.readbackBuffer.Invalidate();
+        hwCallbacks.FrameReady(static_cast<uint32 *>(frame.readbackBuffer.mapped), frame.readbackWidth,
+                               frame.readbackHeight);
+    }
+
+    /// @brief Switches to the next frame context, waiting for its previous use to complete, and starts recording.
+    void MoveToNextFrame() {
+        frames.frameIndex = (frames.frameIndex + 1) % kNumFrames;
+        FrameContext &nextFrame = frames.GetCurrentFrame();
+        if (nextFrame.signaledValue != 0) {
+            frames.WaitForValue(vk.device, nextFrame.signaledValue);
+        }
+        if (auto result = BeginCommands(); !result) {
+            Report<grp::vk_base>(devlog::level::warn, "{}", result.Error().message);
+        }
+    }
+
     // =================================================================================================================
     // Operations
 
-    util::VoidResult<> Initialize(ID3D12Device *pDevice) {
-        device.Assign(pDevice);
-
-        // Check features
-        D3D12_FEATURE_DATA_D3D12_OPTIONS12 options12{};
-        if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS12, &options12, sizeof(options12)))) {
-            features.enhancedBarriers = options12.EnhancedBarriersSupported;
-        } else {
-            features.enhancedBarriers = false;
+    util::VoidResult<> Initialize() {
+        UpdateEnhancements();
+        if (auto result = vk.Create(); !result) {
+            return result;
         }
-        barrierTracker.UseEnhancedBarriers(features.enhancedBarriers);
+        VkDevice device = vk.device;
 
-        // Main command queue
-        if (HRESULT hr = cmdQueue.Create(device, D3D12_COMMAND_LIST_TYPE_COMPUTE); FAILED(hr)) {
-            return util::ErrorMessage{
-                fmt::format("Could not create VDP renderer command queue, error code {:X}", (uint32)hr)};
-        }
-        cmdQueue->SetName(L"[Ymir-VDP] Command queue");
-
-        // Main compute fence
-        if (HRESULT hr = computeFence.Create(device, 0, D3D12_FENCE_FLAG_NONE); FAILED(hr)) {
-            return util::ErrorMessage{
-                fmt::format("Could not create VDP renderer compute fence, error code {:X}", (uint32)hr)};
-        }
-        computeFence->SetName(L"[Ymir-VDP] Compute fence");
-
-        // Resource heaps
-        {
-            D3D12_DESCRIPTOR_HEAP_DESC desc{
-                .Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-                .NumDescriptors = 256 * kNumFrames,
-                .Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
-            };
-            if (HRESULT hr = resourceHeap.Create(device, desc); FAILED(hr)) {
-                return util::ErrorMessage{
-                    fmt::format("Could not create VDP renderer CBV/SRV/UAV heap, error code {:X}", (uint32)hr)};
-            }
-            resourceHeap->SetName(L"[Ymir-VDP] CBV/SRV/UAV heap");
-            resourceHeapAlloc.Bind(resourceHeap);
-
-            desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-            desc.NumDescriptors = 128 * kNumFrames;
-            if (HRESULT hr = offlineHeap.Create(device, desc); FAILED(hr)) {
-                return util::ErrorMessage{
-                    fmt::format("Could not create VDP renderer offline CBV/SRV/UAV heap, error code {:X}", (uint32)hr)};
-            }
-            offlineHeap->SetName(L"[Ymir-VDP] CBV/SRV/UAV offline heap");
-            offlineHeapAlloc.Bind(offlineHeap);
-        }
-
-        // Per-frame command allocators and command list
-        for (int i = 0; i < frames.Count(); ++i) {
+        // Per-frame command pools, command buffers and fences
+        for (size_t i = 0; i < frames.Count(); ++i) {
             FrameContext &frame = frames[i];
-            if (HRESULT hr = frame.cmdAlloc.Create(device, D3D12_COMMAND_LIST_TYPE_COMPUTE); FAILED(hr)) {
-                return util::ErrorMessage{
-                    fmt::format("Could not create VDP renderer command allocator #{}, error code {:X}", i, (uint32)hr)};
+
+            const VkCommandPoolCreateInfo poolInfo{
+                .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+                .queueFamilyIndex = vk.queueFamily,
+            };
+            VkCommandPool pool = VK_NULL_HANDLE;
+            if (VkResult res = vkCreateCommandPool(device, &poolInfo, nullptr, &pool); res != VK_SUCCESS) {
+                return VkError(fmt::format("Could not create command pool #{}", i), res);
             }
-            frame.cmdAlloc->SetName(fmt::format(L"[Ymir-VDP] Command allocator #{}", i).c_str());
+            frame.cmdPool.Assign(device, pool);
+
+            const VkCommandBufferAllocateInfo cmdInfo{
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                .commandPool = pool,
+                .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                .commandBufferCount = 1,
+            };
+            if (VkResult res = vkAllocateCommandBuffers(device, &cmdInfo, &frame.cmdBuffer); res != VK_SUCCESS) {
+                return VkError(fmt::format("Could not allocate command buffer #{}", i), res);
+            }
+
+            const VkFenceCreateInfo fenceInfo{.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+            VkFence fence = VK_NULL_HANDLE;
+            if (VkResult res = vkCreateFence(device, &fenceInfo, nullptr, &fence); res != VK_SUCCESS) {
+                return VkError(fmt::format("Could not create fence #{}", i), res);
+            }
+            frame.fence.Assign(device, fence);
         }
-        if (HRESULT hr = cmdList.Create(device, frames.GetCurrentFrame().cmdAlloc, D3D12_COMMAND_LIST_TYPE_COMPUTE);
-            FAILED(hr)) {
-            return util::ErrorMessage{
-                fmt::format("Could not create VDP renderer command list, error code {:X}", (uint32)hr)};
-        }
-        cmdList->SetName(L"[Ymir-VDP] Command list");
 
         // Generic upload buffer
-        {
-            if (auto result = uploadBuffer.Create(device, kUploadBufferSize); !result) {
-                return util::ErrorMessage{
-                    fmt::format("Could not create VDP upload buffer: {}", result.Error().message)};
-            }
-            uploadBuffer.SetDebugName("VDP");
-            uploadBuffer.GetBufferResource()->SetName(L"[Ymir-VDP] Upload buffer");
+        // Leave room for uploading both scaled framebuffers at once
+        const size_t uploadBufferSize = kUploadBufferSize + ScaledFBSize() * 2;
+        if (auto result = uploadBuffer.Create(vk, uploadBufferSize); !result) {
+            return util::ErrorMessage{fmt::format("Could not create VDP upload buffer: {}", result.Error().message)};
         }
+        uploadBuffer.SetDebugName("VDP");
+
+        // Descriptor pool with room for every descriptor set in the renderer
+        {
+            static constexpr uint32 kSetsPerFrame = 8;
+            static constexpr uint32 kGlobalSets = 2;
+            static constexpr uint32 kMaxSets = kSetsPerFrame * kNumFrames + kGlobalSets;
+            static constexpr uint32 kDescsPerType = 16 * kNumFrames + 8;
+            const VkDescriptorPoolSize poolSizes[] = {
+                {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kDescsPerType * 2},
+                {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, kDescsPerType},
+                {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, kDescsPerType},
+                {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kDescsPerType},
+                {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kDescsPerType},
+            };
+            const VkDescriptorPoolCreateInfo poolInfo{
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                .maxSets = kMaxSets,
+                .poolSizeCount = static_cast<uint32>(std::size(poolSizes)),
+                .pPoolSizes = poolSizes,
+            };
+            VkDescriptorPool pool = VK_NULL_HANDLE;
+            if (VkResult res = vkCreateDescriptorPool(device, &poolInfo, nullptr, &pool); res != VK_SUCCESS) {
+                return VkError("Could not create descriptor pool", res);
+            }
+            descriptorPool.Assign(device, pool);
+        }
+
+        auto allocateSet = [&](const ComputeLayout &layout, VkDescriptorSet &outSet,
+                               std::string_view name) -> util::VoidResult<> {
+            const VkDescriptorSetAllocateInfo allocInfo{
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                .descriptorPool = descriptorPool,
+                .descriptorSetCount = 1,
+                .pSetLayouts = &layout.setLayout,
+            };
+            if (VkResult res = vkAllocateDescriptorSets(device, &allocInfo, &outSet); res != VK_SUCCESS) {
+                return VkError(fmt::format("Could not allocate {} descriptor set", name), res);
+            }
+            return {};
+        };
+
+        auto createPipeline = [&](UniquePipeline &outPipeline, const ComputeLayout &layout, const std::string &path,
+                                  std::string_view name) -> util::VoidResult<> {
+            auto codeResult = LoadShader(path.c_str());
+            if (!codeResult) {
+                return util::ErrorMessage{
+                    fmt::format("Could not load {} compute shader: {}", name, codeResult.Error().message)};
+            }
+            const std::vector<uint32> &code = codeResult.Value();
+            const VkShaderModuleCreateInfo moduleInfo{
+                .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                .codeSize = code.size() * sizeof(uint32),
+                .pCode = code.data(),
+            };
+            VkShaderModule module = VK_NULL_HANDLE;
+            if (VkResult res = vkCreateShaderModule(device, &moduleInfo, nullptr, &module); res != VK_SUCCESS) {
+                return VkError(fmt::format("Could not create {} shader module", name), res);
+            }
+            util::ScopeGuard sgModule{[&] { vkDestroyShaderModule(device, module, nullptr); }};
+
+            const VkComputePipelineCreateInfo pipelineInfo{
+                .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                .stage =
+                    {
+                        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                        .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                        .module = module,
+                        .pName = "CSMain",
+                    },
+                .layout = layout.pipelineLayout,
+            };
+            VkPipeline pipeline = VK_NULL_HANDLE;
+            if (VkResult res =
+                    vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
+                res != VK_SUCCESS) {
+                return VkError(fmt::format("Could not create {} pipeline", name), res);
+            }
+            outPipeline.Assign(device, pipeline);
+            return {};
+        };
+
+        static constexpr VkBufferUsageFlags kSSBO = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                    VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        static constexpr VkBufferUsageFlags kUTB =
+            VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        static constexpr VkBufferUsageFlags kSTB =
+            VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        static constexpr VkImageUsageFlags kImageUsage =
+            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+
+        static constexpr VkDescriptorType kDescSSBO = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        static constexpr VkDescriptorType kDescUTB = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
+        static constexpr VkDescriptorType kDescSTB = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+        static constexpr VkDescriptorType kDescSampled = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        static constexpr VkDescriptorType kDescStorageImage = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+
+#define YMIR_VK_TRY(expr)                                                                                              \
+    if (auto result_ = (expr); !result_) {                                                                             \
+        return result_;                                                                                                \
+    }
 
         // =============================================================================================================
         // VDP1
@@ -2251,775 +2796,148 @@ struct Direct3D12VDPRenderer::Impl {
         // -------------------------------------------------------------------------------------------------------------
         // Common resources
 
-        // VDP1 VRAM buffer
-        {
-            auto builder = vdp1.vramBuffer.BufferBuilder(kVDP1VRAMSize);
-            if (HRESULT hr = builder.BuildCommitted(device); FAILED(hr)) {
-                return util::ErrorMessage{
-                    fmt::format("Could not create VDP1 VRAM buffer, error code {:X}", (uint32)hr)};
-            }
-            vdp1.vramBuffer->SetName(L"[Ymir-VDP1] VRAM buffer");
+        YMIR_VK_TRY(vdp1.vramBuffer.Create(vk, kVDP1VRAMSize, kSSBO, MemoryUsage::DeviceLocal, "VDP1 VRAM buffer"));
 
-            barrierTracker.InitializeBuffer(vdp1.vramBuffer.GetPointer(),
-                                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                            D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
-
-            if (!offlineHeapAlloc.Allocate(vdp1.vramSRV)) {
-                return util::ErrorMessage{"Could not allocate VDP1 VRAM buffer SRV"};
-            }
-            const D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{
-                .Format = DXGI_FORMAT_R32_TYPELESS,
-                .ViewDimension = D3D12_SRV_DIMENSION_BUFFER,
-                .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                .Buffer =
-                    {
-                        .FirstElement = 0,
-                        .NumElements = kVDP1VRAMSize / sizeof(uint32),
-                        .StructureByteStride = 0,
-                        .Flags = D3D12_BUFFER_SRV_FLAG_RAW,
-                    },
-            };
-            device->CreateShaderResourceView(vdp1.vramBuffer.GetPointer(), &srvDesc, vdp1.vramSRV.cpuHandle);
+        // kVDP1FBRAMSize is the size of a single framebuffer.
+        // VDP1 FBRAM actually contains two frames.
+        // *2 for deinterlace alternate field
+        // *2 for transparent mesh buffer
+        // With internal resolution scaling, every framebuffer is scaled in both dimensions.
+        YMIR_VK_TRY(vdp1.fbramBuffer.Create(vk, ScaledFBSize() * 2 * 2 * 2, kSSBO, MemoryUsage::DeviceLocal,
+                                            "VDP1 FBRAM buffer"));
+        if (resolutionScale > 1) {
+            // Native copy of the scaled framebuffers, downloaded for CPU reads
+            YMIR_VK_TRY(vdp1.fbramNativeBuffer.Create(vk, kVDP1FBRAMSize * 2, kSSBO, MemoryUsage::DeviceLocal,
+                                                      "VDP1 native FBRAM buffer"));
         }
-
-        // VDP1 FBRAM buffer
-        {
-            // kVDP1FBRAMSize is the size of a single framebuffer.
-            // VDP1 FBRAM actually contains two frames.
-            // *2 for deinterlace alternate field
-            // *2 for transparent mesh buffer
-            static constexpr UINT64 kSize = kVDP1FBRAMSize * 2 * 2 * 2;
-
-            auto builder = vdp1.fbramBuffer.BufferBuilder(kSize);
-            builder.Flags(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-            if (HRESULT hr = builder.BuildCommitted(device); FAILED(hr)) {
-                return util::ErrorMessage{
-                    fmt::format("Could not create VDP1 FBRAM buffer, error code {:X}", (uint32)hr)};
-            }
-            vdp1.fbramBuffer->SetName(L"[Ymir-VDP1] FBRAM buffer");
-
-            barrierTracker.InitializeBuffer(vdp1.fbramBuffer.GetPointer(),
-                                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                            D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
-
-            if (!offlineHeapAlloc.Allocate(vdp1.fbramSRV)) {
-                return util::ErrorMessage{"Could not allocate VDP1 FBRAM buffer SRV"};
-            }
-            const D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{
-                .Format = DXGI_FORMAT_R32_TYPELESS,
-                .ViewDimension = D3D12_SRV_DIMENSION_BUFFER,
-                .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                .Buffer =
-                    {
-                        .FirstElement = 0,
-                        .NumElements = kSize / sizeof(uint32),
-                        .StructureByteStride = 0,
-                        .Flags = D3D12_BUFFER_SRV_FLAG_RAW,
-                    },
-            };
-            device->CreateShaderResourceView(vdp1.fbramBuffer.GetPointer(), &srvDesc, vdp1.fbramSRV.cpuHandle);
-
-            if (!offlineHeapAlloc.Allocate(vdp1.fbramUAV)) {
-                return util::ErrorMessage{"Could not allocate VDP1 FBRAM buffer UAV"};
-            }
-            const D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc{
-                .Format = DXGI_FORMAT_R32_TYPELESS,
-                .ViewDimension = D3D12_UAV_DIMENSION_BUFFER,
-                .Buffer =
-                    {
-                        .FirstElement = 0,
-                        .NumElements = kSize / sizeof(uint32),
-                        .StructureByteStride = 0,
-                        .CounterOffsetInBytes = 0,
-                        .Flags = D3D12_BUFFER_UAV_FLAG_RAW,
-                    },
-            };
-            device->CreateUnorderedAccessView(vdp1.fbramBuffer.GetPointer(), nullptr, &uavDesc,
-                                              vdp1.fbramUAV.cpuHandle);
-        }
-
-        // VDP1 FBRAM writes buffer
-        {
-            static constexpr UINT64 kNumEntries = kVDP1FBRAMSize;
-            static constexpr UINT64 kEntrySize = sizeof(VDP1FBRAMWrite);
-
-            auto builder = vdp1.fbramWritesBuffer.BufferBuilder(kNumEntries * kEntrySize);
-            builder.Flags(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-            if (HRESULT hr = builder.BuildCommitted(device); FAILED(hr)) {
-                return util::ErrorMessage{
-                    fmt::format("Could not create VDP1 FBRAM writes buffer, error code {:X}", (uint32)hr)};
-            }
-            vdp1.fbramWritesBuffer->SetName(L"[Ymir-VDP1] FBRAM writes buffer");
-
-            barrierTracker.InitializeBuffer(vdp1.fbramWritesBuffer.GetPointer(),
-                                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                            D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
-
-            if (!offlineHeapAlloc.Allocate(vdp1.fbramWritesSRV)) {
-                return util::ErrorMessage{"Could not allocate VDP1 FBRAM writes buffer SRV"};
-            }
-            const D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{
-                .Format = DXGI_FORMAT_UNKNOWN,
-                .ViewDimension = D3D12_SRV_DIMENSION_BUFFER,
-                .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                .Buffer =
-                    {
-                        .FirstElement = 0,
-                        .NumElements = kNumEntries,
-                        .StructureByteStride = kEntrySize,
-                        .Flags = D3D12_BUFFER_SRV_FLAG_NONE,
-                    },
-            };
-            device->CreateShaderResourceView(vdp1.fbramWritesBuffer.GetPointer(), &srvDesc,
-                                             vdp1.fbramWritesSRV.cpuHandle);
-        }
-
-        // VDP1 FBRAM download buffer
-        {
-            // Allocate enough room to download the standard VDP1 FBRAM.
-            // TODO: add deinterlace and transparent mesh buffers to save state
-            static constexpr UINT64 kSize = kVDP1FBRAMSize * 2;
-
-            auto builder = vdp1.fbramDownloadBuffer.BufferBuilder(kSize);
-            builder.InitialState(D3D12_RESOURCE_STATE_COPY_DEST);
-            builder.HeapType(D3D12_HEAP_TYPE_READBACK);
-            if (HRESULT hr = builder.BuildCommitted(device); FAILED(hr)) {
-                return util::ErrorMessage{
-                    fmt::format("Could not create VDP1 FBRAM download buffer, error code {:X}", (uint32)hr)};
-            }
-            vdp1.fbramDownloadBuffer->SetName(L"[Ymir-VDP1] FBRAM download buffer");
-
-            if (HRESULT hr = vdp1.fbramDownloadBuffer->Map(0, nullptr, &vdp1.fbramDownloadBufferPtr); FAILED(hr)) {
-                return util::ErrorMessage{
-                    fmt::format("Could not map VDP1 FBRAM download buffer, error code {:X}", (uint32)hr)};
-            }
-        }
+        YMIR_VK_TRY(vdp1.fbramWritesBuffer.Create(vk, sizeof(VDP1FBRAMWrite) * kVDP1FBRAMSize, kSSBO,
+                                                  MemoryUsage::DeviceLocal, "VDP1 FBRAM writes buffer"));
+        // Allocate enough room to download the standard VDP1 FBRAM.
+        // TODO: add deinterlace and transparent mesh buffers to save state
+        YMIR_VK_TRY(vdp1.fbramDownloadBuffer.Create(vk, kVDP1FBRAMSize * 2, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                    MemoryUsage::Readback, "VDP1 FBRAM download buffer"));
 
         // -------------------------------------------------------------------------------------------------------------
-        // Shaders and root signatures
+        // Layouts and pipelines
+
+        static constexpr uint32 kVDP1CommonSize = sizeof(VDP1CommonRenderParams);
 
         // Framebuffer write
-        {
-            auto shaderBlobResult = LoadShader("src/vdp/cs_vdp1_fbram_write.cso");
-            if (!shaderBlobResult) {
-                return util::ErrorMessage{fmt::format("Could not load VDP1 framebuffer write compute shader: {}",
-                                                      shaderBlobResult.Error().message)};
-            }
-            vdp1.fbramWriteShader.format = gpu::ShaderBytecodeFormat::DXIL;
-            vdp1.fbramWriteShader.bytecode = shaderBlobResult.Value();
-            vdp1.fbramWriteShader.entrypoint = kCSEntrypoint;
-            auto result = gpu::ValidateShader(vdp1.fbramWriteShader);
-            if (!result) {
-                return util::ErrorMessage{
-                    fmt::format("VDP1 framebuffer write compute shader validation failed: {}", result.Error().message)};
-            }
-
-            auto rootSigBuilder = vdp1.fbramWriteRootSig.Builder();
-            rootSigBuilder.Add32BitConstants(0, sizeof(VDP1CommonRenderParams) / sizeof(uint32) + 1);
-
-            rootSigBuilder.AddDescriptorTable()
-                .AddSRVs(1, 1)  // NOTE: starting from 1 because SPIRV-Cross assumes buffers in t0 are constant
-                .AddUAVs(1, 1); // NOTE: starting from 1 because SPIRV-Cross assumes buffers in u0 are constant
-            if (HRESULT hr = rootSigBuilder.Build(device); FAILED(hr)) {
-                return util::ErrorMessage{
-                    fmt::format("Could not build VDP1 framebuffer write root signature, error code {:X}", (uint32)hr)};
-            }
-            vdp1.fbramWriteRootSig->SetName(L"[Ymir-VDP1] Framebuffer write root signature");
-
-            const D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc{
-                .pRootSignature = vdp1.fbramWriteRootSig.GetPointer(),
-                .CS = ToShaderBytecode(vdp1.fbramWriteShader),
-            };
-            if (HRESULT hr = vdp1.fbramWritePSO.CreateCompute(device, psoDesc); FAILED(hr)) {
-                return util::ErrorMessage{fmt::format(
-                    "Could not build VDP1 framebuffer write pipeline state object, error code {:X}", (uint32)hr)};
-            }
-            vdp1.fbramWritePSO->SetName(L"[Ymir-VDP1] Framebuffer write pipeline state object");
-
-            const D3D12_CPU_DESCRIPTOR_HANDLE srcHandles[] = {
-                vdp1.fbramWritesSRV.cpuHandle,
-                vdp1.fbramUAV.cpuHandle,
-            };
-            std::array<UINT, std::size(srcHandles)> srcSizes{};
-            srcSizes.fill(1);
-
-            if (!resourceHeapAlloc.Allocate(vdp1.fbramWriteDescs, std::size(srcHandles))) {
-                return util::ErrorMessage{"Could not allocate VDP1 framebuffer write descriptors"};
-            }
-
-            device->CopyDescriptors(1, &vdp1.fbramWriteDescs.cpuHandle, &vdp1.fbramWriteDescs.count,
-                                    std::size(srcHandles), srcHandles, srcSizes.data(), resourceHeap.GetHeapType());
-        }
+        YMIR_VK_TRY(vdp1.fbramWriteRootSig.Create(device, {{SRV(1), kDescSSBO}, {UAV(1), kDescSSBO}},
+                                                  kVDP1CommonSize + sizeof(uint32), "VDP1 framebuffer write"));
+        YMIR_VK_TRY(createPipeline(vdp1.fbramWritePSO, vdp1.fbramWriteRootSig, "src/vdp/cs_vdp1_fbram_write.spv",
+                                   "VDP1 framebuffer write"));
+        YMIR_VK_TRY(allocateSet(vdp1.fbramWriteRootSig, vdp1.fbramWriteSet, "VDP1 framebuffer write"));
 
         // Framebuffer erase
-        {
-            auto shaderBlobResult = LoadShader("src/vdp/cs_vdp1_erase.cso");
-            if (!shaderBlobResult) {
-                return util::ErrorMessage{fmt::format("Could not load VDP1 framebuffer erase compute shader: {}",
-                                                      shaderBlobResult.Error().message)};
-            }
-            vdp1.eraseShader.format = gpu::ShaderBytecodeFormat::DXIL;
-            vdp1.eraseShader.bytecode = shaderBlobResult.Value();
-            vdp1.eraseShader.entrypoint = kCSEntrypoint;
-            auto result = gpu::ValidateShader(vdp1.eraseShader);
-            if (!result) {
-                return util::ErrorMessage{
-                    fmt::format("VDP1 framebuffer erase compute shader validation failed: {}", result.Error().message)};
-            }
+        YMIR_VK_TRY(vdp1.eraseRootSig.Create(device, {{UAV(1), kDescSSBO}}, kVDP1CommonSize + sizeof(VDP1EraseParams),
+                                             "VDP1 framebuffer erase"));
+        YMIR_VK_TRY(createPipeline(vdp1.erasePSO, vdp1.eraseRootSig, "src/vdp/cs_vdp1_erase.spv",
+                                   "VDP1 framebuffer erase"));
+        YMIR_VK_TRY(allocateSet(vdp1.eraseRootSig, vdp1.eraseSet, "VDP1 framebuffer erase"));
 
-            auto rootSigBuilder = vdp1.eraseRootSig.Builder();
-            rootSigBuilder.Add32BitConstants(0, (sizeof(VDP1CommonRenderParams) + sizeof(VDP1EraseParams)) /
-                                                    sizeof(uint32));
-            // NOTE: starting from 1 because SPIRV-Cross assumes buffers in u0 are constant
-            rootSigBuilder.AddDescriptorTable().AddUAVs(1, 1);
-            if (HRESULT hr = rootSigBuilder.Build(device); FAILED(hr)) {
-                return util::ErrorMessage{
-                    fmt::format("Could not build VDP1 framebuffer erase root signature, error code {:X}", (uint32)hr)};
-            }
-            vdp1.eraseRootSig->SetName(L"[Ymir-VDP1] Framebuffer erase root signature");
-        }
-
-        // Polygon drawing
-        for (size_t shaderIndex = 0; shaderIndex < vdp1.polyDrawShaders.size(); ++shaderIndex) {
+        // Polygon drawing. Unlike Direct3D 12 root signatures, Vulkan descriptor set layouts specify the descriptor
+        // types, so the Copy/Shift (RWBuffer), MSB (RWByteAddressBuffer) and OIT variants need separate layouts.
+        static constexpr uint32 kPolyDrawPCSize = kVDP1CommonSize + sizeof(VDP1PolyDrawParams);
+        YMIR_VK_TRY(vdp1.polyDrawRootSig.Create(device,
+                                                {{SRV(1), kDescSSBO},
+                                                 {SRV(2), kDescUTB},
+                                                 {SRV(3), kDescSSBO},
+                                                 {SRV(4), kDescSSBO},
+                                                 {UAV(1), kDescSTB}},
+                                                kPolyDrawPCSize, "VDP1 polygon drawing"));
+        YMIR_VK_TRY(vdp1.polyDrawMSBRootSig.Create(device,
+                                                   {{SRV(1), kDescSSBO},
+                                                    {SRV(2), kDescUTB},
+                                                    {SRV(3), kDescSSBO},
+                                                    {SRV(4), kDescSSBO},
+                                                    {UAV(1), kDescSSBO}},
+                                                   kPolyDrawPCSize, "VDP1 polygon drawing MSB"));
+        YMIR_VK_TRY(vdp1.polyDrawOITRootSig.Create(device,
+                                                   {{SRV(1), kDescSSBO},
+                                                    {SRV(2), kDescUTB},
+                                                    {SRV(3), kDescSSBO},
+                                                    {SRV(4), kDescSSBO},
+                                                    {UAV(1), kDescSTB},
+                                                    {UAV(2), kDescSSBO},
+                                                    {UAV(3), kDescSSBO}},
+                                                   kPolyDrawPCSize, "VDP1 polygon drawing OIT"));
+        for (size_t shaderIndex = 0; shaderIndex < vdp1.polyDrawPSOs.size(); ++shaderIndex) {
             const auto [meshMode, shadingMode] = ExpandVDP1PolyDrawShaderIndex(shaderIndex);
             const std::string variantName = GetVDP1PolyDrawShaderVariantName(shaderIndex);
-            const std::string filename = fmt::format("src/vdp/cs_vdp1_polydraw_{}_{}.cso", meshMode, shadingMode);
-            auto shaderBlobResult = LoadShader(filename.c_str());
-            if (!shaderBlobResult) {
-                return util::ErrorMessage{
-                    fmt::format("Could not load VDP1 polygon drawing compute shader variant {}: {}", variantName,
-                                shaderBlobResult.Error().message)};
-            }
-            gpu::ComputeShader &polyDrawShader = vdp1.polyDrawShaders[shaderIndex];
-            polyDrawShader.format = gpu::ShaderBytecodeFormat::DXIL;
-            polyDrawShader.bytecode = shaderBlobResult.Value();
-            polyDrawShader.entrypoint = kCSEntrypoint;
-            auto result = gpu::ValidateShader(polyDrawShader);
-            if (!result) {
-                return util::ErrorMessage{
-                    fmt::format("VDP1 polygon drawing compute shader variant {} validation failed: {}", variantName,
-                                result.Error().message)};
-            }
+            const std::string filename = fmt::format("src/vdp/cs_vdp1_polydraw_{}_{}.spv", meshMode, shadingMode);
+            YMIR_VK_TRY(createPipeline(vdp1.polyDrawPSOs[shaderIndex], GetPolyDrawLayout(shaderIndex), filename,
+                                       fmt::format("VDP1 polygon drawing variant {}", variantName)));
         }
 
-        // Polygon drawing root signature.
-        // All variants except OIT share the same inputs/outputs shape.
-        {
-            auto rootSigBuilder = vdp1.polyDrawRootSig.Builder();
-            rootSigBuilder.Add32BitConstants(0, (sizeof(VDP1CommonRenderParams) + sizeof(VDP1PolyDrawParams)) /
-                                                    sizeof(uint32));
-            rootSigBuilder.AddDescriptorTable()
-                .AddSRVs(4, 1)  // NOTE: starting from 1 because SPIRV-Cross assumes buffers in t0 are constant
-                .AddUAVs(1, 1); // NOTE: starting from 1 because SPIRV-Cross assumes buffers in u0 are constant
-            if (HRESULT hr = rootSigBuilder.Build(device); FAILED(hr)) {
-                return util::ErrorMessage{
-                    fmt::format("Could not build VDP1 polygon drawing root signature, error code {:X}", (uint32)hr)};
-            }
-            vdp1.polyDrawRootSig->SetName(L"[Ymir-VDP1] Polygon drawing root signature");
-        }
-        {
-            auto rootSigBuilder = vdp1.polyDrawOITRootSig.Builder();
-            rootSigBuilder.Add32BitConstants(0, (sizeof(VDP1CommonRenderParams) + sizeof(VDP1PolyDrawParams)) /
-                                                    sizeof(uint32));
-            rootSigBuilder.AddDescriptorTable()
-                .AddSRVs(4, 1)  // NOTE: starting from 1 because SPIRV-Cross assumes buffers in t0 are constant
-                .AddUAVs(3, 1); // NOTE: starting from 1 because SPIRV-Cross assumes buffers in u0 are constant
-            if (HRESULT hr = rootSigBuilder.Build(device); FAILED(hr)) {
-                return util::ErrorMessage{fmt::format(
-                    "Could not build VDP1 polygon drawing OIT root signature, error code {:X}", (uint32)hr)};
-            }
-            vdp1.polyDrawOITRootSig->SetName(L"[Ymir-VDP1] Polygon drawing OIT root signature");
-        }
-
-        // Polygon output merger shaders
-        for (size_t shaderIndex = 0; shaderIndex < vdp1.outputMergerShaders.size(); ++shaderIndex) {
+        // Polygon output merger
+        YMIR_VK_TRY(vdp1.outputMergerRootSig.Create(device, {{UAV(1), kDescSSBO}, {UAV(2), kDescSTB}},
+                                                    kVDP1CommonSize, "VDP1 output merger"));
+        YMIR_VK_TRY(vdp1.outputMergerOITRootSig.Create(
+            device, {{SRV(1), kDescSSBO}, {UAV(1), kDescSSBO}, {UAV(2), kDescSTB}}, kVDP1CommonSize,
+            "VDP1 output merger OIT"));
+        for (size_t shaderIndex = 0; shaderIndex < vdp1.outputMergerPSOs.size(); ++shaderIndex) {
             const auto [meshMode, mergeMode] = ExpandVDP1OutputMergerShaderIndex(shaderIndex);
             const std::string variantName = GetVDP1OutputMergerShaderVariantName(shaderIndex);
-            const std::string filename = fmt::format("src/vdp/cs_vdp1_output_merger_{}_{}.cso", meshMode, mergeMode);
-            auto shaderBlobResult = LoadShader(filename.c_str());
-            if (!shaderBlobResult) {
-                return util::ErrorMessage{fmt::format("Could not load VDP1 output merger compute shader variant {}: {}",
-                                                      variantName, shaderBlobResult.Error().message)};
-            }
-            gpu::ComputeShader &outputMergerShader = vdp1.outputMergerShaders[shaderIndex];
-            outputMergerShader.format = gpu::ShaderBytecodeFormat::DXIL;
-            outputMergerShader.bytecode = shaderBlobResult.Value();
-            outputMergerShader.entrypoint = kCSEntrypoint;
-            auto result = gpu::ValidateShader(outputMergerShader);
-            if (!result) {
-                return util::ErrorMessage{
-                    fmt::format("VDP1 output merger compute shader variant {} validation failed: {}", variantName,
-                                result.Error().message)};
-            }
+            const std::string filename = fmt::format("src/vdp/cs_vdp1_output_merger_{}_{}.spv", meshMode, mergeMode);
+            const ComputeLayout &layout = IsVDP1OutputMergerShaderOIT(shaderIndex) ? vdp1.outputMergerOITRootSig
+                                                                                    : vdp1.outputMergerRootSig;
+            YMIR_VK_TRY(createPipeline(vdp1.outputMergerPSOs[shaderIndex], layout, filename,
+                                       fmt::format("VDP1 output merger variant {}", variantName)));
         }
 
-        // Polygon output merger root signature (non-OIT variants)
-        {
-            auto rootSigBuilder = vdp1.outputMergerRootSig.Builder();
-            rootSigBuilder.Add32BitConstants(0, sizeof(VDP1CommonRenderParams) / sizeof(uint32));
-            // NOTE: starting from 1 because SPIRV-Cross assumes buffers in u0 are constant
-            rootSigBuilder.AddDescriptorTable().AddUAVs(2, 1);
-            if (HRESULT hr = rootSigBuilder.Build(device); FAILED(hr)) {
-                return util::ErrorMessage{
-                    fmt::format("Could not build VDP1 output merger root signature, error code {:X}", (uint32)hr)};
-            }
-            vdp1.outputMergerRootSig->SetName(L"[Ymir-VDP1] Output merger root signature");
-        }
-
-        // Polygon output merger root signature (OIT variant)
-        {
-            auto rootSigBuilder = vdp1.outputMergerOITRootSig.Builder();
-            rootSigBuilder.Add32BitConstants(0, sizeof(VDP1CommonRenderParams) / sizeof(uint32));
-
-            rootSigBuilder.AddDescriptorTable()
-                .AddSRVs(1, 1)  // NOTE: starting from 1 because SPIRV-Cross assumes buffers in t0 are constant
-                .AddUAVs(2, 1); // NOTE: starting from 1 because SPIRV-Cross assumes buffers in u0 are constant
-            if (HRESULT hr = rootSigBuilder.Build(device); FAILED(hr)) {
-                return util::ErrorMessage{
-                    fmt::format("Could not build VDP1 output merger OIT root signature, error code {:X}", (uint32)hr)};
-            }
-            vdp1.outputMergerOITRootSig->SetName(L"[Ymir-VDP1] Output merger OIT root signature");
+        // Framebuffer downsampling (internal resolution scaling only)
+        if (resolutionScale > 1) {
+            YMIR_VK_TRY(vdp1.fbramDownsampleRootSig.Create(device, {{SRV(1), kDescSSBO}, {UAV(1), kDescSSBO}},
+                                                           kVDP1CommonSize, "VDP1 framebuffer downsample"));
+            YMIR_VK_TRY(createPipeline(vdp1.fbramDownsamplePSO, vdp1.fbramDownsampleRootSig,
+                                       "src/vdp/cs_vdp1_fbram_downsample.spv", "VDP1 framebuffer downsample"));
+            YMIR_VK_TRY(allocateSet(vdp1.fbramDownsampleRootSig, vdp1.fbramDownsampleSet, "VDP1 framebuffer downsample"));
         }
 
         // -------------------------------------------------------------------------------------------------------------
-        // Per-frame VDP1 resources
+        // Shared VDP1 rendering resources
 
-        for (int i = 0; i < frames.Count(); ++i) {
-            FrameContext &frameCtx = frames[i];
-
-            // Span parameters buffer
-            {
-                auto builder = frameCtx.spanParamsBuffer.BufferBuilder(sizeof(frameCtx.cpuSpanParams));
-                if (HRESULT hr = builder.BuildCommitted(device); FAILED(hr)) {
-                    return util::ErrorMessage{fmt::format(
-                        "Could not create VDP1 span parameters buffer #{}, error code {:X}", i, (uint32)hr)};
-                }
-                frameCtx.spanParamsBuffer->SetName(fmt::format(L"[Ymir-VDP1] Span parameters buffer #{}", i).c_str());
-
-                barrierTracker.InitializeBuffer(
-                    frameCtx.spanParamsBuffer.GetPointer(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
-
-                if (!offlineHeapAlloc.Allocate(frameCtx.spanParamsSRV)) {
-                    return util::ErrorMessage{fmt::format("Could not allocate VDP1 span parameters buffer SRV #{}", i)};
-                }
-                const D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{
-                    .Format = DXGI_FORMAT_UNKNOWN,
-                    .ViewDimension = D3D12_SRV_DIMENSION_BUFFER,
-                    .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                    .Buffer =
-                        {
-                            .FirstElement = 0,
-                            .NumElements = static_cast<UINT>(frameCtx.cpuSpanParams.size()),
-                            .StructureByteStride = sizeof(VDP1SpanParams),
-                            .Flags = D3D12_BUFFER_SRV_FLAG_NONE,
-                        },
-                };
-                device->CreateShaderResourceView(frameCtx.spanParamsBuffer.GetPointer(), &srvDesc,
-                                                 frameCtx.spanParamsSRV.cpuHandle);
-            }
-
-            // Span prefix sums buffer
-            {
-                frameCtx.cpuSpanPrefixSums[0] = 0;
-
-                auto builder = frameCtx.spanPrefixSumsBuffer.BufferBuilder(sizeof(frameCtx.cpuSpanPrefixSums));
-                if (HRESULT hr = builder.BuildCommitted(device); FAILED(hr)) {
-                    return util::ErrorMessage{fmt::format(
-                        "Could not create VDP1 span prefix sums buffer #{}, error code {:X}", i, (uint32)hr)};
-                }
-                frameCtx.spanPrefixSumsBuffer->SetName(
-                    fmt::format(L"[Ymir-VDP1] Span prefix sums buffer #{}", i).c_str());
-
-                barrierTracker.InitializeBuffer(
-                    frameCtx.spanPrefixSumsBuffer.GetPointer(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
-
-                if (!offlineHeapAlloc.Allocate(frameCtx.spanPrefixSumsSRV)) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not allocate VDP1 span prefix sums buffer SRV #{}", i)};
-                }
-                const D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{
-                    .Format = DXGI_FORMAT_UNKNOWN,
-                    .ViewDimension = D3D12_SRV_DIMENSION_BUFFER,
-                    .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                    .Buffer =
-                        {
-                            .FirstElement = 0,
-                            .NumElements = static_cast<UINT>(frameCtx.cpuSpanPrefixSums.size()),
-                            .StructureByteStride = sizeof(HLSLuint),
-                            .Flags = D3D12_BUFFER_SRV_FLAG_NONE,
-                        },
-                };
-                device->CreateShaderResourceView(frameCtx.spanPrefixSumsBuffer.GetPointer(), &srvDesc,
-                                                 frameCtx.spanPrefixSumsSRV.cpuHandle);
-            }
-
-            // Command parameters buffer
-            {
-                auto builder = frameCtx.cmdParamsBuffer.BufferBuilder(sizeof(frameCtx.cpuCmdParams));
-                if (HRESULT hr = builder.BuildCommitted(device); FAILED(hr)) {
-                    return util::ErrorMessage{fmt::format(
-                        "Could not create VDP1 command parameters buffer #{}, error code {:X}", i, (uint32)hr)};
-                }
-                frameCtx.cmdParamsBuffer->SetName(fmt::format(L"[Ymir-VDP1] Command parameters buffer #{}", i).c_str());
-
-                barrierTracker.InitializeBuffer(
-                    frameCtx.cmdParamsBuffer.GetPointer(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
-
-                if (!offlineHeapAlloc.Allocate(frameCtx.cmdParamsSRV)) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not allocate VDP1 command parameters buffer SRV #{}", i)};
-                }
-                const D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{
-                    .Format = DXGI_FORMAT_UNKNOWN,
-                    .ViewDimension = D3D12_SRV_DIMENSION_BUFFER,
-                    .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                    .Buffer =
-                        {
-                            .FirstElement = 0,
-                            .NumElements = static_cast<UINT>(frameCtx.cpuCmdParams.size()),
-                            .StructureByteStride = sizeof(VDP1CommandParams),
-                            .Flags = D3D12_BUFFER_SRV_FLAG_NONE,
-                        },
-                };
-                device->CreateShaderResourceView(frameCtx.cmdParamsBuffer.GetPointer(), &srvDesc,
-                                                 frameCtx.cmdParamsSRV.cpuHandle);
-            }
-
-            // Internal sprite data output buffer
-            {
-                // Each entry in this buffer represents a logical output pixel.
-                // Entries are 32-bit, holding the sprite data in the 8 or 16 LSBs and the span index in the 16 MSBs to
-                // enable parallel rendering with guaranteed pixel ordering.
-                // *2 for deinterlace alternate field
-                // *2 for transparent mesh buffer
-                static constexpr UINT64 kNumEntries = kVDP1FBRAMSize * 2 * 2;
-                static constexpr UINT64 kEntrySize = sizeof(HLSLuint);
-
-                auto builder = frameCtx.internalSpriteOutBuffer.BufferBuilder(kNumEntries * kEntrySize);
-                builder.Flags(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-                if (HRESULT hr = builder.BuildCommitted(device); FAILED(hr)) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not create VDP1 internal sprite data output buffer #{}, error code {:X}", i,
-                                    (uint32)hr)};
-                }
-                frameCtx.internalSpriteOutBuffer->SetName(
-                    fmt::format(L"[Ymir-VDP1] Internal sprite data output buffer #{}", i).c_str());
-
-                barrierTracker.InitializeBuffer(
-                    frameCtx.internalSpriteOutBuffer.GetPointer(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                    D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_UNORDERED_ACCESS);
-
-                if (!offlineHeapAlloc.Allocate(frameCtx.internalSpriteOutUAV)) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not allocate VDP1 internal sprite data output buffer UAV #{}", i)};
-                }
-                const D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc{
-                    .Format = DXGI_FORMAT_UNKNOWN,
-                    .ViewDimension = D3D12_UAV_DIMENSION_BUFFER,
-                    .Buffer =
-                        {
-                            .FirstElement = 0,
-                            .NumElements = kNumEntries,
-                            .StructureByteStride = sizeof(HLSLuint),
-                            .CounterOffsetInBytes = 0,
-                            .Flags = D3D12_BUFFER_UAV_FLAG_NONE,
-                        },
-                };
-                device->CreateUnorderedAccessView(frameCtx.internalSpriteOutBuffer.GetPointer(), nullptr, &uavDesc,
-                                                  frameCtx.internalSpriteOutUAV.cpuHandle);
-            }
-
-            // OIT fragments list heads buffer
-            {
-                // Each entry in this buffer represents a logical output pixel.
-                // Entries are 32-bit, holding the index of the head of the list.
-                // *2 for deinterlace alternate field
-                // *2 for transparent mesh buffer
-                static constexpr UINT64 kNumEntries = kVDP1FBRAMSize * 2 * 2;
-                static constexpr UINT64 kEntrySize = sizeof(HLSLuint);
-
-                auto builder = frameCtx.oitListHeadsBuffer.BufferBuilder(kNumEntries * kEntrySize);
-                builder.Flags(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-                if (HRESULT hr = builder.BuildCommitted(device); FAILED(hr)) {
-                    return util::ErrorMessage{fmt::format(
-                        "Could not create VDP1 OIT fragments list heads buffer #{}, error code {:X}", i, (uint32)hr)};
-                }
-                frameCtx.oitListHeadsBuffer->SetName(
-                    fmt::format(L"[Ymir-VDP1] OIT fragments list heads buffer #{}", i).c_str());
-
-                barrierTracker.InitializeBuffer(
-                    frameCtx.oitListHeadsBuffer.GetPointer(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                    D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_UNORDERED_ACCESS);
-
-                if (!offlineHeapAlloc.Allocate(frameCtx.oitListHeadsUAV)) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not allocate VDP1 OIT fragments list heads buffer UAV #{}", i)};
-                }
-                const D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc{
-                    .Format = DXGI_FORMAT_UNKNOWN,
-                    .ViewDimension = D3D12_UAV_DIMENSION_BUFFER,
-                    .Buffer =
-                        {
-                            .FirstElement = 0,
-                            .NumElements = kNumEntries,
-                            .StructureByteStride = kEntrySize,
-                            .CounterOffsetInBytes = 0,
-                            .Flags = D3D12_BUFFER_UAV_FLAG_NONE,
-                        },
-                };
-                device->CreateUnorderedAccessView(frameCtx.oitListHeadsBuffer.GetPointer(), nullptr, &uavDesc,
-                                                  frameCtx.oitListHeadsUAV.cpuHandle);
-            }
-
-            // OIT fragments buffer
-            {
-                auto builder = frameCtx.oitFragmentsBuffer.BufferBuilder(kMaxVDP1OITFragmentsPerDispatch *
-                                                                         sizeof(VDP1OITFragment));
-                builder.Flags(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-                if (HRESULT hr = builder.BuildCommitted(device); FAILED(hr)) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not create VDP1 OIT fragments buffer #{}, error code {:X}", i, (uint32)hr)};
-                }
-                frameCtx.oitFragmentsBuffer->SetName(fmt::format(L"[Ymir-VDP1] OIT fragments buffer #{}", i).c_str());
-
-                barrierTracker.InitializeBuffer(
-                    frameCtx.oitFragmentsBuffer.GetPointer(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                    D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_UNORDERED_ACCESS);
-
-                if (!offlineHeapAlloc.Allocate(frameCtx.oitFragmentsSRV)) {
-                    return util::ErrorMessage{fmt::format("Could not allocate VDP1 OIT fragments buffer SRV #{}", i)};
-                }
-                const D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{
-                    .Format = DXGI_FORMAT_UNKNOWN,
-                    .ViewDimension = D3D12_SRV_DIMENSION_BUFFER,
-                    .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                    .Buffer =
-                        {
-                            .FirstElement = 0,
-                            .NumElements = kMaxVDP1OITFragmentsPerDispatch,
-                            .StructureByteStride = sizeof(VDP1OITFragment),
-                            .Flags = D3D12_BUFFER_SRV_FLAG_NONE,
-                        },
-                };
-                device->CreateShaderResourceView(frameCtx.oitFragmentsBuffer.GetPointer(), &srvDesc,
-                                                 frameCtx.oitFragmentsSRV.cpuHandle);
-
-                if (!offlineHeapAlloc.Allocate(frameCtx.oitFragmentsUAV)) {
-                    return util::ErrorMessage{fmt::format("Could not allocate VDP1 OIT fragments buffer UAV #{}", i)};
-                }
-                const D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc{
-                    .Format = DXGI_FORMAT_UNKNOWN,
-                    .ViewDimension = D3D12_UAV_DIMENSION_BUFFER,
-                    .Buffer =
-                        {
-                            .FirstElement = 0,
-                            .NumElements = kMaxVDP1OITFragmentsPerDispatch,
-                            .StructureByteStride = sizeof(VDP1OITFragment),
-                            .CounterOffsetInBytes = 0,
-                            .Flags = D3D12_BUFFER_UAV_FLAG_NONE,
-                        },
-                };
-                device->CreateUnorderedAccessView(frameCtx.oitFragmentsBuffer.GetPointer(), nullptr, &uavDesc,
-                                                  frameCtx.oitFragmentsUAV.cpuHandle);
-            }
-
-            // OIT counter buffer
-            {
-                // This buffer contains a single `uint` used as an atomic counter.
-                auto builder = frameCtx.oitCounterBuffer.BufferBuilder(sizeof(HLSLuint));
-                builder.Flags(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-                if (HRESULT hr = builder.BuildCommitted(device); FAILED(hr)) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not create VDP1 OIT counter buffer #{}, error code {:X}", i, (uint32)hr)};
-                }
-                frameCtx.oitCounterBuffer->SetName(fmt::format(L"[Ymir-VDP1] OIT counter buffer #{}", i).c_str());
-
-                barrierTracker.InitializeBuffer(
-                    frameCtx.oitCounterBuffer.GetPointer(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                    D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_UNORDERED_ACCESS);
-
-                if (!offlineHeapAlloc.Allocate(frameCtx.oitCounterUAV)) {
-                    return util::ErrorMessage{fmt::format("Could not allocate VDP1 OIT counter buffer UAV #{}", i)};
-                }
-                const D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc{
-                    .Format = DXGI_FORMAT_R32_TYPELESS,
-                    .ViewDimension = D3D12_UAV_DIMENSION_BUFFER,
-                    .Buffer =
-                        {
-                            .FirstElement = 0,
-                            .NumElements = 1,
-                            .StructureByteStride = 0,
-                            .CounterOffsetInBytes = 0,
-                            .Flags = D3D12_BUFFER_UAV_FLAG_RAW,
-                        },
-                };
-                device->CreateUnorderedAccessView(frameCtx.oitCounterBuffer.GetPointer(), nullptr, &uavDesc,
-                                                  frameCtx.oitCounterUAV.cpuHandle);
-            }
-
-            // Framebuffer erase
-            {
-                const D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc{
-                    .pRootSignature = vdp1.eraseRootSig.GetPointer(),
-                    .CS = ToShaderBytecode(vdp1.eraseShader),
-                };
-                if (HRESULT hr = frameCtx.erasePSO.CreateCompute(device, psoDesc); FAILED(hr)) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not build VDP1 framebuffer erase pipeline state object #{}, error code {:X}",
-                                    i, (uint32)hr)};
-                }
-                frameCtx.erasePSO->SetName(
-                    fmt::format(L"[Ymir-VDP1] Framebuffer erase pipeline state object #{}", i).c_str());
-
-                const D3D12_CPU_DESCRIPTOR_HANDLE srcHandles[] = {
-                    vdp1.fbramUAV.cpuHandle,
-                };
-                std::array<UINT, std::size(srcHandles)> srcSizes{};
-                srcSizes.fill(1);
-
-                if (!resourceHeapAlloc.Allocate(frameCtx.eraseDescs, std::size(srcHandles))) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not allocate VDP1 framebuffer erase descriptors #{}", i)};
-                }
-
-                device->CopyDescriptors(1, &frameCtx.eraseDescs.cpuHandle, &frameCtx.eraseDescs.count,
-                                        std::size(srcHandles), srcHandles, srcSizes.data(), resourceHeap.GetHeapType());
-            }
-
-            // Polygon drawing pipeline state objects
-            for (size_t shaderIndex = 0; shaderIndex < vdp1.polyDrawShaders.size(); ++shaderIndex) {
-                const std::string variantName = GetVDP1PolyDrawShaderVariantName(shaderIndex);
-                const bool isOIT = IsVDP1PolyDrawShaderOIT(shaderIndex);
-                const D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc{
-                    .pRootSignature = isOIT ? vdp1.polyDrawOITRootSig.GetPointer() : vdp1.polyDrawRootSig.GetPointer(),
-                    .CS = ToShaderBytecode(vdp1.polyDrawShaders[shaderIndex]),
-                };
-                if (HRESULT hr = frameCtx.polyDrawPSOs[shaderIndex].CreateCompute(device, psoDesc); FAILED(hr)) {
-                    return util::ErrorMessage{fmt::format(
-                        "Could not build VDP1 polygon drawing variant {} pipeline state object #{}, error code {:X}",
-                        variantName, i, (uint32)hr)};
-                }
-                frameCtx.polyDrawPSOs[shaderIndex]->SetName(
-                    fmt::format(L"[Ymir-VDP1] Polygon drawing variant {} pipeline state object #{}",
-                                util::StringToWString(variantName), i)
-                        .c_str());
-            }
-
-            // Polygon drawing descriptors (Copy and Shift variants)
-            {
-                const D3D12_CPU_DESCRIPTOR_HANDLE srcHandles[] = {
-                    frameCtx.spanParamsSRV.cpuHandle,        frameCtx.spanPrefixSumsSRV.cpuHandle,
-                    frameCtx.cmdParamsSRV.cpuHandle,         vdp1.vramSRV.cpuHandle,
-                    frameCtx.internalSpriteOutUAV.cpuHandle,
-                };
-                std::array<UINT, std::size(srcHandles)> srcSizes{};
-                srcSizes.fill(1);
-
-                if (!resourceHeapAlloc.Allocate(frameCtx.polyDrawDescs, std::size(srcHandles))) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not allocate VDP1 polygon drawing descriptors #{}", i)};
-                }
-
-                device->CopyDescriptors(1, &frameCtx.polyDrawDescs.cpuHandle, &frameCtx.polyDrawDescs.count,
-                                        std::size(srcHandles), srcHandles, srcSizes.data(), resourceHeap.GetHeapType());
-            }
-
-            // Polygon drawing descriptors (OIT variant only)
-            {
-                const D3D12_CPU_DESCRIPTOR_HANDLE srcHandles[] = {
-                    frameCtx.spanParamsSRV.cpuHandle,   frameCtx.spanPrefixSumsSRV.cpuHandle,
-                    frameCtx.cmdParamsSRV.cpuHandle,    vdp1.vramSRV.cpuHandle,
-                    frameCtx.oitListHeadsUAV.cpuHandle, frameCtx.oitFragmentsUAV.cpuHandle,
-                    frameCtx.oitCounterUAV.cpuHandle,
-                };
-                std::array<UINT, std::size(srcHandles)> srcSizes{};
-                srcSizes.fill(1);
-
-                if (!resourceHeapAlloc.Allocate(frameCtx.polyDrawOITDescs, std::size(srcHandles))) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not allocate VDP1 polygon drawing OIT descriptors #{}", i)};
-                }
-
-                device->CopyDescriptors(1, &frameCtx.polyDrawOITDescs.cpuHandle, &frameCtx.polyDrawOITDescs.count,
-                                        std::size(srcHandles), srcHandles, srcSizes.data(), resourceHeap.GetHeapType());
-            }
-
-            // Polygon drawing descriptors (MSB variant only)
-            {
-                const D3D12_CPU_DESCRIPTOR_HANDLE srcHandles[] = {
-                    frameCtx.spanParamsSRV.cpuHandle, frameCtx.spanPrefixSumsSRV.cpuHandle,
-                    frameCtx.cmdParamsSRV.cpuHandle,  vdp1.vramSRV.cpuHandle,
-                    vdp1.fbramUAV.cpuHandle,
-                };
-                std::array<UINT, std::size(srcHandles)> srcSizes{};
-                srcSizes.fill(1);
-
-                if (!resourceHeapAlloc.Allocate(frameCtx.polyDrawMSBDescs, std::size(srcHandles))) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not allocate VDP1 polygon drawing MSB descriptors #{}", i)};
-                }
-
-                device->CopyDescriptors(1, &frameCtx.polyDrawMSBDescs.cpuHandle, &frameCtx.polyDrawMSBDescs.count,
-                                        std::size(srcHandles), srcHandles, srcSizes.data(), resourceHeap.GetHeapType());
-            }
-
-            // Output merger
-            for (size_t shaderIndex = 0; shaderIndex < vdp1.outputMergerShaders.size(); ++shaderIndex) {
-                const std::string variantName = GetVDP1OutputMergerShaderVariantName(shaderIndex);
-                const bool isOIT = IsVDP1OutputMergerShaderOIT(shaderIndex);
-                ID3D12RootSignature *const rootSig =
-                    isOIT ? vdp1.outputMergerOITRootSig.GetPointer() : vdp1.outputMergerRootSig.GetPointer();
-                const D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc{
-                    .pRootSignature = rootSig,
-                    .CS = ToShaderBytecode(vdp1.outputMergerShaders[shaderIndex]),
-                };
-                if (HRESULT hr = frameCtx.outputMergerPSOs[shaderIndex].CreateCompute(device, psoDesc); FAILED(hr)) {
-                    return util::ErrorMessage{fmt::format(
-                        "Could not build VDP1 output merger variant {} pipeline state object #{}, error code {:X}",
-                        variantName, i, (uint32)hr)};
-                }
-                frameCtx.outputMergerPSOs[shaderIndex]->SetName(
-                    fmt::format(L"[Ymir-VDP1] Output merger variant {} pipeline state object #{}",
-                                util::StringToWString(variantName), i)
-                        .c_str());
-            }
-            {
-                const D3D12_CPU_DESCRIPTOR_HANDLE srcHandles[] = {
-                    vdp1.fbramUAV.cpuHandle,
-                    frameCtx.internalSpriteOutUAV.cpuHandle,
-                };
-                std::array<UINT, std::size(srcHandles)> srcSizes{};
-                srcSizes.fill(1);
-
-                if (!resourceHeapAlloc.Allocate(frameCtx.outputMergerDescs, std::size(srcHandles))) {
-                    return util::ErrorMessage{fmt::format("Could not allocate VDP1 output merger descriptors #{}", i)};
-                }
-
-                device->CopyDescriptors(1, &frameCtx.outputMergerDescs.cpuHandle, &frameCtx.outputMergerDescs.count,
-                                        std::size(srcHandles), srcHandles, srcSizes.data(), resourceHeap.GetHeapType());
-            }
-            {
-                const D3D12_CPU_DESCRIPTOR_HANDLE srcHandles[] = {
-                    frameCtx.oitFragmentsSRV.cpuHandle,
-                    vdp1.fbramUAV.cpuHandle,
-                    frameCtx.oitListHeadsUAV.cpuHandle,
-                };
-                std::array<UINT, std::size(srcHandles)> srcSizes{};
-                srcSizes.fill(1);
-
-                if (!resourceHeapAlloc.Allocate(frameCtx.outputMergerOITDescs, std::size(srcHandles))) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not allocate VDP1 output merger OIT descriptors #{}", i)};
-                }
-
-                device->CopyDescriptors(1, &frameCtx.outputMergerOITDescs.cpuHandle,
-                                        &frameCtx.outputMergerOITDescs.count, std::size(srcHandles), srcHandles,
-                                        srcSizes.data(), resourceHeap.GetHeapType());
-            }
+        for (size_t i = 0; i < frames.Count(); ++i) {
+            frames[i].cpuSpanPrefixSums[0] = 0;
         }
+
+        YMIR_VK_TRY(shared.spanParamsBuffer.Create(vk, sizeof(FrameContext::cpuSpanParams), kSSBO,
+                                                   MemoryUsage::DeviceLocal, "VDP1 span parameters buffer"));
+        YMIR_VK_TRY(shared.spanPrefixSumsBuffer.Create(vk, sizeof(FrameContext::cpuSpanPrefixSums), kUTB,
+                                                       MemoryUsage::DeviceLocal, "VDP1 span prefix sums buffer"));
+        YMIR_VK_TRY(shared.spanPrefixSumsBuffer.CreateView(VK_FORMAT_R32_UINT, "VDP1 span prefix sums buffer"));
+        YMIR_VK_TRY(shared.cmdParamsBuffer.Create(vk, sizeof(FrameContext::cpuCmdParams), kSSBO,
+                                                  MemoryUsage::DeviceLocal, "VDP1 command parameters buffer"));
+
+        // Each entry in these buffers represents a logical output pixel.
+        // *2 for deinterlace alternate field
+        // *2 for transparent mesh buffer
+        const VkDeviceSize pixelEntriesSize = ScaledFBSize() * 2 * 2 * sizeof(HLSLuint);
+
+        // Entries hold the sprite data in the 8 or 16 LSBs and the span index in the 16 MSBs to enable parallel
+        // rendering with guaranteed pixel ordering.
+        YMIR_VK_TRY(shared.internalSpriteOutBuffer.Create(vk, pixelEntriesSize, kSTB, MemoryUsage::DeviceLocal,
+                                                          "VDP1 internal sprite data output buffer"));
+        YMIR_VK_TRY(
+            shared.internalSpriteOutBuffer.CreateView(VK_FORMAT_R32_UINT, "VDP1 internal sprite data output buffer"));
+
+        // Entries hold the index of the head of the list.
+        YMIR_VK_TRY(shared.oitListHeadsBuffer.Create(vk, pixelEntriesSize, kSTB, MemoryUsage::DeviceLocal,
+                                                     "VDP1 OIT fragments list heads buffer"));
+        YMIR_VK_TRY(shared.oitListHeadsBuffer.CreateView(VK_FORMAT_R32_UINT, "VDP1 OIT fragments list heads buffer"));
+
+        YMIR_VK_TRY(shared.oitFragmentsBuffer.Create(vk, kMaxVDP1OITFragmentsPerDispatch * sizeof(VDP1OITFragment),
+                                                     kSSBO, MemoryUsage::DeviceLocal, "VDP1 OIT fragments buffer"));
+        // This buffer contains a single `uint` used as an atomic counter.
+        YMIR_VK_TRY(shared.oitCounterBuffer.Create(vk, sizeof(HLSLuint), kSSBO, MemoryUsage::DeviceLocal,
+                                                   "VDP1 OIT counter buffer"));
+
+        YMIR_VK_TRY(allocateSet(vdp1.polyDrawRootSig, shared.polyDrawSet, "VDP1 polygon drawing"));
+        YMIR_VK_TRY(allocateSet(vdp1.polyDrawMSBRootSig, shared.polyDrawMSBSet, "VDP1 polygon drawing MSB"));
+        YMIR_VK_TRY(allocateSet(vdp1.polyDrawOITRootSig, shared.polyDrawOITSet, "VDP1 polygon drawing OIT"));
+        YMIR_VK_TRY(allocateSet(vdp1.outputMergerRootSig, shared.outputMergerSet, "VDP1 output merger"));
+        YMIR_VK_TRY(allocateSet(vdp1.outputMergerOITRootSig, shared.outputMergerOITSet, "VDP1 output merger OIT"));
 
         // =============================================================================================================
         // VDP2
@@ -3027,753 +2945,267 @@ struct Direct3D12VDPRenderer::Impl {
         // -------------------------------------------------------------------------------------------------------------
         // Common resources
 
-        // VDP2 VRAM buffer
-        {
-            auto builder = vdp2.vramBuffer.BufferBuilder(kVDP2VRAMSize);
-            if (HRESULT hr = builder.BuildCommitted(device); FAILED(hr)) {
-                return util::ErrorMessage{
-                    fmt::format("Could not create VDP2 VRAM buffer, error code {:X}", (uint32)hr)};
-            }
-            vdp2.vramBuffer->SetName(L"[Ymir-VDP2] VRAM buffer");
-
-            barrierTracker.InitializeBuffer(vdp2.vramBuffer.GetPointer(),
-                                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                            D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
-
-            if (!offlineHeapAlloc.Allocate(vdp2.vramSRV)) {
-                return util::ErrorMessage{"Could not allocate VDP2 VRAM buffer SRV"};
-            }
-            const D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{
-                .Format = DXGI_FORMAT_R32_TYPELESS,
-                .ViewDimension = D3D12_SRV_DIMENSION_BUFFER,
-                .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                .Buffer =
-                    {
-                        .FirstElement = 0,
-                        .NumElements = kVDP2VRAMSize / sizeof(uint32),
-                        .StructureByteStride = 0,
-                        .Flags = D3D12_BUFFER_SRV_FLAG_RAW,
-                    },
-            };
-            device->CreateShaderResourceView(vdp2.vramBuffer.GetPointer(), &srvDesc, vdp2.vramSRV.cpuHandle);
-        }
-
-        // Composited VDP2 output texture
-        {
-            static constexpr DXGI_FORMAT kFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-
-            auto builder = vdp2.compositeOutTexture.Texture2DBuilder(kMaxResH, kMaxResV);
-            builder.Format(kFormat);
-            builder.Flags(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-            if (HRESULT hr = builder.BuildCommitted(device); FAILED(hr)) {
-                return util::ErrorMessage{
-                    fmt::format("Could not create composited output texture, error code {:X}", (uint32)hr)};
-            }
-            vdp2.compositeOutTexture->SetName(L"[Ymir-VDP2] Composited output texture");
-
-            barrierTracker.InitializeTexture(vdp2.compositeOutTexture.GetPointer(), D3D12_RESOURCE_STATE_COMMON,
-                                             D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE,
-                                             D3D12_BARRIER_LAYOUT_COMMON);
-
-            if (!offlineHeapAlloc.Allocate(vdp2.compositeOutUAV)) {
-                return util::ErrorMessage{"Could not create composited output texture UAV"};
-            }
-            const D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc{
-                .Format = kFormat,
-                .ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D,
-                .Texture2D =
-                    {
-                        .MipSlice = 0,
-                        .PlaneSlice = 0,
-                    },
-            };
-            device->CreateUnorderedAccessView(vdp2.compositeOutTexture.GetPointer(), nullptr, &uavDesc,
-                                              vdp2.compositeOutUAV.cpuHandle);
-        }
+        YMIR_VK_TRY(vdp2.vramBuffer.Create(vk, kVDP2VRAMSize, kSSBO, MemoryUsage::DeviceLocal, "VDP2 VRAM buffer"));
+        const uint32 scaledResH = kMaxResH * resolutionScale;
+        const uint32 scaledResV = kMaxResV * resolutionScale;
+        YMIR_VK_TRY(vdp2.compositeOutTexture.Create(
+            vk, scaledResH, scaledResV, 1, false, VK_FORMAT_R8G8B8A8_UNORM,
+            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            "VDP2 composited output texture"));
 
         // -------------------------------------------------------------------------------------------------------------
-        // Shaders and root signatures
+        // Layouts and pipelines
 
-        // Sprite layer rendering
-        {
-            auto shaderBlobResult = LoadShader("src/vdp/cs_vdp2_render_sprite.cso");
-            if (!shaderBlobResult) {
-                return util::ErrorMessage{fmt::format("Could not load VDP2 sprite layer rendering compute shader: {}",
-                                                      shaderBlobResult.Error().message)};
-            }
-            vdp2.drawSpriteShader.format = gpu::ShaderBytecodeFormat::DXIL;
-            vdp2.drawSpriteShader.bytecode = shaderBlobResult.Value();
-            vdp2.drawSpriteShader.entrypoint = kCSEntrypoint;
-            auto result = gpu::ValidateShader(vdp2.drawSpriteShader);
-            if (!result) {
-                return util::ErrorMessage{fmt::format(
-                    "VDP2 sprite layer rendering compute shader validation failed: {}", result.Error().message)};
-            }
+        static constexpr uint32 kVDP2CommonSize = sizeof(VDP2CommonRenderParams);
 
-            auto rootSigBuilder = vdp2.drawSpriteRootSig.Builder();
-            rootSigBuilder.Add32BitConstants(0, sizeof(VDP2CommonRenderParams) / sizeof(uint32));
-            rootSigBuilder.AddDescriptorTable()
-                .AddSRVs(5, 1) // NOTE: starting from 1 because SPIRV-Cross assumes buffers in t0 are constant
-                .AddUAVs(2, 0);
-            if (HRESULT hr = rootSigBuilder.Build(device); FAILED(hr)) {
-                return util::ErrorMessage{fmt::format(
-                    "Could not build VDP2 sprite layer rendering root signature, error code {:X}", (uint32)hr)};
-            }
-            vdp2.drawSpriteRootSig->SetName(L"[Ymir-VDP2] Sprite layer rendering root signature");
-        }
+        YMIR_VK_TRY(vdp2.drawSpriteRootSig.Create(device,
+                                                  {{SRV(1), kDescSSBO},
+                                                   {SRV(2), kDescSSBO},
+                                                   {SRV(3), kDescUTB},
+                                                   {SRV(4), kDescSSBO},
+                                                   {SRV(5), kDescSSBO},
+                                                   {UAV(0), kDescStorageImage},
+                                                   {UAV(1), kDescStorageImage}},
+                                                  kVDP2CommonSize, "VDP2 sprite layer rendering"));
+        YMIR_VK_TRY(createPipeline(vdp2.drawSpritePSO, vdp2.drawSpriteRootSig, "src/vdp/cs_vdp2_render_sprite.spv",
+                                   "VDP2 sprite layer rendering"));
 
-        // Layer rendering
-        {
-            auto shaderBlobResult = LoadShader("src/vdp/cs_vdp2_render_bgs.cso");
-            if (!shaderBlobResult) {
-                return util::ErrorMessage{fmt::format("Could not load VDP2 layer rendering compute shader: {}",
-                                                      shaderBlobResult.Error().message)};
-            }
-            vdp2.drawBGsShader.format = gpu::ShaderBytecodeFormat::DXIL;
-            vdp2.drawBGsShader.bytecode = shaderBlobResult.Value();
-            vdp2.drawBGsShader.entrypoint = kCSEntrypoint;
-            auto result = gpu::ValidateShader(vdp2.drawBGsShader);
-            if (!result) {
-                return util::ErrorMessage{
-                    fmt::format("VDP2 layer rendering compute shader validation failed: {}", result.Error().message)};
-            }
+        YMIR_VK_TRY(vdp2.drawBGsRootSig.Create(device,
+                                               {{SRV(1), kDescSSBO},
+                                                {SRV(2), kDescSSBO},
+                                                {SRV(3), kDescUTB},
+                                                {SRV(4), kDescSSBO},
+                                                {SRV(5), kDescSSBO},
+                                                {SRV(6), kDescSampled},
+                                                {UAV(0), kDescStorageImage},
+                                                {UAV(1), kDescStorageImage},
+                                                {UAV(2), kDescStorageImage}},
+                                               kVDP2CommonSize, "VDP2 layer rendering"));
+        YMIR_VK_TRY(createPipeline(vdp2.drawBGsPSO, vdp2.drawBGsRootSig, "src/vdp/cs_vdp2_render_bgs.spv",
+                                   "VDP2 layer rendering"));
 
-            auto rootSigBuilder = vdp2.drawBGsRootSig.Builder();
-            rootSigBuilder.Add32BitConstants(0, sizeof(VDP2CommonRenderParams) / sizeof(uint32));
-            rootSigBuilder.AddDescriptorTable()
-                .AddSRVs(6, 1) // NOTE: starting from 1 because SPIRV-Cross assumes buffers in t0 are constant
-                .AddUAVs(3, 0);
-            if (HRESULT hr = rootSigBuilder.Build(device); FAILED(hr)) {
-                return util::ErrorMessage{
-                    fmt::format("Could not build VDP2 layer rendering root signature, error code {:X}", (uint32)hr)};
-            }
-            vdp2.drawBGsRootSig->SetName(L"[Ymir-VDP2] Layer rendering root signature");
-        }
-
-        // Layer compositing
-        {
-            auto shaderBlobResult = LoadShader("src/vdp/cs_vdp2_compose.cso");
-            if (!shaderBlobResult) {
-                return util::ErrorMessage{fmt::format("Could not load VDP2 layer compositing compute shader: {}",
-                                                      shaderBlobResult.Error().message)};
-            }
-            vdp2.composeShader.format = gpu::ShaderBytecodeFormat::DXIL;
-            vdp2.composeShader.bytecode = shaderBlobResult.Value();
-            vdp2.composeShader.entrypoint = kCSEntrypoint;
-            auto result = gpu::ValidateShader(vdp2.composeShader);
-            if (!result) {
-                return util::ErrorMessage{
-                    fmt::format("VDP2 layer compositing compute shader validation failed: {}", result.Error().message)};
-            }
-
-            auto rootSigBuilder = vdp2.composeRootSig.Builder();
-            rootSigBuilder.Add32BitConstants(0, sizeof(VDP2CommonRenderParams) / sizeof(uint32));
-            rootSigBuilder.AddDescriptorTable()
-                .AddSRVs(6, 1) // NOTE: starting from 1 because SPIRV-Cross assumes buffers in t0 are constant
-                .AddUAVs(1, 0);
-            if (HRESULT hr = rootSigBuilder.Build(device); FAILED(hr)) {
-                return util::ErrorMessage{
-                    fmt::format("Could not build VDP2 layer compositing root signature, error code {:X}", (uint32)hr)};
-            }
-            vdp2.composeRootSig->SetName(L"[Ymir-VDP2] Layer compositing root signature");
-        }
+        YMIR_VK_TRY(vdp2.composeRootSig.Create(device,
+                                               {{SRV(1), kDescSSBO},
+                                                {SRV(2), kDescSampled},
+                                                {SRV(3), kDescUTB},
+                                                {SRV(4), kDescSampled},
+                                                {SRV(5), kDescSampled},
+                                                {SRV(6), kDescSampled},
+                                                {UAV(0), kDescStorageImage}},
+                                               kVDP2CommonSize, "VDP2 layer compositing"));
+        YMIR_VK_TRY(createPipeline(vdp2.composePSO, vdp2.composeRootSig, "src/vdp/cs_vdp2_compose.spv",
+                                   "VDP2 layer compositing"));
 
         // -------------------------------------------------------------------------------------------------------------
-        // Per-frame VDP2 resources
+        // Shared VDP2 rendering resources
 
-        for (int i = 0; i < frames.Count(); ++i) {
-            FrameContext &frameCtx = frames[i];
+        YMIR_VK_TRY(shared.cramColorBuffer.Create(vk, kVDP2CRAMColorBufferSize, kUTB, MemoryUsage::DeviceLocal,
+                                                  "VDP2 CRAM color buffer"));
+        YMIR_VK_TRY(shared.cramColorBuffer.CreateView(VK_FORMAT_R8G8B8A8_UINT, "VDP2 CRAM color buffer"));
+        YMIR_VK_TRY(shared.cramRotCoeffBuffer.Create(vk, kVDP2CRAMRotCoeffBufferSize, kSSBO, MemoryUsage::DeviceLocal,
+                                                     "VDP2 CRAM rotation coefficients buffer"));
 
-            // VDP2 CRAM color buffer
-            {
-                auto builder = frameCtx.cramColorBuffer.BufferBuilder(kVDP2CRAMColorBufferSize);
-                if (HRESULT hr = builder.BuildCommitted(device); FAILED(hr)) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not create VDP2 CRAM color buffer #{}, error code {:X}", i, (uint32)hr)};
-                }
-                frameCtx.cramColorBuffer->SetName(fmt::format(L"[Ymir-VDP2] CRAM color buffer #{}", i).c_str());
+        // The array contains:
+        //   [0..3] NBG0-3
+        //   [4..5] RBG0-1
+        //      [6] Sprite
+        //      [7] Transparent meshes
+        // The alpha channel is used for pixel attributes:
+        //   [0..2] Priority
+        //      [6] Color format (0=RGB, 1=Palette)
+        //      [7] Special color calculation flag
+        YMIR_VK_TRY(shared.layerOutTexture.Create(vk, scaledResH, scaledResV, 4 + 2 + 1 + 1, true,
+                                                  VK_FORMAT_R8G8B8A8_UINT, kImageUsage,
+                                                  "VDP2 layer outputs texture array"));
+        // Line colors are per native pixel
+        YMIR_VK_TRY(shared.rbgLineColorOutTexture.Create(vk, kMaxNormalResH, kMaxNormalResV, 2, true,
+                                                         VK_FORMAT_R8G8B8A8_UINT, kImageUsage,
+                                                         "VDP2 RBG line color outputs texture array"));
+        YMIR_VK_TRY(shared.colorCalcWindowTexture.Create(vk, scaledResH, scaledResV, 1, false, VK_FORMAT_R8_UINT,
+                                                         kImageUsage, "VDP2 color calculation window texture"));
+        YMIR_VK_TRY(shared.lnclBackBuffer.Create(vk, sizeof(vdp2.cpuLnclBack), kUTB, MemoryUsage::DeviceLocal,
+                                                 "VDP2 LNCL/BACK screen buffer"));
+        YMIR_VK_TRY(shared.lnclBackBuffer.CreateView(VK_FORMAT_R32_UINT, "VDP2 LNCL/BACK screen buffer"));
+        YMIR_VK_TRY(shared.rotParamBasesBuffer.Create(vk, sizeof(vdp2.cpuRotParamBases), kSSBO,
+                                                      MemoryUsage::DeviceLocal,
+                                                      "VDP2 rotation parameter base values buffer"));
+        YMIR_VK_TRY(shared.spriteAttrsTexture.Create(vk, scaledResH, scaledResV, 2, true, VK_FORMAT_R16_UINT,
+                                                     kImageUsage, "VDP2 sprite attributes texture array"));
+        YMIR_VK_TRY(shared.layerRenderParamsBuffer.Create(vk, sizeof(vdp2.cpuLayerRenderParams), kSSBO,
+                                                          MemoryUsage::DeviceLocal,
+                                                          "VDP2 layer rendering parameters buffer"));
+        YMIR_VK_TRY(shared.composeParamsBuffer.Create(vk, sizeof(vdp2.cpuComposeParams), kSSBO,
+                                                      MemoryUsage::DeviceLocal,
+                                                      "VDP2 layer compositing parameters buffer"));
 
-                barrierTracker.InitializeBuffer(
-                    frameCtx.cramColorBuffer.GetPointer(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
+        YMIR_VK_TRY(allocateSet(vdp2.drawSpriteRootSig, shared.drawSpriteSet, "VDP2 sprite layer rendering"));
+        YMIR_VK_TRY(allocateSet(vdp2.drawBGsRootSig, shared.drawBGsSet, "VDP2 layer rendering"));
+        YMIR_VK_TRY(allocateSet(vdp2.composeRootSig, shared.composeSet, "VDP2 layer compositing"));
 
-                if (!offlineHeapAlloc.Allocate(frameCtx.cramColorSRV)) {
-                    return util::ErrorMessage{fmt::format("Could not allocate VDP2 CRAM color buffer SRV #{}", i)};
-                }
-                const D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{
-                    .Format = DXGI_FORMAT_R8G8B8A8_UINT,
-                    .ViewDimension = D3D12_SRV_DIMENSION_BUFFER,
-                    .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                    .Buffer =
-                        {
-                            .FirstElement = 0,
-                            .NumElements = kVDP2CRAMColorBufferSize / sizeof(uint32),
-                            .StructureByteStride = 0,
-                            .Flags = D3D12_BUFFER_SRV_FLAG_NONE,
-                        },
-                };
-                device->CreateShaderResourceView(frameCtx.cramColorBuffer.GetPointer(), &srvDesc,
-                                                 frameCtx.cramColorSRV.cpuHandle);
-            }
-
-            // VDP2 CRAM rotation coefficients buffer
-            {
-
-                auto builder = frameCtx.cramRotCoeffBuffer.BufferBuilder(kVDP2CRAMRotCoeffBufferSize);
-                if (HRESULT hr = builder.BuildCommitted(device); FAILED(hr)) {
-                    return util::ErrorMessage{fmt::format(
-                        "Could not create VDP2 CRAM rotation coefficients buffer #{}, error code {:X}", i, (uint32)hr)};
-                }
-                frameCtx.cramRotCoeffBuffer->SetName(
-                    fmt::format(L"[Ymir-VDP2] CRAM rotation coefficients buffer #{}", i).c_str());
-
-                barrierTracker.InitializeBuffer(
-                    frameCtx.cramRotCoeffBuffer.GetPointer(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
-
-                if (!offlineHeapAlloc.Allocate(frameCtx.cramRotCoeffSRV)) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not allocate VDP2 CRAM rotation coefficients buffer SRV #{}", i)};
-                }
-                const D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{
-                    .Format = DXGI_FORMAT_R32_TYPELESS,
-                    .ViewDimension = D3D12_SRV_DIMENSION_BUFFER,
-                    .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                    .Buffer =
-                        {
-                            .FirstElement = 0,
-                            .NumElements = kVDP2CRAMRotCoeffBufferSize / sizeof(uint32),
-                            .StructureByteStride = 0,
-                            .Flags = D3D12_BUFFER_SRV_FLAG_RAW,
-                        },
-                };
-                device->CreateShaderResourceView(frameCtx.cramRotCoeffBuffer.GetPointer(), &srvDesc,
-                                                 frameCtx.cramRotCoeffSRV.cpuHandle);
-            }
-
-            // Layer outputs 2D texture array
-            {
-                // The array contains:
-                //   [0..3] NBG0-3
-                //   [4..5] RBG0-1
-                //      [6] Sprite
-                //      [7] Transparent meshes
-                // The alpha channel is used for pixel attributes:
-                //   [0..2] Priority
-                //      [6] Color format (0=RGB, 1=Palette)
-                //      [7] Special color calculation flag
-                static constexpr UINT16 kNumLayers = 4 + 2 + 1 + 1;
-                static constexpr DXGI_FORMAT kFormat = DXGI_FORMAT_R8G8B8A8_UINT;
-
-                auto builder = frameCtx.layerOutTexture.Texture2DBuilder(kMaxResH, kMaxResV, kNumLayers);
-                builder.Format(kFormat);
-                builder.Flags(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-                if (HRESULT hr = builder.BuildCommitted(device); FAILED(hr)) {
-                    return util::ErrorMessage{fmt::format(
-                        "Could not create layer outputs texture array #{}, error code {:X}", i, (uint32)hr)};
-                }
-                frameCtx.layerOutTexture->SetName(
-                    fmt::format(L"[Ymir-VDP2] Layer outputs texture array #{}", i).c_str());
-
-                barrierTracker.InitializeTexture(frameCtx.layerOutTexture.GetPointer(),
-                                                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                                 D3D12_BARRIER_SYNC_COMPUTE_SHADING,
-                                                 D3D12_BARRIER_ACCESS_SHADER_RESOURCE, D3D12_BARRIER_LAYOUT_COMMON);
-
-                if (!offlineHeapAlloc.Allocate(frameCtx.layerOutSRV)) {
-                    return util::ErrorMessage{fmt::format("Could not allocate layer outputs texture array SRV #{}", i)};
-                }
-                const D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{
-                    .Format = kFormat,
-                    .ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY,
-                    .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                    .Texture2DArray =
-                        {
-                            .MostDetailedMip = 0,
-                            .MipLevels = 1,
-                            .FirstArraySlice = 0,
-                            .ArraySize = kNumLayers,
-                            .PlaneSlice = 0,
-                            .ResourceMinLODClamp = 0.0f,
-                        },
-                };
-                device->CreateShaderResourceView(frameCtx.layerOutTexture.GetPointer(), &srvDesc,
-                                                 frameCtx.layerOutSRV.cpuHandle);
-
-                if (!offlineHeapAlloc.Allocate(frameCtx.layerOutUAV)) {
-                    return util::ErrorMessage{fmt::format("Could not allocate layer outputs texture array UAV #{}", i)};
-                }
-                const D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc{
-                    .Format = kFormat,
-                    .ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY,
-                    .Texture2DArray =
-                        {
-                            .MipSlice = 0,
-                            .FirstArraySlice = 0,
-                            .ArraySize = kNumLayers,
-                            .PlaneSlice = 0,
-                        },
-                };
-                device->CreateUnorderedAccessView(frameCtx.layerOutTexture.GetPointer(), nullptr, &uavDesc,
-                                                  frameCtx.layerOutUAV.cpuHandle);
-            }
-
-            // RBG0-1 line color outputs 2D texture array
-            {
-                static constexpr UINT16 kNumLayers = 2;
-                static constexpr DXGI_FORMAT kFormat = DXGI_FORMAT_R8G8B8A8_UINT;
-
-                auto builder =
-                    frameCtx.rbgLineColorOutTexture.Texture2DBuilder(kMaxNormalResH, kMaxNormalResV, kNumLayers);
-                builder.Format(kFormat);
-                builder.Flags(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-                if (HRESULT hr = builder.BuildCommitted(device); FAILED(hr)) {
-                    return util::ErrorMessage{fmt::format(
-                        "Could not create RBG line color outputs texture array #{}, error code {:X}", i, (uint32)hr)};
-                }
-                frameCtx.rbgLineColorOutTexture->SetName(
-                    fmt::format(L"[Ymir-VDP2] RBG line color outputs texture array #{}", i).c_str());
-
-                barrierTracker.InitializeTexture(frameCtx.rbgLineColorOutTexture.GetPointer(),
-                                                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                                 D3D12_BARRIER_SYNC_COMPUTE_SHADING,
-                                                 D3D12_BARRIER_ACCESS_SHADER_RESOURCE, D3D12_BARRIER_LAYOUT_COMMON);
-
-                if (!offlineHeapAlloc.Allocate(frameCtx.rbgLineColorOutSRV)) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not allocate RBG line color outputs texture array SRV #{}", i)};
-                }
-                const D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{
-                    .Format = kFormat,
-                    .ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY,
-                    .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                    .Texture2DArray =
-                        {
-                            .MostDetailedMip = 0,
-                            .MipLevels = 1,
-                            .FirstArraySlice = 0,
-                            .ArraySize = kNumLayers,
-                            .PlaneSlice = 0,
-                            .ResourceMinLODClamp = 0.0f,
-                        },
-                };
-                device->CreateShaderResourceView(frameCtx.rbgLineColorOutTexture.GetPointer(), &srvDesc,
-                                                 frameCtx.rbgLineColorOutSRV.cpuHandle);
-
-                if (!offlineHeapAlloc.Allocate(frameCtx.rbgLineColorOutUAV)) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not allocate RBG line color outputs texture array UAV #{}", i)};
-                }
-                const D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc{
-                    .Format = kFormat,
-                    .ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY,
-                    .Texture2DArray =
-                        {
-                            .MipSlice = 0,
-                            .FirstArraySlice = 0,
-                            .ArraySize = kNumLayers,
-                            .PlaneSlice = 0,
-                        },
-                };
-                device->CreateUnorderedAccessView(frameCtx.rbgLineColorOutTexture.GetPointer(), nullptr, &uavDesc,
-                                                  frameCtx.rbgLineColorOutUAV.cpuHandle);
-            }
-
-            // Color calculation window texture
-            {
-                static constexpr DXGI_FORMAT kFormat = DXGI_FORMAT_R8_UINT;
-
-                auto builder = frameCtx.colorCalcWindowTexture.Texture2DBuilder(kMaxResH, kMaxResV);
-                builder.Format(kFormat);
-                builder.Flags(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-                if (HRESULT hr = builder.BuildCommitted(device); FAILED(hr)) {
-                    return util::ErrorMessage{fmt::format(
-                        "Could not create color calculation window texture #{}, error code {:X}", i, (uint32)hr)};
-                }
-                frameCtx.colorCalcWindowTexture->SetName(
-                    fmt::format(L"[Ymir-VDP2] Color calculation window texture #{}", i).c_str());
-
-                barrierTracker.InitializeTexture(frameCtx.colorCalcWindowTexture.GetPointer(),
-                                                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                                 D3D12_BARRIER_SYNC_COMPUTE_SHADING,
-                                                 D3D12_BARRIER_ACCESS_SHADER_RESOURCE, D3D12_BARRIER_LAYOUT_COMMON);
-
-                if (!offlineHeapAlloc.Allocate(frameCtx.colorCalcWindowSRV)) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not allocate color calculation window texture SRV #{}", i)};
-                }
-                const D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{
-                    .Format = kFormat,
-                    .ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D,
-                    .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                    .Texture2D =
-                        {
-                            .MostDetailedMip = 0,
-                            .MipLevels = 1,
-                            .PlaneSlice = 0,
-                            .ResourceMinLODClamp = 0.0f,
-                        },
-                };
-                device->CreateShaderResourceView(frameCtx.colorCalcWindowTexture.GetPointer(), &srvDesc,
-                                                 frameCtx.colorCalcWindowSRV.cpuHandle);
-
-                if (!offlineHeapAlloc.Allocate(frameCtx.colorCalcWindowUAV)) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not allocate color calculation window texture UAV #{}", i)};
-                }
-                const D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc{
-                    .Format = kFormat,
-                    .ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D,
-                    .Texture2D =
-                        {
-                            .MipSlice = 0,
-                            .PlaneSlice = 0,
-                        },
-                };
-                device->CreateUnorderedAccessView(frameCtx.colorCalcWindowTexture.GetPointer(), nullptr, &uavDesc,
-                                                  frameCtx.colorCalcWindowUAV.cpuHandle);
-            }
-
-            // LNCL/BACK screen buffer
-            {
-                static constexpr size_t kNumEntries = 2 * kMaxResV;
-                static constexpr size_t kEntrySize = sizeof(ColorR8G8B8A8);
-                auto builder = frameCtx.lnclBackBuffer.BufferBuilder(sizeof(vdp2.cpuLnclBack));
-                if (HRESULT hr = builder.BuildCommitted(device); FAILED(hr)) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not create LNCL/BACK screen buffer #{}, error code {:X}", i, (uint32)hr)};
-                }
-                frameCtx.lnclBackBuffer->SetName(fmt::format(L"[Ymir-VDP2] LNCL/BACK screen buffer #{}", i).c_str());
-
-                barrierTracker.InitializeBuffer(
-                    frameCtx.lnclBackBuffer.GetPointer(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
-
-                if (!offlineHeapAlloc.Allocate(frameCtx.lnclBackSRV)) {
-                    return util::ErrorMessage{fmt::format("Could not allocate LNCL/BACK screen buffer SRV #{}", i)};
-                }
-                const D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{
-                    .Format = DXGI_FORMAT_UNKNOWN,
-                    .ViewDimension = D3D12_SRV_DIMENSION_BUFFER,
-                    .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                    .Buffer =
-                        {
-                            .FirstElement = 0,
-                            .NumElements = kNumEntries,
-                            .StructureByteStride = kEntrySize,
-                            .Flags = D3D12_BUFFER_SRV_FLAG_NONE,
-                        },
-                };
-                device->CreateShaderResourceView(frameCtx.lnclBackBuffer.GetPointer(), &srvDesc,
-                                                 frameCtx.lnclBackSRV.cpuHandle);
-            }
-
-            // VDP2 rotation parameter base values buffer
-            {
-                static constexpr size_t kRotParamBasesCount = kMaxNormalResV * 2;
-                auto builder = frameCtx.rotParamBasesBuffer.BufferBuilder(sizeof(vdp2.cpuRotParamBases));
-                if (HRESULT hr = builder.BuildCommitted(device); FAILED(hr)) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not create VDP2 rotation parameter base values buffer #{}, error code {:X}",
-                                    i, (uint32)hr)};
-                }
-                frameCtx.rotParamBasesBuffer->SetName(
-                    fmt::format(L"[Ymir-VDP2] Rotation parameter base values buffer #{}", i).c_str());
-
-                barrierTracker.InitializeBuffer(
-                    frameCtx.rotParamBasesBuffer.GetPointer(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
-
-                if (!offlineHeapAlloc.Allocate(frameCtx.rotParamBasesSRV)) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not allocate VDP2 rotation parameter base values buffer SRV #{}", i)};
-                }
-                const D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{
-                    .Format = DXGI_FORMAT_UNKNOWN,
-                    .ViewDimension = D3D12_SRV_DIMENSION_BUFFER,
-                    .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                    .Buffer =
-                        {
-                            .FirstElement = 0,
-                            .NumElements = kRotParamBasesCount,
-                            .StructureByteStride = sizeof(VDP2RotParamBase),
-                            .Flags = D3D12_BUFFER_SRV_FLAG_NONE,
-                        },
-                };
-                device->CreateShaderResourceView(frameCtx.rotParamBasesBuffer.GetPointer(), &srvDesc,
-                                                 frameCtx.rotParamBasesSRV.cpuHandle);
-            }
-
-            // VDP2 sprite attributes 2D texture array
-            {
-                static constexpr UINT16 kNumLayers = 2;
-                static constexpr DXGI_FORMAT kFormat = DXGI_FORMAT_R16_UINT;
-
-                auto builder = frameCtx.spriteAttrsTexture.Texture2DBuilder(kMaxResH, kMaxResV, kNumLayers);
-                builder.Format(kFormat);
-                builder.Flags(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-                if (HRESULT hr = builder.BuildCommitted(device); FAILED(hr)) {
-                    return util::ErrorMessage{fmt::format(
-                        "Could not create sprite attributes texture array #{}, error code {:X}", i, (uint32)hr)};
-                }
-                frameCtx.spriteAttrsTexture->SetName(
-                    fmt::format(L"[Ymir-VDP2] Sprite attributes texture array #{}", i).c_str());
-
-                barrierTracker.InitializeTexture(frameCtx.spriteAttrsTexture.GetPointer(),
-                                                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                                 D3D12_BARRIER_SYNC_COMPUTE_SHADING,
-                                                 D3D12_BARRIER_ACCESS_SHADER_RESOURCE, D3D12_BARRIER_LAYOUT_COMMON);
-
-                if (!offlineHeapAlloc.Allocate(frameCtx.spriteAttrsSRV)) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not allocate sprite attributes texture array SRV #{}", i)};
-                }
-                const D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{
-                    .Format = kFormat,
-                    .ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY,
-                    .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                    .Texture2DArray =
-                        {
-                            .MostDetailedMip = 0,
-                            .MipLevels = 1,
-                            .FirstArraySlice = 0,
-                            .ArraySize = kNumLayers,
-                            .PlaneSlice = 0,
-                            .ResourceMinLODClamp = 0.0f,
-                        },
-                };
-                device->CreateShaderResourceView(frameCtx.spriteAttrsTexture.GetPointer(), &srvDesc,
-                                                 frameCtx.spriteAttrsSRV.cpuHandle);
-
-                if (!offlineHeapAlloc.Allocate(frameCtx.spriteAttrsUAV)) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not allocate sprite attributes texture array UAV #{}", i)};
-                }
-                const D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc{
-                    .Format = kFormat,
-                    .ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY,
-                    .Texture2DArray =
-                        {
-                            .MipSlice = 0,
-                            .FirstArraySlice = 0,
-                            .ArraySize = kNumLayers,
-                            .PlaneSlice = 0,
-                        },
-                };
-                device->CreateUnorderedAccessView(frameCtx.spriteAttrsTexture.GetPointer(), nullptr, &uavDesc,
-                                                  frameCtx.spriteAttrsUAV.cpuHandle);
-            }
-
-            // VDP2 layer rendering parameters buffer
-            {
-                auto builder = frameCtx.layerRenderParamsBuffer.BufferBuilder(sizeof(vdp2.cpuLayerRenderParams));
-                if (HRESULT hr = builder.BuildCommitted(device); FAILED(hr)) {
-                    return util::ErrorMessage{fmt::format(
-                        "Could not create VDP2 layer rendering parameters buffer #{}, error code {:X}", i, (uint32)hr)};
-                }
-                frameCtx.layerRenderParamsBuffer->SetName(
-                    fmt::format(L"[Ymir-VDP2] Layer rendering parameters buffer #{}", i).c_str());
-
-                barrierTracker.InitializeBuffer(
-                    frameCtx.layerRenderParamsBuffer.GetPointer(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
-
-                if (!offlineHeapAlloc.Allocate(frameCtx.layerRenderParamsSRV)) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not allocate VDP2 layer rendering parameters buffer SRV #{}", i)};
-                }
-                const D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{
-                    .Format = DXGI_FORMAT_UNKNOWN,
-                    .ViewDimension = D3D12_SRV_DIMENSION_BUFFER,
-                    .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                    .Buffer =
-                        {
-                            .FirstElement = 0,
-                            .NumElements = 1,
-                            .StructureByteStride = sizeof(vdp2.cpuLayerRenderParams),
-                            .Flags = D3D12_BUFFER_SRV_FLAG_NONE,
-                        },
-                };
-                device->CreateShaderResourceView(frameCtx.layerRenderParamsBuffer.GetPointer(), &srvDesc,
-                                                 frameCtx.layerRenderParamsSRV.cpuHandle);
-            }
-
-            // VDP2 layer compositing parameters buffer
-            {
-                auto builder = frameCtx.composeParamsBuffer.BufferBuilder(sizeof(vdp2.cpuComposeParams));
-                if (HRESULT hr = builder.BuildCommitted(device); FAILED(hr)) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not create VDP2 layer compositing parameters buffer #{}, error code {:X}", i,
-                                    (uint32)hr)};
-                }
-                frameCtx.composeParamsBuffer->SetName(
-                    fmt::format(L"[Ymir-VDP2] Layer compositing parameters buffer #{}", i).c_str());
-
-                barrierTracker.InitializeBuffer(
-                    frameCtx.composeParamsBuffer.GetPointer(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
-
-                if (!offlineHeapAlloc.Allocate(frameCtx.composeParamsSRV)) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not allocate VDP2 layer compositing parameters buffer SRV #{}", i)};
-                }
-                const D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{
-                    .Format = DXGI_FORMAT_UNKNOWN,
-                    .ViewDimension = D3D12_SRV_DIMENSION_BUFFER,
-                    .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                    .Buffer =
-                        {
-                            .FirstElement = 0,
-                            .NumElements = 1,
-                            .StructureByteStride = sizeof(vdp2.cpuComposeParams),
-                            .Flags = D3D12_BUFFER_SRV_FLAG_NONE,
-                        },
-                };
-                device->CreateShaderResourceView(frameCtx.composeParamsBuffer.GetPointer(), &srvDesc,
-                                                 frameCtx.composeParamsSRV.cpuHandle);
-            }
-
-            // Sprite layer rendering
-            {
-                const D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc{
-                    .pRootSignature = vdp2.drawSpriteRootSig.GetPointer(),
-                    .CS = ToShaderBytecode(vdp2.drawSpriteShader),
-                };
-                if (HRESULT hr = frameCtx.drawSpritePSO.CreateCompute(device, psoDesc); FAILED(hr)) {
-                    return util::ErrorMessage{fmt::format(
-                        "Could not build VDP2 sprite layer rendering pipeline state object #{}, error code {:X}", i,
-                        (uint32)hr)};
-                }
-                frameCtx.drawSpritePSO->SetName(
-                    fmt::format(L"[Ymir-VDP2] Sprite layer rendering pipeline state object #{}", i).c_str());
-
-                const D3D12_CPU_DESCRIPTOR_HANDLE srcHandles[] = {
-                    frameCtx.layerRenderParamsSRV.cpuHandle, vdp2.vramSRV.cpuHandle,  frameCtx.cramColorSRV.cpuHandle,
-                    frameCtx.rotParamBasesSRV.cpuHandle,     vdp1.fbramSRV.cpuHandle, frameCtx.layerOutUAV.cpuHandle,
-                    frameCtx.spriteAttrsUAV.cpuHandle,
-                };
-                std::array<UINT, std::size(srcHandles)> srcSizes{};
-                srcSizes.fill(1);
-
-                if (!resourceHeapAlloc.Allocate(frameCtx.drawSpriteDescs, std::size(srcHandles))) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not allocate VDP2 sprite layer rendering descriptors #{}", i)};
-                }
-
-                device->CopyDescriptors(1, &frameCtx.drawSpriteDescs.cpuHandle, &frameCtx.drawSpriteDescs.count,
-                                        std::size(srcHandles), srcHandles, srcSizes.data(), resourceHeap.GetHeapType());
-            }
-
-            // Layer rendering
-            {
-                const D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc{
-                    .pRootSignature = vdp2.drawBGsRootSig.GetPointer(),
-                    .CS = ToShaderBytecode(vdp2.drawBGsShader),
-                };
-                if (HRESULT hr = frameCtx.drawBGsPSO.CreateCompute(device, psoDesc); FAILED(hr)) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not build VDP2 layer rendering pipeline state object #{}, error code {:X}",
-                                    i, (uint32)hr)};
-                }
-                frameCtx.drawBGsPSO->SetName(
-                    fmt::format(L"[Ymir-VDP2] Layer rendering pipeline state object #{}", i).c_str());
-
-                const D3D12_CPU_DESCRIPTOR_HANDLE srcHandles[] = {
-                    frameCtx.layerRenderParamsSRV.cpuHandle, vdp2.vramSRV.cpuHandle,
-                    frameCtx.cramColorSRV.cpuHandle,         frameCtx.cramRotCoeffSRV.cpuHandle,
-                    frameCtx.rotParamBasesSRV.cpuHandle,     frameCtx.spriteAttrsSRV.cpuHandle,
-                    frameCtx.layerOutUAV.cpuHandle,          frameCtx.rbgLineColorOutUAV.cpuHandle,
-                    frameCtx.colorCalcWindowUAV.cpuHandle,
-                };
-                std::array<UINT, std::size(srcHandles)> srcSizes{};
-                srcSizes.fill(1);
-
-                if (!resourceHeapAlloc.Allocate(frameCtx.drawBGsDescs, std::size(srcHandles))) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not allocate VDP2 layer rendering descriptors #{}", i)};
-                }
-
-                device->CopyDescriptors(1, &frameCtx.drawBGsDescs.cpuHandle, &frameCtx.drawBGsDescs.count,
-                                        std::size(srcHandles), srcHandles, srcSizes.data(), resourceHeap.GetHeapType());
-            }
-
-            // Layer compositing
-            {
-                const D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc{
-                    .pRootSignature = vdp2.composeRootSig.GetPointer(),
-                    .CS = ToShaderBytecode(vdp2.composeShader),
-                };
-                if (HRESULT hr = frameCtx.composePSO.CreateCompute(device, psoDesc); FAILED(hr)) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not build VDP2 layer compositing pipeline state object #{}, error code {:X}",
-                                    i, (uint32)hr)};
-                }
-                frameCtx.composePSO->SetName(L"[Ymir-VDP2] Layer compositing pipeline state object");
-
-                const D3D12_CPU_DESCRIPTOR_HANDLE srcHandles[] = {
-                    frameCtx.composeParamsSRV.cpuHandle, frameCtx.layerOutSRV.cpuHandle,
-                    frameCtx.lnclBackSRV.cpuHandle,      frameCtx.rbgLineColorOutSRV.cpuHandle,
-                    frameCtx.spriteAttrsSRV.cpuHandle,   frameCtx.colorCalcWindowSRV.cpuHandle,
-                    vdp2.compositeOutUAV.cpuHandle,
-                };
-                std::array<UINT, std::size(srcHandles)> srcSizes{};
-                srcSizes.fill(1);
-
-                if (!resourceHeapAlloc.Allocate(frameCtx.composeDescs, std::size(srcHandles))) {
-                    return util::ErrorMessage{
-                        fmt::format("Could not allocate VDP2 layer compositing descriptors #{}", i)};
-                }
-
-                device->CopyDescriptors(1, &frameCtx.composeDescs.cpuHandle, &frameCtx.composeDescs.count,
-                                        std::size(srcHandles), srcHandles, srcSizes.data(), resourceHeap.GetHeapType());
-            }
+        // Per-frame output readback buffers
+        for (size_t i = 0; i < frames.Count(); ++i) {
+            YMIR_VK_TRY(frames[i].readbackBuffer.Create(vk, VkDeviceSize{scaledResH} * scaledResV * sizeof(uint32),
+                                                        VK_BUFFER_USAGE_TRANSFER_DST_BIT, MemoryUsage::Readback,
+                                                        "VDP2 output readback buffer"));
         }
 
+#undef YMIR_VK_TRY
+
+        // =============================================================================================================
+        // Descriptor sets
+
+        {
+            DescriptorWriter writer{};
+            writer.StorageBuffer(vdp1.fbramWriteSet, SRV(1), vdp1.fbramWritesBuffer)
+                .StorageBuffer(vdp1.fbramWriteSet, UAV(1), vdp1.fbramBuffer)
+                .StorageBuffer(vdp1.eraseSet, UAV(1), vdp1.fbramBuffer);
+
+            if (resolutionScale > 1) {
+                writer.StorageBuffer(vdp1.fbramDownsampleSet, SRV(1), vdp1.fbramBuffer)
+                    .StorageBuffer(vdp1.fbramDownsampleSet, UAV(1), vdp1.fbramNativeBuffer);
+            }
+
+            {
+                for (VkDescriptorSet set : {shared.polyDrawSet, shared.polyDrawMSBSet, shared.polyDrawOITSet}) {
+                    writer.StorageBuffer(set, SRV(1), shared.spanParamsBuffer)
+                        .UniformTexelBuffer(set, SRV(2), shared.spanPrefixSumsBuffer)
+                        .StorageBuffer(set, SRV(3), shared.cmdParamsBuffer)
+                        .StorageBuffer(set, SRV(4), vdp1.vramBuffer);
+                }
+                writer.StorageTexelBuffer(shared.polyDrawSet, UAV(1), shared.internalSpriteOutBuffer);
+                writer.StorageBuffer(shared.polyDrawMSBSet, UAV(1), vdp1.fbramBuffer);
+                writer.StorageTexelBuffer(shared.polyDrawOITSet, UAV(1), shared.oitListHeadsBuffer)
+                    .StorageBuffer(shared.polyDrawOITSet, UAV(2), shared.oitFragmentsBuffer)
+                    .StorageBuffer(shared.polyDrawOITSet, UAV(3), shared.oitCounterBuffer);
+
+                writer.StorageBuffer(shared.outputMergerSet, UAV(1), vdp1.fbramBuffer)
+                    .StorageTexelBuffer(shared.outputMergerSet, UAV(2), shared.internalSpriteOutBuffer);
+                writer.StorageBuffer(shared.outputMergerOITSet, SRV(1), shared.oitFragmentsBuffer)
+                    .StorageBuffer(shared.outputMergerOITSet, UAV(1), vdp1.fbramBuffer)
+                    .StorageTexelBuffer(shared.outputMergerOITSet, UAV(2), shared.oitListHeadsBuffer);
+
+                writer.StorageBuffer(shared.drawSpriteSet, SRV(1), shared.layerRenderParamsBuffer)
+                    .StorageBuffer(shared.drawSpriteSet, SRV(2), vdp2.vramBuffer)
+                    .UniformTexelBuffer(shared.drawSpriteSet, SRV(3), shared.cramColorBuffer)
+                    .StorageBuffer(shared.drawSpriteSet, SRV(4), shared.rotParamBasesBuffer)
+                    .StorageBuffer(shared.drawSpriteSet, SRV(5), vdp1.fbramBuffer)
+                    .StorageImage(shared.drawSpriteSet, UAV(0), shared.layerOutTexture)
+                    .StorageImage(shared.drawSpriteSet, UAV(1), shared.spriteAttrsTexture);
+
+                writer.StorageBuffer(shared.drawBGsSet, SRV(1), shared.layerRenderParamsBuffer)
+                    .StorageBuffer(shared.drawBGsSet, SRV(2), vdp2.vramBuffer)
+                    .UniformTexelBuffer(shared.drawBGsSet, SRV(3), shared.cramColorBuffer)
+                    .StorageBuffer(shared.drawBGsSet, SRV(4), shared.cramRotCoeffBuffer)
+                    .StorageBuffer(shared.drawBGsSet, SRV(5), shared.rotParamBasesBuffer)
+                    .SampledImage(shared.drawBGsSet, SRV(6), shared.spriteAttrsTexture)
+                    .StorageImage(shared.drawBGsSet, UAV(0), shared.layerOutTexture)
+                    .StorageImage(shared.drawBGsSet, UAV(1), shared.rbgLineColorOutTexture)
+                    .StorageImage(shared.drawBGsSet, UAV(2), shared.colorCalcWindowTexture);
+
+                writer.StorageBuffer(shared.composeSet, SRV(1), shared.composeParamsBuffer)
+                    .SampledImage(shared.composeSet, SRV(2), shared.layerOutTexture)
+                    .UniformTexelBuffer(shared.composeSet, SRV(3), shared.lnclBackBuffer)
+                    .SampledImage(shared.composeSet, SRV(4), shared.rbgLineColorOutTexture)
+                    .SampledImage(shared.composeSet, SRV(5), shared.spriteAttrsTexture)
+                    .SampledImage(shared.composeSet, SRV(6), shared.colorCalcWindowTexture)
+                    .StorageImage(shared.composeSet, UAV(0), vdp2.compositeOutTexture);
+            }
+            writer.Commit(device);
+        }
+
+        // =============================================================================================================
+        // Initial contents
+
+        if (auto result = BeginCommands(); !result) {
+            return result;
+        }
+
+        // Move all images to the GENERAL layout and clear them
+        {
+            const GpuImage *images[] = {&vdp2.compositeOutTexture, &shared.layerOutTexture,
+                                        &shared.rbgLineColorOutTexture, &shared.colorCalcWindowTexture,
+                                        &shared.spriteAttrsTexture};
+            std::vector<VkImageMemoryBarrier> barriers{};
+            for (const GpuImage *image : images) {
+                barriers.push_back({
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    .srcAccessMask = 0,
+                    .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                    .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = image->image,
+                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, image->layers},
+                });
+            }
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+                                 nullptr, 0, nullptr, static_cast<uint32>(barriers.size()), barriers.data());
+
+            const VkClearColorValue clearValue{};
+            for (const GpuImage *image : images) {
+                const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, image->layers};
+                vkCmdClearColorImage(cmd, image->image, VK_IMAGE_LAYOUT_GENERAL, &clearValue, 1, &range);
+            }
+            barrierTracker.MarkPending();
+        }
+
+        // Zero-fill buffers, matching the zero-initialized committed resources of Direct3D 12
+        {
+            for (const GpuBuffer *buffer : {&vdp1.vramBuffer, &vdp1.fbramBuffer, &vdp1.fbramWritesBuffer,
+                                            &vdp2.vramBuffer}) {
+                FillBuffer(*buffer, 0, VK_WHOLE_SIZE, 0);
+            }
+            for (const GpuBuffer *buffer :
+                 {&shared.spanParamsBuffer, &shared.spanPrefixSumsBuffer, &shared.cmdParamsBuffer,
+                  &shared.internalSpriteOutBuffer, &shared.oitFragmentsBuffer, &shared.oitCounterBuffer,
+                  &shared.cramColorBuffer, &shared.cramRotCoeffBuffer, &shared.lnclBackBuffer,
+                  &shared.rotParamBasesBuffer, &shared.layerRenderParamsBuffer, &shared.composeParamsBuffer}) {
+                FillBuffer(*buffer, 0, VK_WHOLE_SIZE, 0);
+            }
+            if (resolutionScale > 1) {
+                FillBuffer(vdp1.fbramNativeBuffer, 0, VK_WHOLE_SIZE, 0);
+            }
+            // Empty OIT fragment lists
+            FillBuffer(shared.oitListHeadsBuffer, 0, VK_WHOLE_SIZE, 0xFFFFFFFF);
+        }
+        barrierTracker.Flush(cmd);
+
+        initialized = true;
         Reset();
-
-        // Initialize command list
-        {
-            ID3D12DescriptorHeap *heaps[] = {resourceHeap.GetPointer()};
-            cmdList->SetDescriptorHeaps(std::size(heaps), heaps);
-        }
-
-        // Initialize VDP1 OIT fragment list heads buffer
-        for (int i = 0; i < frames.Count(); ++i) {
-            FrameContext &frameCtx = frames[i];
-
-            ID3D12Resource *dstResource = frameCtx.oitListHeadsBuffer.GetPointer();
-            ID3D12Resource *uploadBufferPtr = uploadBuffer.GetBufferResource().GetPointer();
-
-            // Emit barrier transition
-            barrierTracker.TransitionBuffer(dstResource, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_BARRIER_SYNC_COPY,
-                                            D3D12_BARRIER_ACCESS_COPY_DEST);
-            barrierTracker.Flush(cmdList);
-
-            // Upload default values
-            UploadAllocation alloc{};
-            const size_t size = kVDP1FBRAMSize * 2 * sizeof(HLSLuint);
-            if (auto result = AllocateUploadBuffer(uploadBuffer, size, 4, alloc); !result) {
-                return util::ErrorMessage{fmt::format(
-                    "Failed to allocate upload buffer for VDP1 OIT fragment list heads: {}", result.Error().message)};
-            }
-            std::fill_n(static_cast<HLSLuint *>(alloc.data), kVDP1FBRAMSize * 2, 0xFFFFFFFF);
-
-            cmdList->CopyBufferRegion(dstResource, 0, uploadBufferPtr, alloc.offset, size);
-        }
 
         return {};
     }
 
     void Shutdown() {
-        frames.WaitForGPU(computeFence, cmdQueue);
+        if (vk.device != VK_NULL_HANDLE) {
+            vkDeviceWaitIdle(vk.device);
+        }
     }
 
-    util::ValueResult<std::vector<char>> LoadShader(const char *path) {
+    /// @brief Selects the descriptor set layout for a polygon drawing shader variant.
+    /// @param[in] index the shader index
+    /// @return the layout used by the variant
+    const ComputeLayout &GetPolyDrawLayout(size_t index) const {
+        const size_t shadingMode = bit::extract<1, 2>(index);
+        return shadingMode == 2   ? vdp1.polyDrawOITRootSig
+               : shadingMode == 3 ? vdp1.polyDrawMSBRootSig
+                                  : vdp1.polyDrawRootSig;
+    }
+
+    util::ValueResult<std::vector<uint32>> LoadShader(const char *path) {
         if (!g_fsShaders.is_file(path)) {
             return util::ErrorMessage{fmt::format("Embedded file not found: {}", path)};
         }
         auto file = g_fsShaders.open(path);
-        return std::vector<char>{file.begin(), file.end()};
+        const size_t size = file.size();
+        if (size == 0 || size % sizeof(uint32) != 0) {
+            return util::ErrorMessage{fmt::format("Invalid SPIR-V file: {}", path)};
+        }
+        // Copy into a uint32 vector to guarantee alignment for vkCreateShaderModule
+        std::vector<uint32> code(size / sizeof(uint32));
+        std::memcpy(code.data(), file.begin(), size);
+        return code;
     }
 
     // -----------------------------------------------------------------------------------------------------------------
@@ -3783,7 +3215,7 @@ struct Direct3D12VDPRenderer::Impl {
         // VDP1
         vdp1.vramDirty.SetAll();
         if (auto result = VDP1UploadFBRAM(); !result) {
-            devlog::warn<grp::dx12_base>("Failed to upload VDP1 FBRAM: {}", result.Error().message);
+            Report<grp::vk_base>(devlog::level::warn, "Failed to upload VDP1 FBRAM: {}", result.Error().message);
         }
 
         // VDP2
@@ -3813,19 +3245,19 @@ struct Direct3D12VDPRenderer::Impl {
         // Sanity check: the upload buffer can hold transfers of this size
         YMIR_DEV_ASSERT(size < uploadBuffer.GetSize());
 
-        if (!uploadBuffer.Allocate(size, alignment, computeFence.GetCompletedValue(), outAlloc)) {
+        if (!uploadBuffer.Allocate(size, alignment, frames.GetCompletedValue(vk.device), outAlloc)) {
             // Block until next fence completes and retry
-            const UINT64 waitValue = uploadBuffer.FindFenceValueForAllocation(size, alignment);
-            computeFence.Wait(INFINITE, waitValue);
+            const uint64 waitValue = uploadBuffer.FindFenceValueForAllocation(size, alignment);
+            frames.WaitForValue(vk.device, waitValue);
 
             // At this point, we really should be able to allocate the buffer
-            if (!uploadBuffer.Allocate(size, alignment, computeFence->GetCompletedValue(), outAlloc)) {
+            if (!uploadBuffer.Allocate(size, alignment, frames.GetCompletedValue(vk.device), outAlloc)) {
                 // TODO: consider increasing the upload buffer size or allocating overflow buffers.
                 // For now we'll just log the error and fail
                 YMIR_DEV_CHECK();
                 std::string message = fmt::format("Failed to allocate {} bytes (align {}) in {} upload buffer", size,
                                                   alignment, uploadBuffer.GetDebugName());
-                devlog::warn<grp::dx12_vdp2>("{}", message);
+                Report<grp::vk_vdp2>(devlog::level::warn, "{}", message);
                 return util::ErrorMessage{std::move(message)};
             }
         }
@@ -3836,6 +3268,7 @@ struct Direct3D12VDPRenderer::Impl {
         VDP1CommonRenderParams &params1 = vdp1.cpuCommonRenderParams;
         params1.enhancements.deinterlace = enhancements.deinterlace;
         params1.enhancements.transparentMeshes = enhancements.transparentMeshes;
+        params1.enhancements.resolutionScale = resolutionScale - 1;
 
         vdp2.cpuCommonRenderParams.enhancements = params1.enhancements;
     }
@@ -3846,7 +3279,7 @@ struct Direct3D12VDPRenderer::Impl {
     void VDP1WriteVRAM(uint32 address) {
         // Submit spans if the target address is in use by a textured polygon in the current batch
         if (vdp1.vramTexUsageTracker.IsInUse(address)) [[unlikely]] {
-            devlog::debug<grp::dx12_vdp1>("VDP1 VRAM write to {:05X} which is in use by pending spans; submitting now",
+            devlog::debug<grp::vk_vdp1>("VDP1 VRAM write to {:05X} which is in use by pending spans; submitting now",
                                           address);
             VDP1SubmitSpans();
         }
@@ -3860,28 +3293,35 @@ struct Direct3D12VDPRenderer::Impl {
         }
         vdp1.fbramReadbackCopyPending = false;
 
-        // Submit partial command list
-        auto result = SubmitCommandList();
-        if (!result) {
-            devlog::warn<grp::dx12_base>("Failed to submit command list: {}", result.Error().message);
+        // Submit the work recorded so far, wait for it and continue recording the same frame
+        RecordHostReadBarrier();
+        const uint64 fenceValue = frames.GetNextFenceValue();
+        if (auto result = SubmitCommands(); !result) {
+            Report<grp::vk_base>(devlog::level::warn, "{}", result.Error().message);
+            return;
+        }
+        frames.WaitForValue(vk.device, fenceValue);
+        if (auto result = BeginCommands(); !result) {
+            Report<grp::vk_base>(devlog::level::warn, "{}", result.Error().message);
+            return;
+        }
+        if (deviceLost) {
             return;
         }
 
-        // Wait for it to complete
-        computeFence.Wait(INFINITE, result.Value());
-
         // Copy downloaded FBRAM
-        memcpy(vdpState.mem1.FBRAM.data(), vdp1.fbramDownloadBufferPtr, kVDP1FBRAMSize * 2);
+        vdp1.fbramDownloadBuffer.Invalidate();
+        memcpy(vdpState.mem1.FBRAM.data(), vdp1.fbramDownloadBuffer.mapped, kVDP1FBRAMSize * 2);
     }
 
     void VDP1SyncFB() {
         // Submit pending spans to ensure we're synced as far as possible
         VDP1SubmitSpans();
 
-        // Copy FBRAM to readback buffer if modified
+        // Copy FBRAM to the download buffer if modified
         VDP1CopyFBRAMToReadback();
 
-        // Download FBRAM from readback buffer
+        // Download FBRAM from the download buffer
         VDP1DownloadFBRAM();
     }
 
@@ -3900,13 +3340,10 @@ struct Direct3D12VDPRenderer::Impl {
             return {};
         }
 
-        ID3D12Resource *dstResource = vdp1.vramBuffer.GetPointer();
-        ID3D12Resource *uploadBufferPtr = uploadBuffer.GetBufferResource().GetPointer();
+        GpuBuffer &dstResource = vdp1.vramBuffer;
 
         // Emit barrier transition
-        barrierTracker.TransitionBuffer(dstResource, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_BARRIER_SYNC_COPY,
-                                        D3D12_BARRIER_ACCESS_COPY_DEST);
-        barrierTracker.Flush(cmdList);
+        barrierTracker.Flush(cmd);
 
         // Upload all modified VRAM chunks
         size_t pos, count = 0;
@@ -3924,7 +3361,7 @@ struct Direct3D12VDPRenderer::Impl {
 
             // Upload VRAM chunk
             memcpy(alloc.data, &vdpState.mem1.VRAM[vramOffset], size);
-            cmdList->CopyBufferRegion(dstResource, vramOffset, uploadBufferPtr, alloc.offset, size);
+            CopyFromUpload(dstResource, vramOffset, alloc, size);
         }
         vdp1.vramDirty.ClearAll();
 
@@ -3932,47 +3369,58 @@ struct Direct3D12VDPRenderer::Impl {
     }
 
     [[nodiscard]] util::VoidResult<> VDP1UploadFBRAM() {
-        static constexpr size_t kFrameSize = kVDP1FBRAMSize * 2;
+        // Size of both framebuffers, scaled by the internal resolution
+        const size_t frameSize = ScaledFBSize() * 2;
 
-        ID3D12Resource *dstResource = vdp1.fbramBuffer.GetPointer();
-        ID3D12Resource *uploadBufferPtr = uploadBuffer.GetBufferResource().GetPointer();
+        GpuBuffer &dstResource = vdp1.fbramBuffer;
 
         // Transition to copy
-        barrierTracker.TransitionBuffer(dstResource, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_BARRIER_SYNC_COPY,
-                                        D3D12_BARRIER_ACCESS_COPY_DEST);
-        barrierTracker.Flush(cmdList);
+        barrierTracker.Flush(cmd);
 
         // Get upload buffer chunk
         UploadAllocation alloc{};
-        if (auto result = AllocateUploadBuffer(uploadBuffer, kFrameSize, 4, alloc); !result) {
+        if (auto result = AllocateUploadBuffer(uploadBuffer, frameSize, 4, alloc); !result) {
             return util::ErrorMessage{
                 fmt::format("Failed to allocate upload buffer for VDP1 FBRAM: {}", result.Error().message)};
         }
 
         // Upload buffer
-        memcpy(alloc.data, vdpState.mem1.FBRAM.data(), kFrameSize);
-        cmdList->CopyBufferRegion(dstResource, kFrameSize * 0, uploadBufferPtr, alloc.offset, kFrameSize);
+        if (resolutionScale == 1) {
+            memcpy(alloc.data, vdpState.mem1.FBRAM.data(), frameSize);
+        } else {
+            // Expand every native pixel into a block, following the framebuffer line layout used by the shaders
+            const VDP1Regs &regs1 = vdpState.regs1;
+            const size_t pixelSize = regs1.pixel8Bits ? 1 : 2;
+            const size_t lineSize = regs1.fbSizeH * pixelSize;
+            const size_t scaledLineSize = lineSize * resolutionScale;
+            const size_t numLines = kVDP1FBRAMSize / lineSize;
+            for (size_t fb = 0; fb < 2; ++fb) {
+                const uint8 *src = vdpState.mem1.FBRAM[fb].data();
+                uint8 *dst = static_cast<uint8 *>(alloc.data) + fb * ScaledFBSize();
+                for (size_t line = 0; line < numLines; ++line) {
+                    uint8 *scaledLine = dst + line * resolutionScale * scaledLineSize;
+                    for (size_t pixel = 0; pixel < lineSize / pixelSize; ++pixel) {
+                        const uint8 *srcPixel = src + line * lineSize + pixel * pixelSize;
+                        for (size_t dx = 0; dx < resolutionScale; ++dx) {
+                            memcpy(scaledLine + (pixel * resolutionScale + dx) * pixelSize, srcPixel, pixelSize);
+                        }
+                    }
+                    for (size_t dy = 1; dy < resolutionScale; ++dy) {
+                        memcpy(scaledLine + dy * scaledLineSize, scaledLine, scaledLineSize);
+                    }
+                }
+            }
+        }
+        CopyFromUpload(dstResource, frameSize * 0, alloc, frameSize);
         if (enhancements.deinterlace) {
-            cmdList->CopyBufferRegion(dstResource, kFrameSize * 1, uploadBufferPtr, alloc.offset, kFrameSize);
+            CopyFromUpload(dstResource, frameSize * 1, alloc, frameSize);
         }
 
         if (enhancements.transparentMeshes) {
-            // Transition to UAV usage for clearing
-            barrierTracker.TransitionBuffer(dstResource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                            D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_UNORDERED_ACCESS);
-            barrierTracker.Flush(cmdList);
-
             // Clear mesh buffers
             // Buffers 2 and 3 are the main and alternate mesh buffers respectively
-            static constexpr UINT kClearValue[4] = {0, 0, 0, 0};
-            const D3D12_RECT rect{
-                .left = kFrameSize * 2,
-                .top = 0,
-                .right = static_cast<LONG>(kFrameSize * (enhancements.deinterlace ? 4 : 3)),
-                .bottom = 1,
-            };
-            cmdList->ClearUnorderedAccessViewUint(vdp1.fbramWriteDescs.GetGPUHandle(1), vdp1.fbramUAV.cpuHandle,
-                                                  dstResource, kClearValue, 1, &rect);
+            const size_t endBuffer = enhancements.deinterlace ? 4 : 3;
+            FillBuffer(dstResource, frameSize * 2, frameSize * (endBuffer - 2), 0);
         }
 
         // No longer dirty
@@ -3986,14 +3434,13 @@ struct Direct3D12VDPRenderer::Impl {
             return {};
         }
 
-        ID3D12Resource *dstResource = vdp1.fbramWritesBuffer.GetPointer();
-        ID3D12Resource *uploadBufferPtr = uploadBuffer.GetBufferResource().GetPointer();
+        GpuBuffer &dstResource = vdp1.fbramWritesBuffer;
 
         // Transition to copy
-        barrierTracker.TransitionBuffer(dstResource, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_BARRIER_SYNC_COPY,
-                                        D3D12_BARRIER_ACCESS_COPY_DEST);
-        barrierTracker.Flush(cmdList);
+        barrierTracker.Flush(cmd);
 
+        // Because we're syncing FBRAM at the beginning of a VDP2 frame, the display framebuffer bit has already been
+        // flipped by the VDP1 swap framebuffers operation. We'll have to pick the opposite buffer here to copy into.
         auto &fb = vdpState.mem1.FBRAM[vdpState.fbIndex.draw];
 
         // Group modified FBRAM writes into 32-bit chunks
@@ -4034,25 +3481,20 @@ struct Direct3D12VDPRenderer::Impl {
 
         // Upload list
         memcpy(alloc.data, writes.data(), size);
-        cmdList->CopyBufferRegion(dstResource, 0, uploadBufferPtr, alloc.offset, size);
+        CopyFromUpload(dstResource, 0, alloc, size);
 
         // Transition to SRV usage
-        barrierTracker.TransitionBuffer(dstResource, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                        D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
-        barrierTracker.Flush(cmdList);
+        barrierTracker.Flush(cmd);
 
         // Dispatch FBRAM write compute shader
         const uint32 writeCount = writes.size();
-        cmdList->SetPipelineState(vdp1.fbramWritePSO.GetPointer());
-        cmdList->SetComputeRootSignature(vdp1.fbramWriteRootSig.GetPointer());
-        cmdList->SetComputeRoot32BitConstants(0, sizeof(vdp1.cpuCommonRenderParams) / sizeof(uint32),
-                                              &vdp1.cpuCommonRenderParams, 0);
-        cmdList->SetComputeRoot32BitConstants(0, 1, &writeCount, sizeof(vdp1.cpuCommonRenderParams) / sizeof(uint32));
-        cmdList->SetComputeRootDescriptorTable(1, vdp1.fbramWriteDescs.gpuHandle);
-        cmdList->Dispatch((writeCount + 63) / 64, 1, 1);
-
-        // Insert UAV barrier to ensure the following shaders see these changes
-        barrierTracker.UAVBuffer(vdp1.fbramBuffer.GetPointer());
+        struct {
+            VDP1CommonRenderParams common;
+            HLSLuint writeCount;
+        } pushConstants{vdp1.cpuCommonRenderParams, writeCount};
+        static_assert(offsetof(decltype(pushConstants), writeCount) == sizeof(VDP1CommonRenderParams));
+        Dispatch(vdp1.fbramWritePSO, vdp1.fbramWriteRootSig, vdp1.fbramWriteSet, &pushConstants,
+                 sizeof(VDP1CommonRenderParams) + sizeof(HLSLuint), (writeCount + 63) / 64, 1, 1);
 
         // Mark GPU-side FBRAM as dirty
         vdp1.fbramReadbackDirty = true;
@@ -4098,29 +3540,27 @@ struct Direct3D12VDPRenderer::Impl {
         const uint32 width = (erase.coords.x3 << 3) - (erase.coords.x1 << 3) + 1;
         const uint32 height = erase.coords.y3 - erase.coords.y1 + 1;
 
-        FrameContext &frameCtx = frames.GetCurrentFrame();
-
         VDP1UpdateCommonRenderParams();
         vdp1.cpuCommonRenderParams.displayParams.drawFB = vdpState.fbIndex.display;
 
         // Transition FBRAM to UAV usage
-        barrierTracker.TransitionBuffer(vdp1.fbramBuffer.GetPointer(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                        D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_UNORDERED_ACCESS);
-        barrierTracker.Flush(cmdList);
+        barrierTracker.Flush(cmd);
 
         // Dispatch erase shader
-        cmdList->SetPipelineState(frameCtx.erasePSO.GetPointer());
-        cmdList->SetComputeRootSignature(vdp1.eraseRootSig.GetPointer());
-        cmdList->SetComputeRoot32BitConstants(0, sizeof(vdp1.cpuCommonRenderParams) / sizeof(uint32),
-                                              &vdp1.cpuCommonRenderParams, 0);
-        cmdList->SetComputeRoot32BitConstants(0, sizeof(vdp1.cpuEraseParams) / sizeof(uint32), &vdp1.cpuEraseParams,
-                                              sizeof(vdp1.cpuCommonRenderParams) / sizeof(uint32));
-        cmdList->SetComputeRootDescriptorTable(1, frameCtx.eraseDescs.gpuHandle);
-        cmdList->Dispatch((width + 63) / 64, (height + 31) / 32, 1);
-        // NOTE: works on 32-bit units, so two writes per thread, hence why (width+63)/64 instead of +31/32
-
-        // Insert UAV barrier to ensure the following shaders see these changes
-        barrierTracker.UAVBuffer(vdp1.fbramBuffer.GetPointer());
+        const struct {
+            VDP1CommonRenderParams common;
+            VDP1EraseParams erase;
+        } pushConstants{vdp1.cpuCommonRenderParams, vdp1.cpuEraseParams};
+        if (resolutionScale > 1) {
+            // The scaled erase shader processes the entire framebuffer in groups of 1024 32-bit words
+            const uint32 numGroups = static_cast<uint32>((ScaledFBSize() / sizeof(uint32) + 1023) / 1024);
+            Dispatch(vdp1.erasePSO, vdp1.eraseRootSig, vdp1.eraseSet, &pushConstants, sizeof(pushConstants),
+                     numGroups, 1, 1);
+        } else {
+            Dispatch(vdp1.erasePSO, vdp1.eraseRootSig, vdp1.eraseSet, &pushConstants, sizeof(pushConstants),
+                     (width + 63) / 64, (height + 31) / 32, 1);
+            // NOTE: works on 32-bit units, so two writes per thread, hence why (width+63)/64 instead of +31/32
+        }
 
         // Mark GPU-side FBRAM as dirty
         vdp1.fbramReadbackDirty = true;
@@ -4135,13 +3575,13 @@ struct Direct3D12VDPRenderer::Impl {
                 VDP1UpdateCommonRenderParams();
             }
         } else {
-            devlog::warn<grp::dx12_vdp1>("VDP1 span submission failed: {}", spanResult.Error().message);
+            Report<grp::vk_vdp1>(devlog::level::warn, "VDP1 span submission failed: {}", spanResult.Error().message);
         }
 
         VDP1CopyFBRAMToReadback();
     }
 
-    /// @brief Copies GPU-modified FBRAM to the readback buffer.
+    /// @brief Copies GPU-modified FBRAM to the download buffer.
     void VDP1CopyFBRAMToReadback() {
         if (!vdp1.fbramReadbackDirty) {
             return;
@@ -4150,11 +3590,17 @@ struct Direct3D12VDPRenderer::Impl {
         vdp1.fbramReadbackCopyPending = true;
 
         // Download FBRAM
-        barrierTracker.TransitionBuffer(vdp1.fbramBuffer.GetPointer(), D3D12_RESOURCE_STATE_COPY_SOURCE,
-                                        D3D12_BARRIER_SYNC_COPY, D3D12_BARRIER_ACCESS_COPY_SOURCE);
-        barrierTracker.Flush(cmdList);
-        cmdList->CopyBufferRegion(vdp1.fbramDownloadBuffer.GetPointer(), 0, vdp1.fbramBuffer.GetPointer(), 0,
-                                  kVDP1FBRAMSize * 2);
+        barrierTracker.Flush(cmd);
+        if (resolutionScale > 1) {
+            // Convert the scaled framebuffers into native FBRAM contents first
+            Dispatch(vdp1.fbramDownsamplePSO, vdp1.fbramDownsampleRootSig, vdp1.fbramDownsampleSet,
+                     &vdp1.cpuCommonRenderParams, sizeof(vdp1.cpuCommonRenderParams),
+                     (kVDP1FBRAMSize * 2 / sizeof(uint32) + 63) / 64, 1, 1);
+            barrierTracker.Flush(cmd);
+            CopyBuffer(vdp1.fbramNativeBuffer.buffer, 0, vdp1.fbramDownloadBuffer.buffer, 0, kVDP1FBRAMSize * 2);
+        } else {
+            CopyBuffer(vdp1.fbramBuffer.buffer, 0, vdp1.fbramDownloadBuffer.buffer, 0, kVDP1FBRAMSize * 2);
+        }
     }
 
     void VDP1BeginFrame() {
@@ -4214,7 +3660,7 @@ struct Direct3D12VDPRenderer::Impl {
 
         // Clear counters even if we fail to submit them to avoid crashes on extreme cases.
         // Errors should never happen, however.
-        util::ScopeGuard sgFinish{[&] {
+        util::ScopeGuard sgClearCounters{[&] {
             frameCtx.cpuSpanCount = 0;
             frameCtx.cpuCmdCount = 0;
             vdp1.vramTexUsageTracker.Clear();
@@ -4227,22 +3673,15 @@ struct Direct3D12VDPRenderer::Impl {
         vdp1.cpuPolyDrawParams.numSpans = frameCtx.cpuSpanCount;
 
         if (auto result = VDP1FlushVRAM(); !result) {
-            devlog::warn<grp::dx12_vdp1>("VDP1 VRAM flush failed: {}", result.Error().message);
+            Report<grp::vk_vdp1>(devlog::level::warn, "VDP1 VRAM flush failed: {}", result.Error().message);
         }
         if (auto result = VDP1FlushFBRAM(); !result) {
-            devlog::warn<grp::dx12_vdp1>("VDP1 FBRAM flush failed: {}", result.Error().message);
+            Report<grp::vk_vdp1>(devlog::level::warn, "VDP1 FBRAM flush failed: {}", result.Error().message);
         }
 
-        ID3D12Resource *uploadBufferPtr = uploadBuffer.GetBufferResource().GetPointer();
         UploadAllocation alloc{};
 
-        barrierTracker.TransitionBuffer(frameCtx.spanParamsBuffer.GetPointer(), D3D12_RESOURCE_STATE_COPY_DEST,
-                                        D3D12_BARRIER_SYNC_COPY, D3D12_BARRIER_ACCESS_COPY_DEST);
-        barrierTracker.TransitionBuffer(frameCtx.spanPrefixSumsBuffer.GetPointer(), D3D12_RESOURCE_STATE_COPY_DEST,
-                                        D3D12_BARRIER_SYNC_COPY, D3D12_BARRIER_ACCESS_COPY_DEST);
-        barrierTracker.TransitionBuffer(frameCtx.cmdParamsBuffer.GetPointer(), D3D12_RESOURCE_STATE_COPY_DEST,
-                                        D3D12_BARRIER_SYNC_COPY, D3D12_BARRIER_ACCESS_COPY_DEST);
-        barrierTracker.Flush(cmdList);
+        barrierTracker.Flush(cmd);
 
         // Upload spans
         {
@@ -4253,7 +3692,7 @@ struct Direct3D12VDPRenderer::Impl {
             }
             memcpy(alloc.data, &frameCtx.cpuSpanParams, size);
 
-            cmdList->CopyBufferRegion(frameCtx.spanParamsBuffer.GetPointer(), 0, uploadBufferPtr, alloc.offset, size);
+            CopyFromUpload(shared.spanParamsBuffer, 0, alloc, size);
         }
 
         // Upload prefix sums
@@ -4265,8 +3704,7 @@ struct Direct3D12VDPRenderer::Impl {
             }
             memcpy(alloc.data, &frameCtx.cpuSpanPrefixSums, size);
 
-            cmdList->CopyBufferRegion(frameCtx.spanPrefixSumsBuffer.GetPointer(), 0, uploadBufferPtr, alloc.offset,
-                                      size);
+            CopyFromUpload(shared.spanPrefixSumsBuffer, 0, alloc, size);
         }
 
         // Upload commands
@@ -4278,101 +3716,52 @@ struct Direct3D12VDPRenderer::Impl {
             }
             memcpy(alloc.data, &frameCtx.cpuCmdParams, size);
 
-            cmdList->CopyBufferRegion(frameCtx.cmdParamsBuffer.GetPointer(), 0, uploadBufferPtr, alloc.offset, size);
+            CopyFromUpload(shared.cmdParamsBuffer, 0, alloc, size);
         }
-
-        barrierTracker.TransitionBuffer(frameCtx.spanParamsBuffer.GetPointer(),
-                                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                        D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
-        barrierTracker.TransitionBuffer(frameCtx.spanPrefixSumsBuffer.GetPointer(),
-                                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                        D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
-        barrierTracker.TransitionBuffer(frameCtx.cmdParamsBuffer.GetPointer(),
-                                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                        D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
-        barrierTracker.TransitionBuffer(vdp1.vramBuffer.GetPointer(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                        D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
-        barrierTracker.TransitionBuffer(frameCtx.internalSpriteOutBuffer.GetPointer(),
-                                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_BARRIER_SYNC_COMPUTE_SHADING,
-                                        D3D12_BARRIER_ACCESS_UNORDERED_ACCESS);
 
         const bool isOIT = IsVDP1PolyDrawShaderOIT(vdp1.currPolyDrawShaderIndex);
         const bool isMSB = IsVDP1PolyDrawShaderMSB(vdp1.currPolyDrawShaderIndex);
 
-        if (isMSB) {
-            barrierTracker.TransitionBuffer(vdp1.fbramBuffer.GetPointer(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                            D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_UNORDERED_ACCESS);
-        } else if (isOIT) {
-            barrierTracker.TransitionBuffer(frameCtx.oitListHeadsBuffer.GetPointer(),
-                                            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_BARRIER_SYNC_COMPUTE_SHADING,
-                                            D3D12_BARRIER_ACCESS_UNORDERED_ACCESS);
-            barrierTracker.TransitionBuffer(frameCtx.oitFragmentsBuffer.GetPointer(),
-                                            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_BARRIER_SYNC_COMPUTE_SHADING,
-                                            D3D12_BARRIER_ACCESS_UNORDERED_ACCESS);
-            barrierTracker.TransitionBuffer(frameCtx.oitCounterBuffer.GetPointer(),
-                                            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_BARRIER_SYNC_COMPUTE_SHADING,
-                                            D3D12_BARRIER_ACCESS_UNORDERED_ACCESS);
-            barrierTracker.Flush(cmdList);
+        if (isOIT) {
+            barrierTracker.Flush(cmd);
 
             // Reset atomic counter
-            static constexpr UINT kClearValue[4] = {0, 0, 0, 0};
-            cmdList->ClearUnorderedAccessViewUint(frameCtx.polyDrawOITDescs.GetGPUHandle(6),
-                                                  frameCtx.oitCounterUAV.cpuHandle,
-                                                  frameCtx.oitCounterBuffer.GetPointer(), kClearValue, 0, nullptr);
-
-            barrierTracker.UAVBuffer(frameCtx.oitCounterBuffer.GetPointer());
+            FillBuffer(shared.oitCounterBuffer, 0, sizeof(HLSLuint), 0);
         }
-        barrierTracker.Flush(cmdList);
+        barrierTracker.Flush(cmd);
 
         // Dispatch polygon drawing shader
-        const D3D12RootSignature &rootSig = isOIT ? vdp1.polyDrawOITRootSig : vdp1.polyDrawRootSig;
-        const DescriptorRange &descs = isOIT   ? frameCtx.polyDrawOITDescs
-                                       : isMSB ? frameCtx.polyDrawMSBDescs
-                                               : frameCtx.polyDrawDescs;
-        cmdList->SetPipelineState(frameCtx.polyDrawPSOs[vdp1.currPolyDrawShaderIndex].GetPointer());
-        cmdList->SetComputeRootSignature(rootSig.GetPointer());
-        cmdList->SetComputeRoot32BitConstants(0, sizeof(vdp1.cpuCommonRenderParams) / sizeof(uint32),
-                                              &vdp1.cpuCommonRenderParams, 0);
-        cmdList->SetComputeRoot32BitConstants(0, sizeof(vdp1.cpuPolyDrawParams) / sizeof(uint32),
-                                              &vdp1.cpuPolyDrawParams,
-                                              sizeof(vdp1.cpuCommonRenderParams) / sizeof(uint32));
-        cmdList->SetComputeRootDescriptorTable(1, descs.gpuHandle);
-        cmdList->Dispatch((frameCtx.cpuSpanPrefixSums[frameCtx.cpuSpanCount] + 63) / 64, 1, 1);
+        const VkDescriptorSet polyDrawSet = isOIT   ? shared.polyDrawOITSet
+                                            : isMSB ? shared.polyDrawMSBSet
+                                                    : shared.polyDrawSet;
+        const struct {
+            VDP1CommonRenderParams common;
+            VDP1PolyDrawParams polyDraw;
+        } polyDrawPushConstants{vdp1.cpuCommonRenderParams, vdp1.cpuPolyDrawParams};
+        Dispatch(vdp1.polyDrawPSOs[vdp1.currPolyDrawShaderIndex], GetPolyDrawLayout(vdp1.currPolyDrawShaderIndex),
+                 polyDrawSet, &polyDrawPushConstants, sizeof(polyDrawPushConstants),
+                 (frameCtx.cpuSpanPrefixSums[frameCtx.cpuSpanCount] + 63) / 64, 1, 1);
 
         // Merge output into FBRAM if needed.
         // MSB shader writes directly to FBRAM, no merging needed.
         if (!isMSB) {
             const bool isMergerOIT = IsVDP1OutputMergerShaderOIT(vdp1.currOutputMergerShaderIndex);
-            if (isMergerOIT) {
-                barrierTracker.TransitionBuffer(
-                    frameCtx.oitListHeadsBuffer.GetPointer(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                    D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_UNORDERED_ACCESS);
-                barrierTracker.TransitionBuffer(
-                    frameCtx.oitFragmentsBuffer.GetPointer(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
-            }
-            barrierTracker.TransitionBuffer(vdp1.fbramBuffer.GetPointer(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                            D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_UNORDERED_ACCESS);
-            barrierTracker.UAVBuffer(frameCtx.internalSpriteOutBuffer.GetPointer());
-            barrierTracker.Flush(cmdList);
+            barrierTracker.Flush(cmd);
 
             // Set up parameters
-            const D3D12RootSignature &rootSig = isMergerOIT ? vdp1.outputMergerOITRootSig : vdp1.outputMergerRootSig;
-            const DescriptorRange &descs = isMergerOIT ? frameCtx.outputMergerOITDescs : frameCtx.outputMergerDescs;
+            const ComputeLayout &rootSig = isMergerOIT ? vdp1.outputMergerOITRootSig : vdp1.outputMergerRootSig;
+            const VkDescriptorSet mergerSet = isMergerOIT ? shared.outputMergerOITSet : shared.outputMergerSet;
             const VDP1Regs &regs1 = vdpState.regs1;
             const VDP2Regs &regs2 = vdpState.regs2;
             const uint32 pixelsPerEntry = regs1.pixel8Bits ? 4u : 2u; // each entry is 32 bits
-            const uint32 mergeW = regs1.fbSizeH / pixelsPerEntry;
-            const uint32 mergeH = regs1.fbSizeV;
+            const uint32 mergeW = regs1.fbSizeH * resolutionScale / pixelsPerEntry;
+            const uint32 mergeH = regs1.fbSizeV * resolutionScale;
             const uint32 mergeZ = regs2.TVMD.IsInterlaced() && enhancements.deinterlace ? 2 : 1;
 
             // Dispatch output merger shader
-            cmdList->SetPipelineState(frameCtx.outputMergerPSOs[vdp1.currOutputMergerShaderIndex].GetPointer());
-            cmdList->SetComputeRootSignature(rootSig.GetPointer());
-            cmdList->SetComputeRoot32BitConstants(0, sizeof(vdp1.cpuCommonRenderParams) / sizeof(uint32),
-                                                  &vdp1.cpuCommonRenderParams, 0);
-            cmdList->SetComputeRootDescriptorTable(1, descs.gpuHandle);
-            cmdList->Dispatch((mergeW + 7) / 8, (mergeH + 7) / 8, mergeZ);
+            Dispatch(vdp1.outputMergerPSOs[vdp1.currOutputMergerShaderIndex], rootSig, mergerSet,
+                     &vdp1.cpuCommonRenderParams, sizeof(vdp1.cpuCommonRenderParams), (mergeW + 7) / 8,
+                     (mergeH + 7) / 8, mergeZ);
         }
 
         vdp1.fbramReadbackDirty = true;
@@ -4408,6 +3797,83 @@ struct Direct3D12VDPRenderer::Impl {
         }
     }
 
+    // -----------------------------------------------------------------------------------------------------------------
+    // Internal resolution scaling of VDP1 coordinates
+    //
+    // Every native pixel becomes a block of resolutionScale x resolutionScale pixels. Clipping areas are scaled to
+    // cover whole blocks. Quad vertices on the right/bottom extremes are placed on the far side of their block and
+    // vertices on the left/top extremes on the near side, so that rectangles cover exactly the same blocks as the
+    // native pixels they span and adjacent sprites and tiles line up without gaps. Vertices in between are placed at
+    // the center of their block. Every quad only grows as a result, so polygons sharing edges overlap slightly instead
+    // of leaving cracks between them. Lines are drawn through the center of the blocks.
+
+    /// @brief Scales an inclusive lower bound coordinate.
+    sint32 ScaleNear(sint32 value) const {
+        return value * static_cast<sint32>(resolutionScale);
+    }
+
+    /// @brief Scales an inclusive upper bound coordinate.
+    sint32 ScaleFar(sint32 value) const {
+        return value * static_cast<sint32>(resolutionScale) + static_cast<sint32>(resolutionScale) - 1;
+    }
+
+    /// @brief Scales a coordinate to the center of its block.
+    sint32 ScaleCenter(sint32 value) const {
+        return value * static_cast<sint32>(resolutionScale) + static_cast<sint32>(resolutionScale - 1) / 2;
+    }
+
+    /// @brief Scales the vertices of a quad given in VDP1 order (A, B, C, D).
+    void ScaleQuad(CoordS32 &a, CoordS32 &b, CoordS32 &c, CoordS32 &d) const {
+        if (resolutionScale == 1) {
+            return;
+        }
+        std::array<CoordS32 *, 4> vertices{&a, &b, &c, &d};
+        for (uint32 axis = 0; axis < 2; ++axis) {
+            sint32 minValue = a.elements[axis];
+            sint32 maxValue = a.elements[axis];
+            for (const CoordS32 *vertex : vertices) {
+                minValue = std::min(minValue, vertex->elements[axis]);
+                maxValue = std::max(maxValue, vertex->elements[axis]);
+            }
+            for (uint32 i = 0; i < 4; ++i) {
+                sint32 &value = vertices[i]->elements[axis];
+                bool farSide;
+                if (minValue == maxValue) {
+                    // Zero-sized along this axis: use the vertex roles of a sprite.
+                    // B and C are on the right side; C and D are on the bottom side.
+                    farSide = axis == 0 ? (i == 1 || i == 2) : (i == 2 || i == 3);
+                } else if (value == maxValue) {
+                    farSide = true;
+                } else if (value == minValue) {
+                    farSide = false;
+                } else {
+                    value = ScaleCenter(value);
+                    continue;
+                }
+                value = farSide ? ScaleFar(value) : ScaleNear(value);
+            }
+        }
+    }
+
+    /// @brief Scales the endpoints of a line.
+    void ScaleLine(CoordS32 &a, CoordS32 &b) const {
+        if (resolutionScale == 1) {
+            return;
+        }
+        for (CoordS32 *vertex : {&a, &b}) {
+            vertex->x() = ScaleCenter(vertex->x());
+            vertex->y() = ScaleCenter(vertex->y());
+        }
+    }
+
+    /// @brief Retrieves the scaled system clipping area limits.
+    CoordS32 GetScaledSystemClip() const {
+        const sint32 doubleV = vdp1.doubleV ? 1 : 0;
+        const sint32 sysClipH = vdpState.state1.sysClipH;
+        const sint32 sysClipV = (vdpState.state1.sysClipV << doubleV) | doubleV;
+        return {ScaleFar(sysClipH), ScaleFar(sysClipV)};
+    }
+
     uint16 VDP1AddCommand(const VDP1CommandData &data, bool textured) {
         FrameContext &frameCtx = frames.GetCurrentFrame();
 
@@ -4424,12 +3890,13 @@ struct Direct3D12VDPRenderer::Impl {
 
         const VDP1State &state = vdpState.state1;
         const sint32 doubleV = vdp1.doubleV ? 1 : 0;
-        cmdParams.userClip0.x = state.userClipX0;
-        cmdParams.userClip0.y = (state.userClipY0 << doubleV) | doubleV;
-        cmdParams.userClip1.x = state.userClipX1;
-        cmdParams.userClip1.y = (state.userClipY1 << doubleV) | doubleV;
-        cmdParams.sysClip.h = state.sysClipH;
-        cmdParams.sysClip.v = (state.sysClipV << doubleV) | doubleV;
+        cmdParams.userClip0.x = ScaleNear(state.userClipX0);
+        cmdParams.userClip0.y = ScaleNear((state.userClipY0 << doubleV) | doubleV);
+        cmdParams.userClip1.x = ScaleFar(state.userClipX1);
+        cmdParams.userClip1.y = ScaleFar((state.userClipY1 << doubleV) | doubleV);
+        const CoordS32 sysClip = GetScaledSystemClip();
+        cmdParams.sysClip.h = sysClip.x();
+        cmdParams.sysClip.v = sysClip.y();
 
         cmdParams.cmdcolr = data.color;
         cmdParams.cmdpmod = data.mode.u16;
@@ -4441,6 +3908,17 @@ struct Direct3D12VDPRenderer::Impl {
         return cmdIndex;
     }
 
+    /// @brief Submits the pending spans in the middle of a command, then re-adds the command's parameters so that the
+    /// command's remaining spans can keep referencing them.
+    void VDP1SubmitSpansMidCommand(VDP1SpanData &data) {
+        FrameContext &frameCtx = frames.GetCurrentFrame();
+        const VDP1CommandParams cmdParams = frameCtx.cpuCmdParams[data.cmdIndex];
+        VDP1SubmitSpans();
+        frameCtx.cpuCmdParams[0] = cmdParams;
+        frameCtx.cpuCmdCount = 1;
+        data.cmdIndex = 0;
+    }
+
     bool VDP1AddSpan(CoordS32 coord0, CoordS32 coord1, VDP1SpanData &data, bool textured, bool antialias) {
         // Discard if completely out of bounds
         if (coord0.x() < 0 && coord1.x() < 0) {
@@ -4449,12 +3927,12 @@ struct Direct3D12VDPRenderer::Impl {
         if (coord0.y() < 0 && coord1.y() < 0) {
             return false;
         }
-        const sint32 sysClipH = vdpState.state1.sysClipH;
+        const CoordS32 sysClip = GetScaledSystemClip();
+        const sint32 sysClipH = sysClip.x();
         if (coord0.x() > sysClipH && coord1.x() > sysClipH) {
             return false;
         }
-        const sint32 doubleV = vdp1.doubleV ? 1 : 0;
-        const sint32 sysClipV = (vdpState.state1.sysClipV << doubleV) | doubleV;
+        const sint32 sysClipV = sysClip.y();
         if (coord0.y() > sysClipV && coord1.y() > sysClipV) {
             return false;
         }
@@ -4466,6 +3944,7 @@ struct Direct3D12VDPRenderer::Impl {
 
         // Determine span length
         LineStepper line{coord0, coord1};
+
         const uint32 skip = line.SystemClip(sysClipH, sysClipV);
         const uint32 length = line.Length();
 
@@ -4480,12 +3959,7 @@ struct Direct3D12VDPRenderer::Impl {
         // Submit spans now if the total fragment count would exceed the limit
         FrameContext &frameCtx = frames.GetCurrentFrame();
         if (frameCtx.cpuSpanPrefixSums[frameCtx.cpuSpanCount] + length >= fragLimit) {
-            VDP1SubmitSpans();
-
-            // Readd command
-            frameCtx.cpuCmdParams[0] = frameCtx.cpuCmdParams[data.cmdIndex];
-            frameCtx.cpuCmdCount = 1;
-            data.cmdIndex = 0;
+            VDP1SubmitSpansMidCommand(data);
         }
 
         // Append span to list
@@ -4497,6 +3971,9 @@ struct Direct3D12VDPRenderer::Impl {
         spanParams.coord0 = {x0, y0};
         spanParams.coord1 = {x1, y1};
         spanParams.cmdIndex = data.cmdIndex;
+
+        const uint32 dx = abs(x1 - x0);
+        const uint32 dy = abs(y1 - y0);
         spanParams.skip = skip;
         spanParams.attrs.antialias = antialias;
 
@@ -4524,12 +4001,7 @@ struct Direct3D12VDPRenderer::Impl {
         // If list is full, flush it
         ++frameCtx.cpuSpanCount;
         if (frameCtx.cpuSpanCount >= frameCtx.cpuSpanParams.size()) {
-            VDP1SubmitSpans();
-
-            // Readd command
-            frameCtx.cpuCmdParams[0] = frameCtx.cpuCmdParams[data.cmdIndex];
-            frameCtx.cpuCmdCount = 1;
-            data.cmdIndex = 0;
+            VDP1SubmitSpansMidCommand(data);
         }
 
         // Indicate that the span was drawn
@@ -4598,7 +4070,7 @@ struct Direct3D12VDPRenderer::Impl {
         case 4: break;                 // 8 bpp, 256 colors, bank mode
         case 5: texSize <<= 1u; break; // 16 bpp, 32768 colors, RGB mode
         }
-        devlog::trace<grp::dx12_vdp1>("Tracking VRAM usage for texture: {:05X}..{:05X}", data.charAddr,
+        devlog::trace<grp::vk_vdp1>("Tracking VRAM usage for texture: {:05X}..{:05X}", data.charAddr,
                                       data.charAddr + texSize - 1);
         vdp1.vramTexUsageTracker.MarkRange(data.charAddr, texSize);
 
@@ -4725,10 +4197,11 @@ struct Direct3D12VDPRenderer::Impl {
         const sint32 doubleV = vdp1.doubleV ? 1 : 0;
         const sint32 yAdd = enhancements.deinterlace ? doubleV : 0;
 
-        const CoordS32 coordA{xa, ya << doubleV};
-        const CoordS32 coordB{xb, ya << doubleV};
-        const CoordS32 coordC{xb, (yb << doubleV) + yAdd};
-        const CoordS32 coordD{xa, (yb << doubleV) + yAdd};
+        CoordS32 coordA{xa, ya << doubleV};
+        CoordS32 coordB{xb, ya << doubleV};
+        CoordS32 coordC{xb, (yb << doubleV) + yAdd};
+        CoordS32 coordD{xa, (yb << doubleV) + yAdd};
+        ScaleQuad(coordA, coordB, coordC, coordD);
 
         const VDP1CommandData cmdData{
             .mode = mode,
@@ -4743,7 +4216,7 @@ struct Direct3D12VDPRenderer::Impl {
             .mode = mode,
             .charAddr = charAddr,
             .size = size,
-            .flipH = control.flipH != 0,
+            .flipH = control.flipH,
         };
 
         VDP1PlotTexturedQuad(spanData, cmdAddress, control, coordA, coordB, coordC, coordD);
@@ -4840,10 +4313,11 @@ struct Direct3D12VDPRenderer::Impl {
         const sint32 doubleV = vdp1.doubleV ? 1 : 0;
         const sint32 yAdd = enhancements.deinterlace ? doubleV : 0;
 
-        const CoordS32 coordA{qxa, qya << doubleV};
-        const CoordS32 coordB{qxb, qyb << doubleV};
-        const CoordS32 coordC{qxc, (qyc << doubleV) + yAdd};
-        const CoordS32 coordD{qxd, (qyd << doubleV) + yAdd};
+        CoordS32 coordA{qxa, qya << doubleV};
+        CoordS32 coordB{qxb, qyb << doubleV};
+        CoordS32 coordC{qxc, (qyc << doubleV) + yAdd};
+        CoordS32 coordD{qxd, (qyd << doubleV) + yAdd};
+        ScaleQuad(coordA, coordB, coordC, coordD);
 
         const VDP1CommandData cmdData{
             .mode = mode,
@@ -4858,7 +4332,7 @@ struct Direct3D12VDPRenderer::Impl {
             .mode = mode,
             .charAddr = charAddr,
             .size = size,
-            .flipH = control.flipH != 0,
+            .flipH = control.flipH,
         };
 
         VDP1PlotTexturedQuad(spanData, cmdAddress, control, coordA, coordB, coordC, coordD);
@@ -4890,10 +4364,11 @@ struct Direct3D12VDPRenderer::Impl {
         const sint32 yAddAB = enhancements.deinterlace && isRegularRect && (ya >= yc) ? doubleV : 0;
         const sint32 yAddCD = enhancements.deinterlace && isRegularRect && (ya < yc) ? doubleV : 0;
 
-        const CoordS32 coordA{xa, (ya << doubleV) + yAddAB};
-        const CoordS32 coordB{xb, (yb << doubleV) + yAddAB};
-        const CoordS32 coordC{xc, (yc << doubleV) + yAddCD};
-        const CoordS32 coordD{xd, (yd << doubleV) + yAddCD};
+        CoordS32 coordA{xa, (ya << doubleV) + yAddAB};
+        CoordS32 coordB{xb, (yb << doubleV) + yAddAB};
+        CoordS32 coordC{xc, (yc << doubleV) + yAddCD};
+        CoordS32 coordD{xd, (yd << doubleV) + yAddCD};
+        ScaleQuad(coordA, coordB, coordC, coordD);
 
         const VDP1CommandData cmdData{
             .mode = mode,
@@ -4908,7 +4383,7 @@ struct Direct3D12VDPRenderer::Impl {
             .mode = mode,
             .charAddr = charAddr,
             .size = size,
-            .flipH = control.flipH != 0,
+            .flipH = control.flipH,
         };
 
         VDP1PlotTexturedQuad(spanData, cmdAddress, control, coordA, coordB, coordC, coordD);
@@ -4939,10 +4414,11 @@ struct Direct3D12VDPRenderer::Impl {
         const sint32 yAddAB = enhancements.deinterlace && isRegularRect && (ya >= yc) ? doubleV : 0;
         const sint32 yAddCD = enhancements.deinterlace && isRegularRect && (ya < yc) ? doubleV : 0;
 
-        const CoordS32 coordA{xa, (ya << doubleV) + yAddAB};
-        const CoordS32 coordB{xb, (yb << doubleV) + yAddAB};
-        const CoordS32 coordC{xc, (yc << doubleV) + yAddCD};
-        const CoordS32 coordD{xd, (yd << doubleV) + yAddCD};
+        CoordS32 coordA{xa, (ya << doubleV) + yAddAB};
+        CoordS32 coordB{xb, (yb << doubleV) + yAddAB};
+        CoordS32 coordC{xc, (yc << doubleV) + yAddCD};
+        CoordS32 coordD{xd, (yd << doubleV) + yAddCD};
+        ScaleQuad(coordA, coordB, coordC, coordD);
 
         Color555 gouraudA;
         Color555 gouraudB;
@@ -5047,10 +4523,11 @@ struct Direct3D12VDPRenderer::Impl {
         const sint32 yAddAB = enhancements.deinterlace && isRegularRect && (ya >= yc) ? doubleV : 0;
         const sint32 yAddCD = enhancements.deinterlace && isRegularRect && (ya < yc) ? doubleV : 0;
 
-        const CoordS32 coordA{xa, (ya << doubleV) + yAddAB};
-        const CoordS32 coordB{xb, (yb << doubleV) + yAddAB};
-        const CoordS32 coordC{xc, (yc << doubleV) + yAddCD};
-        const CoordS32 coordD{xd, (yd << doubleV) + yAddCD};
+        CoordS32 coordA{xa, (ya << doubleV) + yAddAB};
+        CoordS32 coordB{xb, (yb << doubleV) + yAddAB};
+        CoordS32 coordC{xc, (yc << doubleV) + yAddCD};
+        CoordS32 coordD{xd, (yd << doubleV) + yAddCD};
+        ScaleQuad(coordA, coordB, coordC, coordD);
 
         Color555 gouraudA;
         Color555 gouraudB;
@@ -5110,8 +4587,10 @@ struct Direct3D12VDPRenderer::Impl {
         const sint32 xb = bit::sign_extend<13>(vdpState.mem1.ReadVRAM<uint16>(cmdAddress + 0x10)) + state.localCoordX;
         const sint32 yb = bit::sign_extend<13>(vdpState.mem1.ReadVRAM<uint16>(cmdAddress + 0x12)) + state.localCoordY;
 
-        const CoordS32 coordA{xa, ya};
-        const CoordS32 coordB{xb, yb};
+        const sint32 doubleV = vdp1.doubleV ? 1 : 0;
+        CoordS32 coordA{xa, ya << doubleV};
+        CoordS32 coordB{xb, yb << doubleV};
+        ScaleLine(coordA, coordB);
 
         const VDP1CommandData cmdData{
             .mode = mode,
@@ -5336,13 +4815,10 @@ struct Direct3D12VDPRenderer::Impl {
             return {};
         }
 
-        ID3D12Resource *dstResource = vdp2.vramBuffer.GetPointer();
-        ID3D12Resource *uploadBufferPtr = uploadBuffer.GetBufferResource().GetPointer();
+        GpuBuffer &dstResource = vdp2.vramBuffer;
 
         // Emit barrier transition
-        barrierTracker.TransitionBuffer(dstResource, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_BARRIER_SYNC_COPY,
-                                        D3D12_BARRIER_ACCESS_COPY_DEST);
-        barrierTracker.Flush(cmdList);
+        barrierTracker.Flush(cmd);
 
         // Upload all modified VRAM chunks
         size_t pos, count = 0;
@@ -5360,7 +4836,7 @@ struct Direct3D12VDPRenderer::Impl {
 
             // Upload VRAM chunk
             memcpy(alloc.data, &vdpState.mem2.VRAM[vramOffset], size);
-            cmdList->CopyBufferRegion(dstResource, vramOffset, uploadBufferPtr, alloc.offset, size);
+            CopyFromUpload(dstResource, vramOffset, alloc, size);
         }
         vdp2.vramDirty.ClearAll();
 
@@ -5369,17 +4845,25 @@ struct Direct3D12VDPRenderer::Impl {
 
     [[nodiscard]] util::VoidResult<> VDP2FlushCRAM() {
         FrameContext &frameCtx = frames.GetCurrentFrame();
-        if (frameCtx.cramGeneration == vdp2.cramGeneration) {
+
+        // The rotation coefficients are only uploaded while an RBG reads them from CRAM, so they are tracked
+        // separately from the color cache: enabling the coefficient table after CRAM was written still needs an
+        // upload even though the CRAM contents did not change.
+        const VDP2Regs &regs2 = vdpState.regs2;
+        const bool rotCoeffInCRAM =
+            (regs2.bgEnabled[4] || regs2.bgEnabled[5]) && regs2.vramControl.colorRAMCoeffTableEnable;
+        const bool colorsDirty = shared.cramGeneration != vdp2.cramGeneration;
+        const bool rotCoeffDirty = rotCoeffInCRAM && shared.cramRotCoeffGeneration != vdp2.cramGeneration;
+        if (!colorsDirty && !rotCoeffDirty) {
             return {};
         }
-        frameCtx.cramGeneration = vdp2.cramGeneration;
-
-        ID3D12Resource *uploadBufferPtr = uploadBuffer.GetBufferResource().GetPointer();
 
         UploadAllocation alloc{};
 
         // Update color cache
-        {
+        if (colorsDirty) {
+            shared.cramGeneration = vdp2.cramGeneration;
+
             const size_t size = sizeof(CRAMColorCache);
             if (auto result = AllocateUploadBuffer(uploadBuffer, size, 4, alloc); !result) {
                 return util::ErrorMessage{fmt::format("Failed to allocate upload buffer for VDP2 CRAM color cache: {}",
@@ -5387,19 +4871,14 @@ struct Direct3D12VDPRenderer::Impl {
             }
             memcpy(alloc.data, vdp2.cpuCRAMColorCache.data(), size);
 
-            ID3D12Resource *dstResource = frameCtx.cramColorBuffer.GetPointer();
-
-            // Emit barrier transition
-            barrierTracker.TransitionBuffer(dstResource, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_BARRIER_SYNC_COPY,
-                                            D3D12_BARRIER_ACCESS_COPY_DEST);
-            barrierTracker.Flush(cmdList);
-
-            cmdList->CopyBufferRegion(dstResource, 0, uploadBufferPtr, alloc.offset, size);
+            barrierTracker.Flush(cmd);
+            CopyFromUpload(shared.cramColorBuffer, 0, alloc, size);
         }
 
         // Update rotation coefficients view
-        const VDP2Regs &regs2 = vdpState.regs2;
-        if ((regs2.bgEnabled[4] || regs2.bgEnabled[5]) && regs2.vramControl.colorRAMCoeffTableEnable) {
+        if (rotCoeffDirty) {
+            shared.cramRotCoeffGeneration = vdp2.cramGeneration;
+
             const size_t size = kVDP2CRAMRotCoeffBufferSize;
             if (auto result = AllocateUploadBuffer(uploadBuffer, size, 4, alloc); !result) {
                 return util::ErrorMessage{
@@ -5408,14 +4887,8 @@ struct Direct3D12VDPRenderer::Impl {
             }
             memcpy(alloc.data, &vdpState.mem2.CRAM[kVDP2CRAMSize / 2], size);
 
-            ID3D12Resource *dstResource = frameCtx.cramRotCoeffBuffer.GetPointer();
-
-            // Emit barrier transition
-            barrierTracker.TransitionBuffer(dstResource, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_BARRIER_SYNC_COPY,
-                                            D3D12_BARRIER_ACCESS_COPY_DEST);
-            barrierTracker.Flush(cmdList);
-
-            cmdList->CopyBufferRegion(dstResource, 0, uploadBufferPtr, alloc.offset, size);
+            barrierTracker.Flush(cmd);
+            CopyFromUpload(shared.cramRotCoeffBuffer, 0, alloc, size);
         }
 
         return {};
@@ -5543,10 +5016,10 @@ struct Direct3D12VDPRenderer::Impl {
 
     util::VoidResult<> VDP2UpdateLayerRenderParams() {
         FrameContext &frameCtx = frames.GetCurrentFrame();
-        if (frameCtx.layerRenderParamsGeneration == vdp2.layerRenderParamsGeneration) {
+        if (shared.layerRenderParamsGeneration == vdp2.layerRenderParamsGeneration) {
             return {};
         }
-        frameCtx.layerRenderParamsGeneration = vdp2.layerRenderParamsGeneration;
+        shared.layerRenderParamsGeneration = vdp2.layerRenderParamsGeneration;
 
         const VDP2Regs &regs2 = vdpState.regs2;
 
@@ -5701,8 +5174,7 @@ struct Direct3D12VDPRenderer::Impl {
         {
             FrameContext &frameCtx = frames.GetCurrentFrame();
 
-            ID3D12Resource *dstResource = frameCtx.layerRenderParamsBuffer.GetPointer();
-            ID3D12Resource *uploadBufferPtr = uploadBuffer.GetBufferResource().GetPointer();
+            GpuBuffer &dstResource = shared.layerRenderParamsBuffer;
             const size_t size = sizeof(vdp2.cpuLayerRenderParams);
             UploadAllocation alloc{};
             if (auto result = AllocateUploadBuffer(uploadBuffer, size, 4, alloc); !result) {
@@ -5713,11 +5185,9 @@ struct Direct3D12VDPRenderer::Impl {
             memcpy(alloc.data, &vdp2.cpuLayerRenderParams, size);
 
             // Emit barrier transition
-            barrierTracker.TransitionBuffer(dstResource, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_BARRIER_SYNC_COPY,
-                                            D3D12_BARRIER_ACCESS_COPY_DEST);
-            barrierTracker.Flush(cmdList);
+            barrierTracker.Flush(cmd);
 
-            cmdList->CopyBufferRegion(dstResource, 0, uploadBufferPtr, alloc.offset, size);
+            CopyFromUpload(dstResource, 0, alloc, size);
         }
 
         return {};
@@ -5725,10 +5195,10 @@ struct Direct3D12VDPRenderer::Impl {
 
     util::VoidResult<> VDP2UpdateComposeParams() {
         FrameContext &frameCtx = frames.GetCurrentFrame();
-        if (frameCtx.composeParamsGeneration == vdp2.composeParamsGeneration) {
+        if (shared.composeParamsGeneration == vdp2.composeParamsGeneration) {
             return {};
         }
-        frameCtx.composeParamsGeneration = vdp2.composeParamsGeneration;
+        shared.composeParamsGeneration = vdp2.composeParamsGeneration;
 
         const VDP2Regs &regs2 = vdpState.regs2;
 
@@ -5778,8 +5248,7 @@ struct Direct3D12VDPRenderer::Impl {
         {
             FrameContext &frameCtx = frames.GetCurrentFrame();
 
-            ID3D12Resource *dstResource = frameCtx.composeParamsBuffer.GetPointer();
-            ID3D12Resource *uploadBufferPtr = uploadBuffer.GetBufferResource().GetPointer();
+            GpuBuffer &dstResource = shared.composeParamsBuffer;
             const size_t size = sizeof(vdp2.cpuComposeParams);
 
             UploadAllocation alloc{};
@@ -5791,11 +5260,9 @@ struct Direct3D12VDPRenderer::Impl {
             memcpy(alloc.data, &vdp2.cpuComposeParams, size);
 
             // Emit barrier transition
-            barrierTracker.TransitionBuffer(dstResource, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_BARRIER_SYNC_COPY,
-                                            D3D12_BARRIER_ACCESS_COPY_DEST);
-            barrierTracker.Flush(cmdList);
+            barrierTracker.Flush(cmd);
 
-            cmdList->CopyBufferRegion(dstResource, 0, uploadBufferPtr, alloc.offset, size);
+            CopyFromUpload(dstResource, 0, alloc, size);
         }
 
         return {};
@@ -5867,8 +5334,7 @@ struct Direct3D12VDPRenderer::Impl {
     util::VoidResult<> VDP2UploadLineColorBackScreens() {
         FrameContext &frameCtx = frames.GetCurrentFrame();
 
-        ID3D12Resource *dstResource = frameCtx.lnclBackBuffer.GetPointer();
-        ID3D12Resource *uploadBufferPtr = uploadBuffer.GetBufferResource().GetPointer();
+        GpuBuffer &dstResource = shared.lnclBackBuffer;
         const size_t size = sizeof(vdp2.cpuLnclBack);
 
         UploadAllocation alloc{};
@@ -5879,11 +5345,9 @@ struct Direct3D12VDPRenderer::Impl {
         memcpy(alloc.data, &vdp2.cpuLnclBack, size);
 
         // Emit barrier transition
-        barrierTracker.TransitionBuffer(dstResource, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_BARRIER_SYNC_COPY,
-                                        D3D12_BARRIER_ACCESS_COPY_DEST);
-        barrierTracker.Flush(cmdList);
+        barrierTracker.Flush(cmd);
 
-        cmdList->CopyBufferRegion(dstResource, 0, uploadBufferPtr, alloc.offset, size);
+        CopyFromUpload(dstResource, 0, alloc, size);
 
         return {};
     }
@@ -5938,8 +5402,7 @@ struct Direct3D12VDPRenderer::Impl {
     util::VoidResult<> VDP2UploadRotationParameterBases() {
         FrameContext &frameCtx = frames.GetCurrentFrame();
 
-        ID3D12Resource *dstResource = frameCtx.rotParamBasesBuffer.GetPointer();
-        ID3D12Resource *uploadBufferPtr = uploadBuffer.GetBufferResource().GetPointer();
+        GpuBuffer &dstResource = shared.rotParamBasesBuffer;
         const size_t size = sizeof(vdp2.cpuRotParamBases);
 
         UploadAllocation alloc{};
@@ -5950,21 +5413,19 @@ struct Direct3D12VDPRenderer::Impl {
         memcpy(alloc.data, &vdp2.cpuRotParamBases, size);
 
         // Emit barrier transition
-        barrierTracker.TransitionBuffer(dstResource, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_BARRIER_SYNC_COPY,
-                                        D3D12_BARRIER_ACCESS_COPY_DEST);
-        barrierTracker.Flush(cmdList);
+        barrierTracker.Flush(cmd);
 
-        cmdList->CopyBufferRegion(dstResource, 0, uploadBufferPtr, alloc.offset, size);
+        CopyFromUpload(dstResource, 0, alloc, size);
 
         return {};
     }
 
     void VDP2UpdateState() {
         if (auto result = VDP2FlushVRAM(); !result) {
-            devlog::warn<grp::dx12_vdp2>("VDP2 VRAM flush failed: {}", result.Error().message);
+            Report<grp::vk_vdp2>(devlog::level::warn, "VDP2 VRAM flush failed: {}", result.Error().message);
         }
         if (auto result = VDP2FlushCRAM(); !result) {
-            devlog::warn<grp::dx12_vdp2>("VDP2 CRAM flush failed: {}", result.Error().message);
+            Report<grp::vk_vdp2>(devlog::level::warn, "VDP2 CRAM flush failed: {}", result.Error().message);
         }
         VDP2UpdateCommonRenderParams();
         VDP2UpdateLayerRenderParams();
@@ -5982,7 +5443,7 @@ struct Direct3D12VDPRenderer::Impl {
 
         // VDP2 consumes VDP1 FBRAM, so it needs to be synced here
         if (auto result = VDP1FlushFBRAM(); !result) {
-            devlog::warn<grp::dx12_vdp1>("VDP1 FBRAM flush failed: {}", result.Error().message);
+            Report<grp::vk_vdp1>(devlog::level::warn, "VDP1 FBRAM flush failed: {}", result.Error().message);
         }
 
         // If the frontend requested a VDP1 FBRAM sync via the debugger, do so now
@@ -6018,14 +5479,6 @@ struct Direct3D12VDPRenderer::Impl {
         // ---------------------------------------------------------------------
 
         // Transition resources for rendering layers
-        barrierTracker.TransitionBuffer(frameCtx.layerRenderParamsBuffer.GetPointer(),
-                                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                        D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
-        barrierTracker.TransitionBuffer(vdp2.vramBuffer.GetPointer(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                        D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
-        barrierTracker.TransitionBuffer(frameCtx.cramColorBuffer.GetPointer(),
-                                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                        D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
 
         // Compute rotation parameters if any RBGs are enabled
         if (vdpState.regs2.bgEnabled[4] || vdpState.regs2.bgEnabled[5]) {
@@ -6036,60 +5489,36 @@ struct Direct3D12VDPRenderer::Impl {
 
         // Transition resources for drawing the sprite layer
         if (vdp2.cpuCommonRenderParams.spriteParams.rotate) {
-            barrierTracker.TransitionBuffer(frameCtx.rotParamBasesBuffer.GetPointer(),
-                                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                            D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
         }
-        barrierTracker.TransitionTexture(frameCtx.layerOutTexture.GetPointer(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                         D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_UNORDERED_ACCESS,
-                                         D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS);
-        barrierTracker.TransitionTexture(frameCtx.spriteAttrsTexture.GetPointer(),
-                                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_BARRIER_SYNC_COMPUTE_SHADING,
-                                         D3D12_BARRIER_ACCESS_UNORDERED_ACCESS, D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS);
-        barrierTracker.TransitionBuffer(vdp1.fbramBuffer.GetPointer(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                        D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
-        barrierTracker.Flush(cmdList);
+        barrierTracker.Flush(cmd);
 
         // Draw sprite layer
-        cmdList->SetPipelineState(frameCtx.drawSpritePSO.GetPointer());
-        cmdList->SetComputeRootSignature(vdp2.drawSpriteRootSig.GetPointer());
-        cmdList->SetComputeRoot32BitConstants(0, sizeof(vdp2.cpuCommonRenderParams) / sizeof(uint32),
-                                              &vdp2.cpuCommonRenderParams, 0);
-        cmdList->SetComputeRootDescriptorTable(1, frameCtx.drawSpriteDescs.gpuHandle);
-        cmdList->Dispatch((HRes + 31) / 32, numLines, enhancements.transparentMeshes ? 2 : 1);
+        Dispatch(vdp2.drawSpritePSO, vdp2.drawSpriteRootSig, shared.drawSpriteSet, &vdp2.cpuCommonRenderParams,
+                 sizeof(vdp2.cpuCommonRenderParams), (HRes * resolutionScale + 31) / 32, numLines * resolutionScale,
+                 enhancements.transparentMeshes ? 2 : 1);
 
         // ---------------------------------------------------------------------
 
         // Transition resources for drawing background layers
         if (vdpState.regs2.bgEnabled[4] || vdpState.regs2.bgEnabled[5]) {
-            barrierTracker.TransitionBuffer(frameCtx.cramRotCoeffBuffer.GetPointer(),
-                                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                            D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
-            barrierTracker.TransitionBuffer(frameCtx.rotParamBasesBuffer.GetPointer(),
-                                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                            D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
         }
-        barrierTracker.TransitionTexture(
-            frameCtx.spriteAttrsTexture.GetPointer(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE, D3D12_BARRIER_LAYOUT_COMMON);
-        barrierTracker.TransitionTexture(frameCtx.layerOutTexture.GetPointer(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                         D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_UNORDERED_ACCESS,
-                                         D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS);
-        barrierTracker.TransitionTexture(frameCtx.rbgLineColorOutTexture.GetPointer(),
-                                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_BARRIER_SYNC_COMPUTE_SHADING,
-                                         D3D12_BARRIER_ACCESS_UNORDERED_ACCESS, D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS);
-        barrierTracker.TransitionTexture(frameCtx.colorCalcWindowTexture.GetPointer(),
-                                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_BARRIER_SYNC_COMPUTE_SHADING,
-                                         D3D12_BARRIER_ACCESS_UNORDERED_ACCESS, D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS);
-        barrierTracker.Flush(cmdList);
+        barrierTracker.Flush(cmd);
 
         // Draw NBGs and RBGs
-        cmdList->SetPipelineState(frameCtx.drawBGsPSO.GetPointer());
-        cmdList->SetComputeRootSignature(vdp2.drawBGsRootSig.GetPointer());
-        cmdList->SetComputeRoot32BitConstants(0, sizeof(vdp2.cpuCommonRenderParams) / sizeof(uint32),
-                                              &vdp2.cpuCommonRenderParams, 0);
-        cmdList->SetComputeRootDescriptorTable(1, frameCtx.drawBGsDescs.gpuHandle);
-        cmdList->Dispatch(HRes / 32, numLines, 1);
+        Dispatch(vdp2.drawBGsPSO, vdp2.drawBGsRootSig, shared.drawBGsSet, &vdp2.cpuCommonRenderParams,
+                 sizeof(vdp2.cpuCommonRenderParams), HRes * resolutionScale / 32, numLines * resolutionScale, 1);
+    }
+
+    /// @brief Converts a field line into the last row to compose for it.
+    /// The compose shader works on output rows when deinterlacing (two per field line) and on field lines otherwise.
+    /// @param[in] y the field line
+    /// @return the corresponding compose row
+    uint32 VDP2GetComposeRow(uint32 y) const {
+        const bool interlaced = vdpState.regs2.TVMD.IsInterlaced() && !exclusiveMonitor;
+        if (interlaced && enhancements.deinterlace) {
+            return (y << 1u) | 1u;
+        }
+        return y;
     }
 
     void VDP2ComposeLines(uint32 y) {
@@ -6110,33 +5539,12 @@ struct Direct3D12VDPRenderer::Impl {
         // ---------------------------------------------------------------------
 
         // Transition resources for compositing layers
-        barrierTracker.TransitionBuffer(frameCtx.composeParamsBuffer.GetPointer(),
-                                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                        D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
-        barrierTracker.TransitionTexture(
-            frameCtx.layerOutTexture.GetPointer(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE, D3D12_BARRIER_LAYOUT_COMMON);
-        barrierTracker.TransitionTexture(
-            frameCtx.rbgLineColorOutTexture.GetPointer(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE, D3D12_BARRIER_LAYOUT_COMMON);
-        barrierTracker.TransitionTexture(
-            frameCtx.colorCalcWindowTexture.GetPointer(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE, D3D12_BARRIER_LAYOUT_COMMON);
-        barrierTracker.TransitionBuffer(frameCtx.lnclBackBuffer.GetPointer(),
-                                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                        D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
-        barrierTracker.TransitionTexture(vdp2.compositeOutTexture.GetPointer(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                         D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_UNORDERED_ACCESS,
-                                         D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS);
-        barrierTracker.Flush(cmdList);
+        barrierTracker.Flush(cmd);
 
         // Compose final image
-        cmdList->SetPipelineState(frameCtx.composePSO.GetPointer());
-        cmdList->SetComputeRootSignature(vdp2.composeRootSig.GetPointer());
-        cmdList->SetComputeRoot32BitConstants(0, sizeof(vdp2.cpuCommonRenderParams) / sizeof(uint32),
-                                              &vdp2.cpuCommonRenderParams, 0);
-        cmdList->SetComputeRootDescriptorTable(1, frameCtx.composeDescs.gpuHandle);
-        cmdList->Dispatch((HRes + 31) / 32, numLines, 1);
+        Dispatch(vdp2.composePSO, vdp2.composeRootSig, shared.composeSet, &vdp2.cpuCommonRenderParams,
+                 sizeof(vdp2.cpuCommonRenderParams), (HRes * resolutionScale + 31) / 32, numLines * resolutionScale,
+                 1);
     }
 
     void VDP2RenderLine(uint32 y) {
@@ -6152,17 +5560,17 @@ struct Direct3D12VDPRenderer::Impl {
 
         if (y > 0) {
             const FrameContext &frameCtx = frames.GetCurrentFrame();
-            const bool cramDirty = vdp2.cramGeneration != frameCtx.cramGeneration;
+            const bool cramDirty = vdp2.cramGeneration != shared.cramGeneration;
             const bool layerRenderParamsDirty =
-                vdp2.layerRenderParamsGeneration != frameCtx.layerRenderParamsGeneration;
-            const bool composeParamsDirty = vdp2.composeParamsGeneration != frameCtx.composeParamsGeneration;
+                vdp2.layerRenderParamsGeneration != shared.layerRenderParamsGeneration;
+            const bool composeParamsDirty = vdp2.composeParamsGeneration != shared.composeParamsGeneration;
             const bool renderLayers = vdp2.vramDirty || cramDirty || layerRenderParamsDirty || composeParamsDirty;
             const bool compose = composeParamsDirty;
             if (renderLayers) {
                 VDP2RenderLayerLines(y - 1);
             }
             if (compose) {
-                VDP2ComposeLines(y - 1);
+                VDP2ComposeLines(VDP2GetComposeRow(y - 1));
             }
         }
 
@@ -6173,141 +5581,122 @@ struct Direct3D12VDPRenderer::Impl {
         const uint32 vShift = vdpState.regs2.TVMD.IsInterlaced() ? 1u : 0u;
         const uint32 vres = VRes >> vShift;
         VDP2RenderLayerLines(vres - 1);
-        VDP2ComposeLines(VRes - 1);
+        // Without deinterlacing, each frame composes the lines of the current field into alternating output rows
+        const bool fieldOnly =
+            vdpState.regs2.TVMD.IsInterlaced() && !exclusiveMonitor && !enhancements.deinterlace;
+        VDP2ComposeLines((fieldOnly ? vres : VRes) - 1);
 
-        // Request a frame from the frontend
-        // TODO: consider adding support for GPU waits
-        ID3D12Resource *copyTarget =
-            hwCallbacks.FrameCopyRequest(computeFence.GetPointer(), frames.GetNextFenceValue(), HRes, VRes);
-        if (copyTarget != nullptr) {
-            // Transition composited output texture to copy source
-            barrierTracker.TransitionTexture(vdp2.compositeOutTexture.GetPointer(), D3D12_RESOURCE_STATE_COPY_SOURCE,
-                                             D3D12_BARRIER_SYNC_COPY, D3D12_BARRIER_ACCESS_COPY_SOURCE,
-                                             D3D12_BARRIER_LAYOUT_COPY_SOURCE);
-            barrierTracker.Flush(cmdList);
+        FrameContext &frameCtx = frames.GetCurrentFrame();
 
-            // Copy composited output texture to provided texture
-            if constexpr (static_config::copyFullCompositeResource) {
-                // Full resource copy
-                cmdList->CopyResource(copyTarget, vdp2.compositeOutTexture.GetPointer());
-            } else {
-                // Display area copy
-                const D3D12_TEXTURE_COPY_LOCATION dstLoc{
-                    .pResource = copyTarget,
-                    .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-                    .SubresourceIndex = 0,
-                };
-                const D3D12_TEXTURE_COPY_LOCATION srcLoc{
-                    .pResource = vdp2.compositeOutTexture.GetPointer(),
-                    .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-                    .SubresourceIndex = 0,
-                };
-                const D3D12_BOX srcBox{
-                    .left = 0,
-                    .top = 0,
-                    .front = 0,
-                    .right = HRes,
-                    .bottom = VRes,
-                    .back = 1,
-                };
-                cmdList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, &srcBox);
-            }
+        // Copy the display area of the composited output to this frame's readback buffer
+        barrierTracker.Flush(cmd);
+        const uint32 outWidth = HRes * resolutionScale;
+        const uint32 outHeight = VRes * resolutionScale;
+        const VkBufferImageCopy region{
+            .bufferOffset = 0,
+            .bufferRowLength = outWidth,
+            .bufferImageHeight = outHeight,
+            .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .imageOffset = {0, 0, 0},
+            .imageExtent = {outWidth, outHeight, 1},
+        };
+        if (cmd != VK_NULL_HANDLE) {
+            vkCmdCopyImageToBuffer(cmd, vdp2.compositeOutTexture.image, VK_IMAGE_LAYOUT_GENERAL,
+                                   frameCtx.readbackBuffer.buffer, 1, &region);
+        }
+        frameCtx.readbackPending = cmd != VK_NULL_HANDLE;
+        frameCtx.readbackWidth = outWidth;
+        frameCtx.readbackHeight = outHeight;
+
+        // Make the readback and the FBRAM download visible to the host
+        RecordHostReadBarrier();
+
+        // Close and submit command buffer
+        if (auto result = SubmitCommands(); !result) {
+            Report<grp::vk_base>(devlog::level::warn, "{}", result.Error().message);
         }
 
-        // Close and submit command list
-        cmdList->Close();
-        cmdQueue->ExecuteCommandLists(1, cmdList.GetAddressOfBase());
+        // Deliver the previous frame. It was submitted a whole emulated frame ago, so the GPU has almost certainly
+        // finished it already and the wait is typically free, whereas waiting for this frame would stall the emulator
+        // until the GPU catches up.
+        DeliverFrame(frames[(frames.frameIndex + kNumFrames - 1) % kNumFrames]);
 
         // Advance frame
-        uploadBuffer.EndFrame(frames.GetNextFenceValue());
-        frames.MoveToNextFrame(computeFence, cmdQueue);
-
-        // Setup command list
-        FrameContext &nextFrame = frames.GetCurrentFrame();
-        ID3D12DescriptorHeap *heaps[] = {resourceHeap.GetPointer()};
-        cmdList->Reset(nextFrame.cmdAlloc.GetPointer(), nullptr);
-        cmdList->SetDescriptorHeaps(std::size(heaps), heaps);
-    }
-
-    /// @brief Submits the command list as is and restarts it in the same frame.
-    /// Signals and increments the compute fence without advancing the frame.
-    /// @return the signaled fence value or an error message
-    util::ValueResult<UINT64> SubmitCommandList() {
-        // Close and submit command list
-        cmdList->Close();
-        cmdQueue->ExecuteCommandLists(1, cmdList.GetAddressOfBase());
-
-        // Advance the fence
-        auto result = frames.IncrementFence(computeFence, cmdQueue);
-
-        // Setup command list
-        FrameContext &currFrame = frames.GetCurrentFrame();
-        ID3D12DescriptorHeap *heaps[] = {resourceHeap.GetPointer()};
-        cmdList->Reset(currFrame.cmdAlloc.GetPointer(), nullptr);
-        cmdList->SetDescriptorHeaps(std::size(heaps), heaps);
-
-        return result;
+        MoveToNextFrame();
     }
 };
 
 // ---------------------------------------------------------------------------------------------------------------------
 
-Direct3D12VDPRenderer::Direct3D12VDPRenderer(VDPState &state, const config::VDP2DebugRender &vdp2DebugRenderOptions,
-                                             const config::VDP2AccessPatternsConfig &vdp2AccessPatternsConfig)
-    : HardwareVDPRendererBase(VDPRendererType::Direct3D12)
+VulkanVDPRenderer::VulkanVDPRenderer(VDPState &state, const config::VDP2DebugRender &vdp2DebugRenderOptions,
+                                     const config::VDP2AccessPatternsConfig &vdp2AccessPatternsConfig,
+                                     uint32 resolutionScale)
+    : HardwareVDPRendererBase(VDPRendererType::Vulkan)
     , m_impl(std::make_unique<Impl>(HwCallbacks, state, vdp2AccessPatternsConfig, vdp2DebugRenderOptions,
-                                    m_enhancements)) {}
+                                    m_enhancements, resolutionScale)) {}
 
-Direct3D12VDPRenderer::~Direct3D12VDPRenderer() {
+VulkanVDPRenderer::~VulkanVDPRenderer() {
     m_impl->Shutdown();
 }
 
-util::VoidResult<> Direct3D12VDPRenderer::Initialize(ID3D12Device *device) {
-    return m_impl->Initialize(device);
+util::VoidResult<> VulkanVDPRenderer::Initialize() {
+    return m_impl->Initialize();
 }
 
-util::ObjectResult<Direct3D12VDPRenderer>
-Direct3D12VDPRenderer::Create(VDPState &state, const config::VDP2DebugRender &vdp2DebugRenderOptions,
-                              const config::VDP2AccessPatternsConfig &vdp2AccessPatternsConfig, ID3D12Device *device) {
-    if (device == nullptr) {
-        return util::ErrorMessage{"No Direct3D 12 device instance provided"};
+util::ObjectResult<VulkanVDPRenderer>
+VulkanVDPRenderer::Create(VDPState &state, const config::VDP2DebugRender &vdp2DebugRenderOptions,
+                          const config::VDP2AccessPatternsConfig &vdp2AccessPatternsConfig,
+                          uint32 resolutionScale) {
+    if (resolutionScale < 1 || resolutionScale > kMaxResolutionScale) {
+        return util::ErrorMessage{fmt::format("Unsupported internal resolution scale: {}", resolutionScale)};
     }
-    std::unique_ptr<Direct3D12VDPRenderer> renderer{
-        new Direct3D12VDPRenderer(state, vdp2DebugRenderOptions, vdp2AccessPatternsConfig)};
-    util::VoidResult<> result = renderer->Initialize(device);
+    std::unique_ptr<VulkanVDPRenderer> renderer{
+        new VulkanVDPRenderer(state, vdp2DebugRenderOptions, vdp2AccessPatternsConfig, resolutionScale)};
+    util::VoidResult<> result = renderer->Initialize();
     if (!result) {
         return result.Error();
     }
     return renderer;
 }
 
+std::string VulkanVDPRenderer::GetDeviceName() const {
+    return m_impl->vk.properties.deviceName;
+}
+
+uint32 VulkanVDPRenderer::GetResolutionScale() const {
+    return m_impl->resolutionScale;
+}
+
 // -----------------------------------------------------------------------------
 // Configuration
 
-void Direct3D12VDPRenderer::UpdateEnhancements() {
+void VulkanVDPRenderer::UpdateEnhancements() {
     m_impl->UpdateEnhancements();
 }
 
 // -----------------------------------------------------------------------------
 // Basics
 
-bool Direct3D12VDPRenderer::IsValid() const {
-    return true;
+bool VulkanVDPRenderer::IsValid() const {
+    return m_impl->initialized;
 }
 
-void Direct3D12VDPRenderer::Reset(bool hard) {
+void VulkanVDPRenderer::Reset(bool hard) {
     m_impl->Reset();
 }
 
 // -----------------------------------------------------------------------------
 // Save states
 
-void Direct3D12VDPRenderer::PreSaveStateSync() {}
+void VulkanVDPRenderer::PreSaveStateSync() {
+    // Save states include FBRAM, which is only brought back from the GPU on demand
+    m_impl->VDP1SyncFB();
+}
 
-void Direct3D12VDPRenderer::PostLoadStateSync() {
+void VulkanVDPRenderer::PostLoadStateSync() {
     m_impl->vdp1.vramDirty.SetAll();
     if (auto result = m_impl->VDP1UploadFBRAM(); !result) {
-        devlog::warn<grp::dx12_base>("Failed to upload VDP1 FBRAM: {}", result.Error().message);
+        Report<grp::vk_base>(devlog::level::warn, "Failed to upload VDP1 FBRAM: {}", result.Error().message);
     }
 
     m_impl->VDP2CacheAllCRAMColors();
@@ -6318,43 +5707,43 @@ void Direct3D12VDPRenderer::PostLoadStateSync() {
     ++m_impl->vdp2.composeParamsGeneration;
 }
 
-void Direct3D12VDPRenderer::SaveState(savestate::VDPSaveState::VDPRendererSaveState &state) {}
+void VulkanVDPRenderer::SaveState(savestate::VDPSaveState::VDPRendererSaveState &state) {}
 
-bool Direct3D12VDPRenderer::ValidateState(const savestate::VDPSaveState::VDPRendererSaveState &state) const {
+bool VulkanVDPRenderer::ValidateState(const savestate::VDPSaveState::VDPRendererSaveState &state) const {
     return true;
 }
 
-void Direct3D12VDPRenderer::LoadState(const savestate::VDPSaveState::VDPRendererSaveState &state) {}
+void VulkanVDPRenderer::LoadState(const savestate::VDPSaveState::VDPRendererSaveState &state) {}
 
 // -----------------------------------------------------------------------------
 // VDP1 memory and register writes
 
-void Direct3D12VDPRenderer::VDP1WriteVRAM(uint32 address, uint8 value) {
+void VulkanVDPRenderer::VDP1WriteVRAM(uint32 address, uint8 value) {
     m_impl->VDP1WriteVRAM(address);
 }
 
-void Direct3D12VDPRenderer::VDP1WriteVRAM(uint32 address, uint16 value) {
+void VulkanVDPRenderer::VDP1WriteVRAM(uint32 address, uint16 value) {
     // The address is always word-aligned
     m_impl->VDP1WriteVRAM(address);
 }
 
-void Direct3D12VDPRenderer::VDP1SyncFB() {
+void VulkanVDPRenderer::VDP1SyncFB() {
     m_impl->VDP1SyncFB();
 }
 
-void Direct3D12VDPRenderer::VDP1DebugSyncFB() {
+void VulkanVDPRenderer::VDP1DebugSyncFB() {
     m_impl->VDP1DebugSyncFB();
 }
 
-void Direct3D12VDPRenderer::VDP1WriteFB(uint32 address, uint8 value) {
+void VulkanVDPRenderer::VDP1WriteFB(uint32 address, uint8 value) {
     m_impl->VDP1WriteFB(address, 1);
 }
 
-void Direct3D12VDPRenderer::VDP1WriteFB(uint32 address, uint16 value) {
+void VulkanVDPRenderer::VDP1WriteFB(uint32 address, uint16 value) {
     m_impl->VDP1WriteFB(address, 2);
 }
 
-void Direct3D12VDPRenderer::VDP1WriteReg(uint32 address, uint16 value) {
+void VulkanVDPRenderer::VDP1WriteReg(uint32 address, uint16 value) {
     // All important registers are passed as root 32-bit constants.
     // Nothing needs to be marked dirty as a result of VDP1 register changes.
 }
@@ -6362,89 +5751,89 @@ void Direct3D12VDPRenderer::VDP1WriteReg(uint32 address, uint16 value) {
 // -------------------------------------------------------------------------
 // VDP2 memory and register writes
 
-void Direct3D12VDPRenderer::VDP2WriteVRAM(uint32 address, uint8 value) {
+void VulkanVDPRenderer::VDP2WriteVRAM(uint32 address, uint8 value) {
     m_impl->VDP2WriteVRAM(address);
 }
 
-void Direct3D12VDPRenderer::VDP2WriteVRAM(uint32 address, uint16 value) {
+void VulkanVDPRenderer::VDP2WriteVRAM(uint32 address, uint16 value) {
     // The address is always word-aligned
     m_impl->VDP2WriteVRAM(address);
 }
 
-void Direct3D12VDPRenderer::VDP2WriteCRAM(uint32 address, uint8 value) {
+void VulkanVDPRenderer::VDP2WriteCRAM(uint32 address, uint8 value) {
     m_impl->VDP2WriteCRAM(address);
 }
 
-void Direct3D12VDPRenderer::VDP2WriteCRAM(uint32 address, uint16 value) {
+void VulkanVDPRenderer::VDP2WriteCRAM(uint32 address, uint16 value) {
     // The address is always word-aligned
     m_impl->VDP2WriteCRAM(address);
 }
 
-void Direct3D12VDPRenderer::VDP2WriteReg(uint32 address, uint16 value) {
+void VulkanVDPRenderer::VDP2WriteReg(uint32 address, uint16 value) {
     m_impl->VDP2WriteReg(address, value);
 }
 
 // -----------------------------------------------------------------------------
 // Debugger
 
-void Direct3D12VDPRenderer::UpdateEnabledLayers() {
+void VulkanVDPRenderer::UpdateEnabledLayers() {
     m_impl->VDP2UpdateEnabledLayers();
 }
 
 // -----------------------------------------------------------------------------
 // Utilities
 
-void Direct3D12VDPRenderer::DumpExtraVDP1Framebuffers(std::ostream &out) const {
+void VulkanVDPRenderer::DumpExtraVDP1Framebuffers(std::ostream &out) const {
     // TODO: pause the world, download mesh buffers, copy to output
 }
 
 // -----------------------------------------------------------------------------
 // Rendering process
 
-void Direct3D12VDPRenderer::VDP1EraseFramebuffer(uint64 cycles) {
+void VulkanVDPRenderer::VDP1EraseFramebuffer(uint64 cycles) {
     m_impl->VDP1EraseFramebuffer(cycles);
 }
 
-void Direct3D12VDPRenderer::VDP1SwapFramebuffer() {
+void VulkanVDPRenderer::VDP1SwapFramebuffer() {
     m_impl->VDP1SwapFramebuffer();
     Callbacks.VDP1FramebufferSwap();
 }
 
-void Direct3D12VDPRenderer::VDP1BeginFrame() {
+void VulkanVDPRenderer::VDP1BeginFrame() {
     m_impl->VDP1BeginFrame();
 }
 
-void Direct3D12VDPRenderer::VDP1ExecuteCommand(uint32 cmdAddress, VDP1Command::Control control) {
+void VulkanVDPRenderer::VDP1ExecuteCommand(uint32 cmdAddress, VDP1Command::Control control) {
     m_impl->VDP1ExecuteCommand(cmdAddress, control);
 }
 
-void Direct3D12VDPRenderer::VDP1EndFrame() {
+void VulkanVDPRenderer::VDP1EndFrame() {
     Callbacks.VDP1DrawFinished();
 }
 
-void Direct3D12VDPRenderer::VDP2SetResolution(uint32 h, uint32 v, bool exclusive) {
+void VulkanVDPRenderer::VDP2SetResolution(uint32 h, uint32 v, bool exclusive) {
     m_impl->HRes = h;
     m_impl->VRes = v;
     m_impl->exclusiveMonitor = exclusive;
 }
 
-void Direct3D12VDPRenderer::VDP2SetField(bool odd) {
+void VulkanVDPRenderer::VDP2SetField(bool odd) {
     // Nothing to do. We're using the main VDP2 state for this.
 }
 
-void Direct3D12VDPRenderer::VDP2LatchTVMD() {
+void VulkanVDPRenderer::VDP2LatchTVMD() {
     // Nothing to do. We're using the main VDP2 state for this.
 }
 
-void Direct3D12VDPRenderer::VDP2BeginFrame() {
+void VulkanVDPRenderer::VDP2BeginFrame() {
     m_impl->VDP2BeginFrame();
 }
 
-void Direct3D12VDPRenderer::VDP2RenderLine(uint32 y) {
+void VulkanVDPRenderer::VDP2RenderLine(uint32 y) {
     m_impl->VDP2RenderLine(y);
 }
 
-void Direct3D12VDPRenderer::VDP2EndFrame() {
+void VulkanVDPRenderer::VDP2EndFrame() {
     m_impl->VDP2EndFrame();
     Callbacks.VDP2DrawFinished();
 }

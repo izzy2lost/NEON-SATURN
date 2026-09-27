@@ -150,6 +150,7 @@ public:
     void VDP1EndFrame() override;
 
     void VDP2SetResolution(uint32 h, uint32 v, bool exclusive) override;
+    void VDP2UpdateResolution(uint32 h, uint32 v, bool exclusive);
     void VDP2SetField(bool odd) override;
     void VDP2LatchTVMD() override;
     void VDP2BeginFrame() override;
@@ -378,6 +379,7 @@ private:
             VDP1EraseFramebuffer,
             VDP1SwapFramebuffer,
 
+            VDP2UpdateResolution,
             VDP2BeginFrame,
             VDP2UpdateEnabledBGs,
             VDP2DrawLine,
@@ -398,16 +400,18 @@ private:
         Type type;
         union {
             struct {
+                uint32 h;
+                uint32 v;
+                bool exclusive;
+            } updateResolution;
+
+            struct {
                 uint32 vcnt;
             } drawLine;
 
             struct {
                 bool odd;
             } oddField;
-
-            /*struct {
-                uint64 steps;
-            } vdp1ProcessCommands;*/
 
             struct {
                 uint32 address;
@@ -433,6 +437,10 @@ private:
 
         static VDP2RenderEvent VDP1SwapFramebuffer() {
             return {Type::VDP1SwapFramebuffer};
+        }
+
+        static VDP2RenderEvent VDP2UpdateResolution(uint32 h, uint32 v, bool exclusive) {
+            return {Type::VDP2UpdateResolution, {.updateResolution = {.h = h, .v = v, .exclusive = exclusive}}};
         }
 
         static VDP2RenderEvent VDP2BeginFrame() {

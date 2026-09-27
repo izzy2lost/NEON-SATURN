@@ -159,6 +159,17 @@ int ParseUpscaleFilter(std::string_view value) {
     return std::clamp(filter, 0, 1);
 }
 
+int ParseResolutionScale(std::string_view value) {
+    int scale = 0;
+    const auto *begin = value.data();
+    const auto *end = begin + value.size();
+    const auto result = std::from_chars(begin, end, scale);
+    if (result.ec != std::errc{}) {
+        return 0;
+    }
+    return std::clamp(scale, 0, static_cast<int>(ymir::vdp::VulkanVDPRenderer::kMaxResolutionScale));
+}
+
 BootstrapConfig BootstrapConfigFromArgs(int argc, char **argv) {
     BootstrapConfig config = GetBootstrapConfig();
     for (int index = 0; index < argc; ++index) {
@@ -179,6 +190,8 @@ BootstrapConfig BootstrapConfigFromArgs(int argc, char **argv) {
             config.textureFilter.assign(value);
         } else if (const auto value = ArgValue(argument, "--upscale-filter="); !value.empty()) {
             config.upscaleFilter = ParseUpscaleFilter(value);
+        } else if (const auto value = ArgValue(argument, "--resolution-scale="); !value.empty()) {
+            config.resolutionScale = ParseResolutionScale(value);
         } else if (const auto value = ArgValue(argument, "--deinterlace="); !value.empty()) {
             config.deinterlace = ParseBoolArg(value);
         } else if (const auto value = ArgValue(argument, "--transparent-meshes="); !value.empty()) {
@@ -544,6 +557,8 @@ private:
     std::uint32_t m_textureWidth = 0;
     std::uint32_t m_textureHeight = 0;
     bool m_frameDirty = false;
+    /// Internal resolution of the active renderer: 0 = software renderer, 1-4 = Vulkan renderer.
+    int m_activeResolutionScale = 0;
     std::atomic_bool m_running = true;
     std::atomic_bool m_paused = false;
     std::atomic_bool m_rewindRequested = false;
@@ -680,7 +695,9 @@ private:
         // shaders - so a filter means presenting through GL ourselves. Only that case
         // pays for the GL path; with the filter off we keep the plain renderer, and a
         // failure to set GL up falls back to it too.
-        const bool wantGL = m_config.upscaleFilter != kUpscaleFilterOff;
+        // The filter is meant for native-resolution pixel art, so it's skipped when the GPU renderer already
+        // renders at a higher internal resolution.
+        const bool wantGL = m_config.upscaleFilter != kUpscaleFilterOff && m_config.resolutionScale <= 1;
 
         SDL_WindowFlags flags = SDL_WINDOW_FULLSCREEN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
         if (wantGL) {
@@ -997,9 +1014,7 @@ private:
         m_saturn.configuration.cdblock.useLLE = !m_config.cdbPath.empty();
         m_saturn.configuration.NotifyObservers();
 
-        if (auto result = m_saturn.VDP.UseSoftwareRenderer(); !result || result.Value() == nullptr) {
-            SDL_Log("Failed to activate software renderer: %s",
-                    result.HasError() ? result.Error().message.c_str() : "unknown error");
+        if (!ActivateRenderer()) {
             return false;
         }
 
@@ -1010,6 +1025,8 @@ private:
 
         // Resolution changes are delivered alongside each completed frame
         m_saturn.VDP.SetSoftwareRenderCallback(
+            util::MakeClassMemberOptionalCallback<&EmulatorApp::OnFrameComplete>(this));
+        m_saturn.VDP.SetVulkanFrameReadyCallback(
             util::MakeClassMemberOptionalCallback<&EmulatorApp::OnFrameComplete>(this));
 
         m_saturn.SCSP.SetSampleCallback(
@@ -1287,6 +1304,32 @@ private:
         } else {
             buttonMask |= button;
         }
+    }
+
+    /// Activates the configured renderer. The Vulkan renderer is tried at the requested internal resolution first,
+    /// then at lower resolutions (the larger ones need more GPU memory), and the software renderer is the fallback
+    /// for devices that can't run it at all.
+    bool ActivateRenderer() {
+        for (int scale = m_config.resolutionScale; scale >= 1; --scale) {
+            auto result = m_saturn.VDP.UseVulkanRenderer(static_cast<std::uint32_t>(scale));
+            if (result && result.Value() != nullptr) {
+                SDL_Log("Using Vulkan renderer on %s at %dx internal resolution",
+                        result.Value()->GetDeviceName().c_str(), scale);
+                m_activeResolutionScale = scale;
+                return true;
+            }
+            SDL_Log("Vulkan renderer unavailable at %dx: %s", scale,
+                    result.HasError() ? result.Error().message.c_str() : "unknown error");
+        }
+
+        m_activeResolutionScale = 0;
+        if (auto result = m_saturn.VDP.UseSoftwareRenderer(); !result || result.Value() == nullptr) {
+            SDL_Log("Failed to activate software renderer: %s",
+                    result.HasError() ? result.Error().message.c_str() : "unknown error");
+            return false;
+        }
+        SDL_Log("Using software renderer");
+        return true;
     }
 
     void OnResolutionChanged(std::uint32_t width, std::uint32_t height) {

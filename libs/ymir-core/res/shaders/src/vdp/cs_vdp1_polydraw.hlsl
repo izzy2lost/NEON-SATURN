@@ -54,10 +54,22 @@
 #define POLYSPEC_SHADING_MODE     0
 #endif
 
+#ifdef __spirv__
+// Vulkan receives these parameters as push constants rather than root constants. The C++ side pads
+// the common parameters to 16 bytes like a cbuffer would, hence the explicit offset.
+struct RenderParamsPC {
+    CommonRenderParams commonParams;
+    [[vk::offset(16)]] PolyDrawParams polyDrawParams;
+};
+[[vk::push_constant]] RenderParamsPC g_renderParamsPC;
+    #define g_commonParams g_renderParamsPC.commonParams
+    #define g_polyDrawParams g_renderParamsPC.polyDrawParams
+#else
 cbuffer RenderParamsBuffer : register(b0) {
     CommonRenderParams g_commonParams;
     PolyDrawParams g_polyDrawParams;
 }
+#endif
 
 StructuredBuffer<PolySpan> g_spanParams : register(t1);
 Buffer<uint> g_spanPrefixSums : register(t2);
@@ -97,6 +109,12 @@ static const uint dblInterlaceDrawLine = BitExtract(g_commonParams.displayParams
 static const bool evenOddCoordSelect = BitTest(g_commonParams.displayParams, 6);
 
 static const bool deinterlace = BitTest(g_commonParams.enhancements, 0);
+static const uint kScale = DecodeResolutionScale(g_commonParams.enhancements);
+
+// Scaled framebuffer dimensions and sizes. Span coordinates are already scaled.
+static const uint2 scaledFBSize = fbSize * kScale;
+static const uint kScaledFBSize = kVDP1FBSize * kScale * kScale;
+static const uint kScaledFBRAMSize = kScaledFBSize * 2;
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Helpers
@@ -431,46 +449,51 @@ struct LineStepper {
     }
 };
 
+// VDP1 VRAM addresses wrap around at 512 KiB; textures near the end of VRAM continue at the start
+uint VRAMAddress(uint address) {
+    return address & (kVDP1VRAMSize - 1u);
+}
+
 void ReadTexel(uint u, uint v, uint charAddress, uint charSizeH, uint colorMode, uint colorData, out uint color, out bool transparent, out bool hasEndCode) {
     const uint charIndex = u + v * charSizeH;
 
     switch (colorMode) {
         case 0: // 4 bpp, 16 colors, bank mode
-            color = Read8(g_vram, charAddress + (charIndex >> 1));
+            color = Read8(g_vram, VRAMAddress(charAddress + (charIndex >> 1)));
             color = (color >> ((~u & 1) * 4)) & 0xF;
             hasEndCode = color == 0xF;
             transparent = color == 0x0;
             color |= colorData & 0xFFF0;
             break;
         case 1: // 4 bpp, 16 colors, lookup table mode
-            color = Read8(g_vram, charAddress + (charIndex >> 1));
+            color = Read8(g_vram, VRAMAddress(charAddress + (charIndex >> 1)));
             color = (color >> ((~u & 1) * 4)) & 0xF;
             hasEndCode = color == 0xF;
             transparent = color == 0x0;
-            color = Read16(g_vram, color * 2 + colorData * 8);
+            color = Read16(g_vram, VRAMAddress(color * 2 + colorData * 8));
             break;
         case 2: // 8 bpp, 64 colors, bank mode
-            color = Read8(g_vram, charAddress + charIndex);
+            color = Read8(g_vram, VRAMAddress(charAddress + charIndex));
             transparent = color == 0x00;
             hasEndCode = color == 0xFF;
             color &= 0x3F;
             color |= colorData & 0xFFC0;
             break;
         case 3: // 8 bpp, 128 colors, bank mode
-            color = Read8(g_vram, charAddress + charIndex);
+            color = Read8(g_vram, VRAMAddress(charAddress + charIndex));
             transparent = color == 0x00;
             hasEndCode = color == 0xFF;
             color &= 0x7F;
             color |= colorData & 0xFF80;
             break;
         case 4: // 8 bpp, 256 colors, bank mode
-            color = Read8(g_vram, charAddress + charIndex);
+            color = Read8(g_vram, VRAMAddress(charAddress + charIndex));
             transparent = color == 0x00;
             hasEndCode = color == 0xFF;
             color |= colorData & 0xFF00;
             break;
         case 5: // 16 bpp, 32768 colors, RGB mode
-            color = Read16(g_vram, (charAddress & ~0xF) + charIndex * 2);
+            color = Read16(g_vram, VRAMAddress((charAddress & ~0xF) + charIndex * 2));
             transparent = !BitTest(color, 15);
             hasEndCode = color == 0x7FFF;
             break;
@@ -513,9 +536,14 @@ void WriteOutput(int2 coord, OutData data) {
         }
     }
 
+    // With internal resolution scaling, coord is in scaled units. The mesh pattern and interlaced line selection
+    // operate on the native pixel that contains it.
+    int2 nativeCoord = coord / int(kScale);
+    const int2 subCoord = coord - nativeCoord * int(kScale);
+
     // Mesh checkerboard test
     const bool meshEnable = BitTest(cmdParams.cmdpmodcolr, 8);
-    if (!POLYSPEC_TRANSPARENT_MESH && meshEnable && BitTest(coord.x ^ coord.y, 0)) {
+    if (!POLYSPEC_TRANSPARENT_MESH && meshEnable && BitTest(nativeCoord.x ^ nativeCoord.y, 0)) {
         return;
     }
 
@@ -523,29 +551,30 @@ void WriteOutput(int2 coord, OutData data) {
 
 #if POLYSPEC_SHADING_MODE == POLYSPEC_SHADING_MODE_MSB
     const uint drawFB = BitExtract(g_commonParams.displayParams, 7, 1);
-    uint fbOffset = drawFB * kVDP1FBSize;
+    uint fbOffset = drawFB * kScaledFBSize;
 #endif
 
     // Interlace line selection
-    if (!deinterlace && doubleDensity && dblInterlaceEnable && (coord.y & 1) != dblInterlaceDrawLine) {
+    if (!deinterlace && doubleDensity && dblInterlaceEnable && (nativeCoord.y & 1) != dblInterlaceDrawLine) {
         return;
     }
-    if (deinterlace && doubleDensity && (coord.y & 1) != 0) {
+    if (deinterlace && doubleDensity && (nativeCoord.y & 1) != 0) {
 #if POLYSPEC_SHADING_MODE == POLYSPEC_SHADING_MODE_MSB
-        fbOffset += kVDP1FBRAMSize;
+        fbOffset += kScaledFBRAMSize;
 #else
-        outOffset += fbSize.x * fbSize.y;
+        outOffset += scaledFBSize.x * scaledFBSize.y;
 #endif
     }
     if ((deinterlace && doubleDensity) || dblInterlaceEnable) {
-        coord.y >>= 1;
+        nativeCoord.y >>= 1;
     }
+    const int2 fbCoord = nativeCoord * int(kScale) + subCoord;
 
-    outOffset += coord.y * fbSize.x + coord.x;
+    outOffset += fbCoord.y * scaledFBSize.x + fbCoord.x;
 
 #if POLYSPEC_TRANSPARENT_MESH
     if (meshEnable) {
-        outOffset += fbSize.x * fbSize.y * 2;
+        outOffset += scaledFBSize.x * scaledFBSize.y * 2;
     }
 #endif
 
@@ -635,7 +664,9 @@ void CSMain(uint3 id : SV_DispatchThreadID) {
         const uint colorMode = BitExtract(cmdParams.cmdpmodcolr, 3, 3);
         const bool transparentPixelDisable = BitTest(cmdParams.cmdpmodcolr, 6);
         const bool endCodesEnabled = !BitTest(cmdParams.cmdpmodcolr, 7);
-        const bool useHighSpeedShrink = BitTest(cmdParams.cmdpmodcolr, 12) && lineStepper.Length() < charSizeH - 1;
+        // High speed shrink applies to lines shorter than the texture at native resolution
+        const bool useHighSpeedShrink =
+            BitTest(cmdParams.cmdpmodcolr, 12) && lineStepper.Length() < (charSizeH - 1) * kScale;
         const bool evenOddCoordSelect = BitTest(g_commonParams.displayParams, 6);
 
         int uStart = 0;

@@ -5,22 +5,32 @@
 #include "vdp2_defs.hlsli"
 
 #include "util/bit_ops.hlsli"
+#include "util/spirv.hlsli"
 #include "util/data_ops.hlsli"
 
+#ifdef __spirv__
+// Vulkan receives these parameters as push constants rather than root constants.
+struct RenderParamsPC {
+    CommonRenderParams commonParams;
+};
+[[vk::push_constant]] RenderParamsPC g_renderParamsPC;
+    #define g_commonParams g_renderParamsPC.commonParams
+#else
 cbuffer CommonRenderParamsBuffer : register(b0) {
     CommonRenderParams g_commonParams;
 }
+#endif
 
 StructuredBuffer<LayerRenderParams> g_layerRenderParams : register(t1);
 ByteAddressBuffer g_vram : register(t2);
-Buffer<uint4> g_cramColor : register(t3);
+SPIRV_IMAGE_FORMAT("rgba8ui") Buffer<uint4> g_cramColor : register(t3);
 ByteAddressBuffer g_cramRotCoeff : register(t4);
 StructuredBuffer<RotParamBase> g_rotParamBases : register(t5);
 Texture2DArray<uint> g_spriteAttrsIn : register(t6);
 
-RWTexture2DArray<uint4> g_layerOut : register(u0);
-RWTexture2DArray<uint4> g_rbgLineColorOut : register(u1);
-RWTexture2D<uint> g_colorCalcWindowOut : register(u2);
+SPIRV_IMAGE_FORMAT("rgba8ui") RWTexture2DArray<uint4> g_layerOut : register(u0);
+SPIRV_IMAGE_FORMAT("rgba8ui") RWTexture2DArray<uint4> g_rbgLineColorOut : register(u1);
+SPIRV_IMAGE_FORMAT("r8ui") RWTexture2D<uint> g_colorCalcWindowOut : register(u2);
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Parameters
@@ -40,6 +50,11 @@ static const uint coeffDataAccess = BitExtract(g_commonParams.rotParams, 1, 4);
 static const bool coeffDataPerDot = BitTest(g_commonParams.rotParams, 5);
 
 static const bool deinterlace = BitTest(g_commonParams.enhancements, 0);
+static const uint kScale = ((g_commonParams.enhancements >> 2u) & 7u) + 1u;
+
+// Position of the current pixel in the sprite attributes texture, which matches the layer output position.
+// Set by the entrypoint.
+static uint2 s_spriteAttrsPos;
 
 static const uint colorRAMMode = BitExtract(g_commonParams.displayParams, 6, 2);
 static const uint kCRAMAddressMask = colorRAMMode == 1 ? 0x7FF : 0x3FF;
@@ -114,7 +129,7 @@ bool InsideWindow(GlobalWindowParams window, bool invert, uint2 pos) {
 }
 
 bool InsideSpriteWindow(bool invert, uint2 pos) {
-    return BitTest(g_spriteAttrsIn[uint3(pos, 0)], kSpriteAttrBitShadowWindow) != invert;
+    return BitTest(g_spriteAttrsIn[uint3(s_spriteAttrsPos, 0)], kSpriteAttrBitShadowWindow) != invert;
 }
 
 bool InsideWindows(LayerWindowParams layerWindows, uint2 pos) {
@@ -1119,8 +1134,12 @@ bool InsideColorCalcWindow(uint2 pos) {
 
 [numthreads(32, 1, 7)]
 void CSMain(uint3 id : SV_DispatchThreadID) {
-    const uint2 drawCoord = uint2(id.x, id.y + g_commonParams.startY);
-    const uint3 outCoord = uint3(drawCoord.x, GetY(drawCoord.y, false), id.z);
+    // Threads map to scaled pixels; startY is a native line. Layers are drawn at native resolution and replicated.
+    const uint2 scaledDrawCoord = uint2(id.x, id.y + g_commonParams.startY * kScale);
+    const uint2 drawCoord = scaledDrawCoord / kScale;
+    const uint subY = scaledDrawCoord.y - drawCoord.y * kScale;
+    const uint3 outCoord = uint3(scaledDrawCoord.x, GetY(drawCoord.y, false) * kScale + subY, id.z);
+    s_spriteAttrsPos = outCoord.xy;
     if (id.z <= 3) {
         g_layerOut[outCoord] = DrawNBG(drawCoord, id.z);
     } else if (id.z <= 5) {

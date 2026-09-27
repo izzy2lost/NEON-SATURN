@@ -317,6 +317,23 @@ class LauncherActivity : AppCompatActivity() {
             store.saveTextureFilter(value)
         }
 
+        // Renderer and internal resolution chips
+        val resolutionChips = listOf(
+            BootstrapStore.RESOLUTION_SOFTWARE to R.id.resolutionChipSoftware,
+            1 to R.id.resolutionChipGpu1x,
+            2 to R.id.resolutionChipGpu2x,
+            3 to R.id.resolutionChipGpu3x,
+            4 to R.id.resolutionChipGpu4x
+        )
+        val resolutionGroup = content.findViewById<com.google.android.material.chip.ChipGroup>(R.id.resolutionChipGroup)
+        val savedResolution = store.loadResolutionScale()
+        resolutionGroup.check(resolutionChips.first { it.first == savedResolution }.second)
+        resolutionGroup.setOnCheckedStateChangeListener { _, checkedIds ->
+            val value = resolutionChips.firstOrNull { it.second == checkedIds.firstOrNull() }?.first
+                ?: BootstrapStore.RESOLUTION_SOFTWARE
+            store.saveResolutionScale(value)
+        }
+
         // Upscaling filter chips
         val upscaleGroup = content.findViewById<com.google.android.material.chip.ChipGroup>(R.id.upscaleFilterChipGroup)
         when (store.loadUpscaleFilter()) {
@@ -522,6 +539,7 @@ class LauncherActivity : AppCompatActivity() {
                         aspectRatio = store.loadAspectRatio(),
                         textureFilter = store.loadTextureFilter(),
                         upscaleFilter = store.loadUpscaleFilter(),
+                        resolutionScale = store.loadResolutionScale(),
                         deinterlace = store.loadDeinterlaceEnabled(),
                         transparentMeshes = store.loadTransparentMeshesEnabled(),
                         rewindEnabled = store.loadRewindEnabled()

@@ -4,11 +4,21 @@
 #include "vdp2_defs.hlsli"
 
 #include "util/bit_ops.hlsli"
+#include "util/spirv.hlsli"
 #include "util/data_ops.hlsli"
 
+#ifdef __spirv__
+// Vulkan receives these parameters as push constants rather than root constants.
+struct RenderParamsPC {
+    CommonRenderParams commonParams;
+};
+[[vk::push_constant]] RenderParamsPC g_renderParamsPC;
+    #define g_commonParams g_renderParamsPC.commonParams
+#else
 cbuffer CommonRenderParams : register(b0) {
     CommonRenderParams g_commonParams;
 }
+#endif
 
 StructuredBuffer<ComposeParams> g_composeParams : register(t1);
 Texture2DArray<uint4> g_layerIn : register(t2);
@@ -17,7 +27,7 @@ Texture2DArray<uint4> g_rbgLineColorIn : register(t4);
 Texture2DArray<uint> g_spriteAttrsIn : register(t5);
 Texture2D<uint> g_colorCalcWindowIn : register(t6);
 
-RWTexture2D<float4> g_compositeOut : register(u0);
+SPIRV_IMAGE_FORMAT("rgba8") RWTexture2D<float4> g_compositeOut : register(u0);
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Definitions
@@ -60,6 +70,7 @@ static const bool normalTVMode = BitExtract(g_commonParams.displayParams, 10, 3)
 static const bool colorGradEnable = BitTest(g_commonParams.layerParams, 28);
 
 static const bool deinterlace = BitTest(g_commonParams.enhancements, 0);
+static const uint kScale = ((g_commonParams.enhancements >> 2u) & 7u) + 1u;
 static const bool transparentMeshes = BitTest(g_commonParams.enhancements, 1);
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -73,8 +84,11 @@ uint GetLoResInputX(uint x) {
     }
 }
 
+// Converts an output Y coordinate into a field line, which is how per-line inputs (line color/back screens and RBG
+// line colors) are indexed. Interlaced output always has two rows per field line: when deinterlacing, both rows are
+// composed; otherwise GetOutputY places the current field's line on its row.
 uint GetLoResInputY(uint y) {
-    if (deinterlace && interlaceMode >= kInterlaceModeSingleDensity && !exclusiveMonitor) {
+    if (interlaceMode >= kInterlaceModeSingleDensity && !exclusiveMonitor) {
         return y >> 1u;
     } else {
         return y;
@@ -159,8 +173,8 @@ bool IsColorCalcEnabled(uint layer, uint2 pos) {
         }
         const uint attrs = g_spriteAttrsIn[uint3(pos, 0)];
         const uint priority = BitExtract(layerAttrs, 0, 3);
-        const uint value = BitExtract(g_commonParams.spriteParams, 11, 3);
-        const uint cond = BitExtract(g_commonParams.spriteParams, 14, 2);
+        const uint value = BitExtract(g_commonParams.spriteParams, 12, 3);
+        const uint cond = BitExtract(g_commonParams.spriteParams, 15, 2);
         switch (cond) {
             case kSpriteCCCondPriorityLE:
                 return priority <= value;
@@ -196,9 +210,10 @@ uint3 Color888(uint val32) {
 
 uint3 GetLineColor(uint layer, uint2 pos) {
     if (layer == kLayerRBG0 || (layer == kLayerNBG0_RBG1 && IsBGLayerEnabled(kBGLayerRBG1))) {
-        return g_rbgLineColorIn[uint3(GetLoResInputX(pos.x), GetLoResInputY(pos.y), layer - kLayerRBG0)].rgb;
+        return g_rbgLineColorIn[uint3(GetLoResInputX(pos.x / kScale), GetLoResInputY(pos.y / kScale),
+                                      layer - kLayerRBG0)].rgb;
     }
-    return Color888(g_lnclBackIn[GetLoResInputY(pos.y)]);
+    return Color888(g_lnclBackIn[GetLoResInputY(pos.y / kScale)]);
 }
 
 int GetColorCalcRatio(uint layer, uint2 pos) {
@@ -243,9 +258,9 @@ uint4 GetLayerOutput(uint layer, uint2 pos) {
         case kLayerNBG3:
             return g_layerIn[uint3(pos.xy, GetBGLayerIndex(layer))];
         case kLayerBack:
-            return uint4(Color888(g_lnclBackIn[GetLoResInputY(pos.y) + kMaxResV]), 0); // the attribute byte doesn't matter
+            return uint4(Color888(g_lnclBackIn[GetLoResInputY(pos.y / kScale) + kMaxResV]), 0); // the attribute byte doesn't matter
         case kLayerLine:
-            return uint4(Color888(g_lnclBackIn[GetLoResInputY(pos.y)]), 0); // the attribute byte doesn't matter
+            return uint4(Color888(g_lnclBackIn[GetLoResInputY(pos.y / kScale)]), 0); // the attribute byte doesn't matter
         default:
             return kTransparentPixel; // should never happpen
     }
@@ -266,8 +281,10 @@ Attributes ToAttributes(uint pixelData) {
 // ---------------------------------------------------------------------------------------------------------------------
 // Compositor
 
+// basePos is in scaled units. Layer outputs are read at the scaled position, per-line inputs at the native line.
 uint3 Compose(uint2 basePos) {
-    const uint2 pos = uint2(basePos.x, GetOutputY(basePos.y));
+    const uint baseY = basePos.y / kScale;
+    const uint2 pos = uint2(basePos.x, GetOutputY(baseY) * kScale + (basePos.y - baseY * kScale));
 
     // Clear screen if display is disabled
     const bool displayEnabled = BitTest(g_commonParams.displayParams, 0);
@@ -275,7 +292,7 @@ uint3 Compose(uint2 basePos) {
         const bool borderColorMode = BitTest(g_commonParams.displayParams, 1);
         if (borderColorMode) {
             // Use back screen color
-            return Color888(g_lnclBackIn[GetLoResInputY(pos.y) + kMaxResV]);
+            return Color888(g_lnclBackIn[GetLoResInputY(pos.y / kScale) + kMaxResV]);
         }
         return uint3(0, 0, 0);
     }
@@ -364,8 +381,9 @@ uint3 Compose(uint2 basePos) {
 
             // Set layer 1 output to the color gradation screen where the designated screen is the topmost two layers
             if (layerStack[0] == colorGradLayer || layerStack[1] == colorGradLayer) {
-                const uint3 input2 = GetLayerOutput(colorGradLayer, uint2(max(int(pos.x) - 2, 0), pos.y)).rgb;
-                const uint3 input1 = GetLayerOutput(colorGradLayer, uint2(max(int(pos.x) - 1, 0), pos.y)).rgb;
+                // Neighboring native pixels
+                const uint3 input2 = GetLayerOutput(colorGradLayer, uint2(max(int(pos.x) - 2 * int(kScale), 0), pos.y)).rgb;
+                const uint3 input1 = GetLayerOutput(colorGradLayer, uint2(max(int(pos.x) - int(kScale), 0), pos.y)).rgb;
                 const uint3 input0 = GetLayerOutput(colorGradLayer, pos).rgb;
                 layerStack[1] = colorGradLayer;
                 layer1Pixel = (((input2 + input1) >> 1u) + input0) >> 1u;
@@ -424,12 +442,13 @@ uint3 Compose(uint2 basePos) {
         output = layer0Pixel;
     }
 
-    // Apply sprite shadow if sprite layer has a shadow pixel and is on top of the topmost layer
+    // Apply sprite shadow if sprite layer has a shadow pixel and is on top of the topmost layer, and shadows are enabled
+    // for the topmost layer
     const uint4 spriteOutput = GetLayerOutput(kLayerSprite, pos);
     const uint spritePriority = BitExtract(spriteOutput.a, 0, 3);
-    if (spritePriority >= layerPrios[0]) {
+    if (spritePriority >= layerPrios[0] && BitTest(g_composeParams[0].shadowEnable, layerStack[0])) {
         const uint spriteAttrs = g_spriteAttrsIn[uint3(pos, 0)];
-        const bool useSpriteWindow = BitTest(g_commonParams.spriteParams, 19);
+        const bool useSpriteWindow = BitTest(g_commonParams.spriteParams, 20);
         const bool isNormalShadow = BitExtract(spriteAttrs, kSpriteAttrBitSpecial, 2) == kSpriteDataShadow;
         const bool isMSBShadow = !useSpriteWindow && BitTest(spriteAttrs, kSpriteAttrBitShadowWindow);
         if (isNormalShadow || isMSBShadow) {
@@ -481,8 +500,10 @@ uint3 Compose(uint2 basePos) {
 // TODO: 32 threads might be suboptimal on AMD GPUs
 [numthreads(32, 1, 1)]
 void CSMain(uint3 id : SV_DispatchThreadID) {
-    const uint2 drawCoord = uint2(id.x, id.y + g_commonParams.startY);
-    const uint2 outCoord = uint2(drawCoord.x, GetOutputY(drawCoord.y));
+    // Threads map to scaled pixels; startY is a native (compose) line
+    const uint2 drawCoord = uint2(id.x, id.y + g_commonParams.startY * kScale);
+    const uint drawY = drawCoord.y / kScale;
+    const uint2 outCoord = uint2(drawCoord.x, GetOutputY(drawY) * kScale + (drawCoord.y - drawY * kScale));
     const uint3 outColor = Compose(drawCoord);
     g_compositeOut[outCoord] = float4(outColor / 255.0, 1.0f);
 }

@@ -5,20 +5,30 @@
 #include "vdp2_defs.hlsli"
 
 #include "util/bit_ops.hlsli"
+#include "util/spirv.hlsli"
 #include "util/data_ops.hlsli"
 
+#ifdef __spirv__
+// Vulkan receives these parameters as push constants rather than root constants.
+struct RenderParamsPC {
+    CommonRenderParams commonParams;
+};
+[[vk::push_constant]] RenderParamsPC g_renderParamsPC;
+    #define g_commonParams g_renderParamsPC.commonParams
+#else
 cbuffer CommonRenderParamsBuffer : register(b0) {
     CommonRenderParams g_commonParams;
 }
+#endif
 
 StructuredBuffer<LayerRenderParams> g_layerRenderParams : register(t1);
 ByteAddressBuffer g_vram : register(t2);
-Buffer<uint4> g_cramColor : register(t3);
+SPIRV_IMAGE_FORMAT("rgba8ui") Buffer<uint4> g_cramColor : register(t3);
 StructuredBuffer<RotParamBase> g_rotParamBases : register(t4);
 ByteAddressBuffer g_spriteFB : register(t5);
 
-RWTexture2DArray<uint4> g_layerOut : register(u0);
-RWTexture2DArray<uint> g_spriteAttrsOut : register(u1);
+SPIRV_IMAGE_FORMAT("rgba8ui") RWTexture2DArray<uint4> g_layerOut : register(u0);
+SPIRV_IMAGE_FORMAT("r16ui") RWTexture2DArray<uint> g_spriteAttrsOut : register(u1);
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Parameters
@@ -33,21 +43,27 @@ static const bool dblInterlaceDrawLine = BitTest(g_commonParams.displayParams, 1
 static const bool rotate = BitTest(g_commonParams.spriteParams, 0);
 static const bool pixel8Bits = BitTest(g_commonParams.spriteParams, 1);
 static const uint type = BitExtract(g_commonParams.spriteParams, 2, 4);
-static const uint fbSizeH = 512u << BitExtract(g_commonParams.spriteParams, 6, 1);
-static const bool inHalfResH = BitTest(g_commonParams.spriteParams, 7);
-static const bool outHalfResH = BitTest(g_commonParams.spriteParams, 8);
-static const bool mixedFormat = BitTest(g_commonParams.spriteParams, 9);
-static const bool useSpriteWindow = BitTest(g_commonParams.spriteParams, 19);
-static const uint spriteDisplayFB = BitExtract(g_commonParams.spriteParams, 22, 1);
+static const uint2 fbSize = uint2(
+    512u << BitExtract(g_commonParams.spriteParams, 6, 1),
+    256u << BitExtract(g_commonParams.spriteParams, 7, 1)
+);
+static const bool inHalfResH = BitTest(g_commonParams.spriteParams, 8);
+static const bool outHalfResH = BitTest(g_commonParams.spriteParams, 9);
+static const bool mixedFormat = BitTest(g_commonParams.spriteParams, 10);
+static const bool useSpriteWindow = BitTest(g_commonParams.spriteParams, 20);
+static const uint spriteDisplayFB = BitExtract(g_commonParams.spriteParams, 23, 1);
 
 static const bool deinterlace = BitTest(g_commonParams.enhancements, 0);
+static const uint kScale = ((g_commonParams.enhancements >> 2u) & 7u) + 1u;
 
 static const uint colorRAMMode = BitExtract(g_commonParams.displayParams, 6, 2);
 static const uint kCRAMAddressMask = colorRAMMode == 1 ? 0x7FF : 0x3FF;
 
-static const uint kSpriteFBBaseOffset = spriteDisplayFB * kVDP1FBRAMSize;
-static const uint kDeinterlaceFBBaseOffset = kVDP1FBRAMSize * 2;
-static const uint kVDP1MeshFBOffset = kVDP1FBRAMSize * 2 * 2;
+// With internal resolution scaling, each VDP1 framebuffer is kScale * kScale times larger
+static const uint kScaledFBSize = kVDP1FBRAMSize * kScale * kScale;
+static const uint kSpriteFBBaseOffset = spriteDisplayFB * kScaledFBSize;
+static const uint kDeinterlaceFBBaseOffset = kScaledFBSize * 2;
+static const uint kVDP1MeshFBOffset = kScaledFBSize * 2 * 2;
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Utilities
@@ -202,8 +218,8 @@ uint2 CalcRotationSpriteCoordinates(uint2 pos) {
     // 10 + 0*10 + 0*10 = 10 + 10 + 10 = 10 frac bits
     // 23 + 10*13 + 9*13 = 23 + 23 + 22 = 23 total bits
     return uint2(
-        Xst + pos.y * deltaXst + pos.x * deltaX,
-        Yst + pos.y * deltaYst + pos.x * deltaY
+        (Xst + pos.y * deltaXst + pos.x * deltaX) >> 10,
+        (Yst + pos.y * deltaYst + pos.x * deltaY) >> 10
     );
 }
 
@@ -396,7 +412,8 @@ struct SpriteOutput {
 
 // index 0 = sprite
 // index 1 = transparent meshes
-SpriteOutput DrawSprite(uint2 pos, uint2 outPos, uint index) {
+// pos is the native screen position; scaledPos is the position in the scaled output
+SpriteOutput DrawSprite(uint2 pos, uint2 scaledPos, uint index) {
     const bool meshLayer = index == 1;
 
     SpriteOutput output = { kTransparentPixel, 0, false, false, false };
@@ -405,6 +422,9 @@ SpriteOutput DrawSprite(uint2 pos, uint2 outPos, uint index) {
     uint field = 0;
     if (rotate) {
         spritePos = CalcRotationSpriteCoordinates(pos);
+        if (any(spritePos >= fbSize)) {
+            return output;
+        }
     } else {
         spritePos = pos;
         if (inHalfResH) {
@@ -419,7 +439,18 @@ SpriteOutput DrawSprite(uint2 pos, uint2 outPos, uint index) {
             spritePos.y >>= 1;
         }
     }
-    const uint fbAddr = spritePos.x + spritePos.y * fbSizeH;
+
+    // Locate the pixel in the scaled framebuffer. Rotated sprites use the native mapping; the others map the scaled
+    // screen position directly so that every scaled pixel reads its own framebuffer pixel.
+    const uint2 subPos = scaledPos - pos * kScale;
+    uint2 scaledSpritePos;
+    if (rotate) {
+        scaledSpritePos = spritePos * kScale + subPos;
+    } else {
+        scaledSpritePos.x = inHalfResH ? (scaledPos.x << 1) : outHalfResH ? (scaledPos.x >> 1) : scaledPos.x;
+        scaledSpritePos.y = spritePos.y * kScale + subPos.y;
+    }
+    const uint fbAddr = scaledSpritePos.x + scaledSpritePos.y * fbSize.x * kScale;
 
     if (InsideWindows(pos)) {
         return output;
@@ -458,15 +489,15 @@ SpriteOutput DrawSprite(uint2 pos, uint2 outPos, uint index) {
     const SpriteData spriteData = FetchSpriteData(fbAddr, field, meshLayer);
 
     // Handle sprite window
-    const bool spriteWindowEnabled = BitTest(g_commonParams.spriteParams, 20);
-    const bool spriteWindowInverted = BitTest(g_commonParams.spriteParams, 21);
+    const bool spriteWindowEnabled = BitTest(g_commonParams.spriteParams, 21);
+    const bool spriteWindowInverted = BitTest(g_commonParams.spriteParams, 22);
     if (useSpriteWindow && spriteWindowEnabled && spriteData.shadowOrWindow != spriteWindowInverted) {
         output.layer = kTransparentPixel;
         output.shadowOrWindow = true;
         return output;
     }
 
-    const uint colorDataOffset = BitExtract(g_commonParams.spriteParams, 16, 3) << 8;
+    const uint colorDataOffset = BitExtract(g_commonParams.spriteParams, 17, 3) << 8;
     const uint colorIndex = colorDataOffset + spriteData.colorData;
     const uint4 outColor = FetchCRAMColor(0, colorIndex);
     const bool outTransparent = spriteData.special == kSpriteDataTransparent;
@@ -491,9 +522,12 @@ SpriteOutput DrawSprite(uint2 pos, uint2 outPos, uint index) {
 // TODO: 32 threads might be suboptimal on AMD GPUs
 [numthreads(32, 1, 1)]
 void CSMain(uint3 id : SV_DispatchThreadID) {
-    const uint2 drawCoord = uint2(id.x, id.y + g_commonParams.startY);
-    const uint2 outCoord = uint2(drawCoord.x, GetY(drawCoord.y));
-    const SpriteOutput output = DrawSprite(drawCoord, outCoord.xy, id.z);
+    // Threads map to scaled pixels; startY is a native line
+    const uint2 scaledDrawCoord = uint2(id.x, id.y + g_commonParams.startY * kScale);
+    const uint2 drawCoord = scaledDrawCoord / kScale;
+    const uint2 subCoord = scaledDrawCoord - drawCoord * kScale;
+    const uint2 outCoord = uint2(scaledDrawCoord.x, GetY(drawCoord.y) * kScale + subCoord.y);
+    const SpriteOutput output = DrawSprite(drawCoord, scaledDrawCoord, id.z);
     g_layerOut[uint3(outCoord.xy, id.z + 6)] = output.layer;
     g_spriteAttrsOut[uint3(outCoord.xy, id.z)] =
         output.colorCalcRatio |

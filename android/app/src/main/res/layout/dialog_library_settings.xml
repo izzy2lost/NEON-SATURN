@@ -126,6 +126,65 @@
                 android:text="@string/settings_filter_smooth" />
         </com.google.android.material.chip.ChipGroup>
 
+        <!-- Renderer and internal resolution -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_resolution"
+            android:textAppearance="?attr/textAppearanceLabelLarge" />
+
+        <com.google.android.material.chip.ChipGroup
+            android:id="@+id/resolutionChipGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            app:selectionRequired="true"
+            app:singleSelection="true">
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/resolutionChipSoftware"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_resolution_software" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/resolutionChipGpu1x"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_resolution_gpu_1x" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/resolutionChipGpu2x"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_resolution_gpu_2x" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/resolutionChipGpu3x"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_resolution_gpu_3x" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/resolutionChipGpu4x"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_resolution_gpu_4x" />
+        </com.google.android.material.chip.ChipGroup>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/settings_resolution_note"
+            android:textAppearance="?attr/textAppearanceBodySmall" />
+
         <!-- Upscaling filter -->
         <TextView
             android:layout_width="match_parent"

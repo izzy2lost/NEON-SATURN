@@ -450,8 +450,12 @@ function(_shader_make_compile_spirv_command)
     list(TRANSFORM ARG_MACROS PREPEND "-D" OUTPUT_VARIABLE _macro_args)
 
     if (DXC_SPIRV_SUPPORTED)
-        set(_compile_flags "")
-        if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+        # Match the memory layout of the C++ structures, which follow D3D12 packing rules (requires
+        # scalarBlockLayout on the Vulkan device), and move UAVs (u#) to bindings 16+ so they don't collide with
+        # SRVs (t#), which Vulkan would otherwise assign to the same binding numbers.
+        set(_compile_flags "-fvk-use-scalar-layout" "-fvk-u-shift" "16" "0")
+        # The debug info requires VK_KHR_shader_non_semantic_info, which many Android drivers lack
+        if (CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT ANDROID)
             list(APPEND _compile_flags "-fspv-debug=vulkan-with-source")
         endif ()
         if (ARG_INCLUDE_REFLECTION)

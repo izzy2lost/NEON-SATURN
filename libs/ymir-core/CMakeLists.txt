@@ -391,6 +391,27 @@ else ()
     )
 endif ()
 
+## Add the Vulkan VDP renderer
+option(Ymir_ENABLE_VULKAN_RENDERER "Build the Vulkan VDP renderer" OFF)
+if (Ymir_ENABLE_VULKAN_RENDERER)
+    message(STATUS "Ymir: Vulkan VDP renderer enabled")
+    target_sources(ymir-core
+        PUBLIC
+            include/ymir/hw/vdp/renderer/vdp_renderer_hw_vulkan.hpp
+            include/ymir/hw/vdp/renderer/vdp_renderer_hw_vulkan_callbacks.hpp
+
+        PRIVATE
+            src/ymir/hw/vdp/renderer/vdp_renderer_hw_vulkan.cpp
+    )
+    if (ANDROID)
+        # The NDK sysroot provides the Vulkan headers and loader; renderer errors are reported to logcat
+        target_link_libraries(ymir-core PRIVATE vulkan log)
+    else ()
+        find_package(Vulkan REQUIRED)
+        target_link_libraries(ymir-core PRIVATE Vulkan::Vulkan)
+    endif ()
+endif ()
+
 ## Compile VDP1 and VDP2 renderer shaders
 set(SHADER_INPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/res/shaders")
 set(SHADER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
@@ -402,6 +423,7 @@ set(SHADER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
 set(COMPUTE_SHADER_SOURCES
     res/shaders/src/vdp/cs_vdp1_erase.hlsl
     res/shaders/src/vdp/cs_vdp1_fbram_write.hlsl
+    res/shaders/src/vdp/cs_vdp1_fbram_downsample.hlsl
 
     res/shaders/src/vdp/cs_vdp2_compose.hlsl
     res/shaders/src/vdp/cs_vdp2_render_bgs.hlsl
@@ -532,7 +554,7 @@ elseif (UNIX) # Linux and FreeBSD
     endif ()
 endif ()
 
-if (Vulkan_FOUND)
+if (Vulkan_FOUND AND TARGET Vulkan::SPIRV-Tools)
     message(STATUS "Adding Vulkan to ymir-core")
     target_link_libraries(ymir-core PRIVATE
         Vulkan::Vulkan
@@ -624,6 +646,7 @@ target_compile_definitions(ymir-core PUBLIC "Ymir_EXTRA_INLINING=$<BOOL:${Ymir_E
 target_compile_definitions(ymir-core PUBLIC "YMIR_PLATFORM_HAS_DIRECT3D=$<BOOL:${WIN32}>")
 target_compile_definitions(ymir-core PUBLIC "YMIR_PLATFORM_HAS_VULKAN=$<BOOL:${Vulkan_FOUND}>")
 target_compile_definitions(ymir-core PUBLIC "YMIR_PLATFORM_HAS_METAL=$<BOOL:${APPLE}>")
+target_compile_definitions(ymir-core PUBLIC "YMIR_VDP_HAS_VULKAN_RENDERER=$<BOOL:${Ymir_ENABLE_VULKAN_RENDERER}>")
 target_compile_definitions(ymir-core PUBLIC "TOML_EXCEPTIONS=0")
 
 ## Define feature flags macros

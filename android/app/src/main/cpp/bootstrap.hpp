@@ -14,6 +14,8 @@ struct BootstrapConfig {
     std::string textureFilter = "nearest";
     /// 0 = off (plain SDL_Renderer blit), 1 = 6x xBRZ shader (needs the GL presenter).
     int upscaleFilter = 0;
+    /// 0 = software renderer; 1-4 = Vulkan renderer at that internal resolution scale.
+    int resolutionScale = 0;
     bool deinterlace = false;
     bool transparentMeshes = false;
     bool rewindEnabled = false;

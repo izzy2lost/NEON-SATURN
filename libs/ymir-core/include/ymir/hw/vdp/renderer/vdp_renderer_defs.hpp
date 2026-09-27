@@ -16,6 +16,9 @@ enum class VDPRendererType {
 #if YMIR_PLATFORM_HAS_DIRECT3D
     Direct3D12,
 #endif
+#if YMIR_VDP_HAS_VULKAN_RENDERER
+    Vulkan,
+#endif
 };
 
 /// @brief Retrieves the name of a given VDP renderer type.
@@ -28,6 +31,9 @@ inline std::string_view GetRendererName(VDPRendererType type) {
 #if YMIR_PLATFORM_HAS_DIRECT3D
     case VDPRendererType::Direct3D12: return "Direct3D 12";
 #endif
+#if YMIR_VDP_HAS_VULKAN_RENDERER
+    case VDPRendererType::Vulkan: return "Vulkan";
+#endif
     default: return "Invalid";
     }
 }
@@ -39,6 +45,9 @@ inline constexpr VDPRendererType kRendererTypes[] = {
 #if YMIR_PLATFORM_HAS_DIRECT3D
     VDPRendererType::Direct3D12,
 #endif
+#if YMIR_VDP_HAS_VULKAN_RENDERER
+    VDPRendererType::Vulkan,
+#endif
 };
 
 // Forward declarations of concrete VDP renderer implementations.
@@ -49,6 +58,9 @@ class SoftwareVDPRenderer;
 class HardwareVDPRendererBase;
 #if YMIR_PLATFORM_HAS_DIRECT3D
 class Direct3D12VDPRenderer;
+#endif
+#if YMIR_VDP_HAS_VULKAN_RENDERER
+class VulkanVDPRenderer;
 #endif
 
 namespace detail {
@@ -75,6 +87,14 @@ namespace detail {
     template <>
     struct VDPRendererTypeMeta<VDPRendererType::Direct3D12> {
         using type = Direct3D12VDPRenderer;
+    };
+#endif
+
+#if YMIR_VDP_HAS_VULKAN_RENDERER
+    /// @brief Metadata about the Vulkan VDP renderer.
+    template <>
+    struct VDPRendererTypeMeta<VDPRendererType::Vulkan> {
+        using type = VulkanVDPRenderer;
     };
 #endif
 

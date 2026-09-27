@@ -70,6 +70,7 @@ static const std::unordered_map<std::string_view, GameInfo> kGameInfosByCode = {
     {"MK-81304",   {.flags = ForceSH2Cache | RelaxedVDP2BitmapCPAccessChecks}}, // Dark Savior (USA, Europe) -- crash during intro cutscene
     {"T-22101G",   {.flags = ForceSH2Cache | RelaxedVDP2BitmapCPAccessChecks}}, // Dark Savior (Japan) -- crash during intro cutscene
     {"T-13305G",   {.flags = ForceSH2Cache}}, // Dragon Ball Z - Idainaru Dragon Ball Densetsu (Japan) -- black screen after starting a new game
+    {"T-4304G",    {.flags = ForceSH2Cache}}, // No-appointment Gals Olympos (Japan) -- crash during spinning animation
 
     // -------------------------------------------------------------------------
     // Hacks

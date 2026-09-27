@@ -12,6 +12,7 @@ struct ComposeParams {
     int3 colorOffsetB;
     uint bgColorCalcRatios[5];
     uint backLineColorCalcRatios[2];
+    uint shadowEnable;
 };
 
 #endif
