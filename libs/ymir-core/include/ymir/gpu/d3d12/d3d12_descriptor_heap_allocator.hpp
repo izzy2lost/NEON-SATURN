@@ -140,6 +140,15 @@ public:
             ++it;
         }
 
+        // Trivial case: range to free is entirely after the free range.
+        //   freeing:                      |-----|
+        //      from: |--------------|
+        // Add new free range to the end of the list.
+        if (it == m_freeRanges.end()) {
+            m_freeRanges.push_back(FreeRange{.start = start, .length = count});
+            return true;
+        }
+
         const UINT freeRangeStart = it->start;
         const UINT freeRangeEnd = it->start + it->length;
 
@@ -148,7 +157,7 @@ public:
         //      from:           |--------------|
         // Add new free range to the start of the list.
         if (rangeEnd < freeRangeStart) {
-            m_freeRanges.push_front(FreeRange{.start = start, .length = count});
+            m_freeRanges.insert(it, FreeRange{.start = start, .length = count});
             return true;
         }
 
