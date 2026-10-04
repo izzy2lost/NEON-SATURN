@@ -11,7 +11,7 @@ VDP::VDP(core::Scheduler &scheduler, core::Configuration &config)
     , m_scheduler(scheduler) {
 
     config.system.videoStandard.Observe([this](VideoStandard videoStandard) { SetVideoStandard(videoStandard); });
-    config.system.sh2ClockFactor.Observe([this](RatioU32) {
+    config.system.sh2ClockFactor.Observe([this](Ratio) {
         m_state.regs2.TVMDDirty = true;
         UpdateResolution<false>();
     });

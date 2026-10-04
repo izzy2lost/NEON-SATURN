@@ -9,6 +9,7 @@
 #include <ymir/sys/saturn.hpp>
 
 #include <ymir/util/dev_log.hpp>
+#include <ymir/util/fmt_ratio.hpp>
 #include <ymir/util/inline.hpp>
 
 #include <util/math.hpp>
@@ -37,9 +38,11 @@ concept arithmetic_type = std::integral<T> || std::floating_point<T>;
 // - Removed "Video.IncludeVDP1InRenderThread"
 // - Renamed "Video.ThreadedVDP" to "Video.ThreadedVDP2"
 // - Moved "Input.Gamepad*" to "Input.Gamepad.*"
-// v4:
+// v5:
 // - Moved "Video.ThreadedVDP1", "Video.ThreadedVD2" and "Video.ThreadedDeinterlacer" to "Video.SoftwareRenderer.*"
 // - Moved "Video.Deinterlace" and "Video.TransparentMeshes" to "Video.Enhancements.*"
+// v6:
+// - Changed "Video.ForcedAspect" from a double to a Ratio
 inline constexpr int kConfigVersion = 5;
 
 namespace grp {
@@ -237,6 +240,50 @@ FORCE_INLINE static void Parse(toml::node_view<toml::node> &node, Settings::Vide
         } else if (*opt == "90CCW"s) {
             value = Settings::Video::DisplayRotation::_90CCW;
         }
+    }
+}
+
+static void Parse(toml::node_view<toml::node> &node, Ratio &value) {
+    if (auto opt = node.value<std::string_view>()) {
+        std::string_view sv = *opt;
+        auto skipSpaces = [&] {
+            while (!sv.empty() && (sv.front() == ' ' || sv.front() == '\t')) {
+                sv.remove_prefix(1);
+            }
+        };
+        auto readU32 = [&](uint32 &outValue) {
+            const auto [ptr, error] = std::from_chars(sv.data(), sv.data() + sv.size(), outValue);
+            if (error != std::errc{}) {
+                // No digits, a sign, or overflow
+                return false;
+            }
+            sv.remove_prefix(static_cast<size_t>(ptr - sv.data()));
+            return true;
+        };
+
+        uint32 num, den;
+        skipSpaces();
+        if (!readU32(num)) {
+            return;
+        }
+        skipSpaces();
+        if (sv.empty() || (sv.front() != ':' && sv.front() != '/')) {
+            return;
+        }
+        sv.remove_prefix(1);
+        skipSpaces();
+        if (!readU32(den)) {
+            return;
+        }
+        skipSpaces();
+        if (!sv.empty() || num == 0 || den == 0) {
+            // Trailing garbage or degenerate ratio
+            return;
+        }
+
+        value = Ratio{num, den};
+    } else if (auto opt = node.value<double>()) {
+        value = Ratio::FromDouble(*opt);
     }
 }
 
@@ -705,6 +752,10 @@ FORCE_INLINE static T ToTOML(T value) {
     return value;
 }
 
+static std::string ToTOML(const Ratio &value) {
+    return fmt::format("{}", value);
+}
+
 // Creates a TOML array with valid entries (skips Nones).
 FORCE_INLINE static toml::array ToTOML(const input::InputBind &value) {
     toml::array out{};
@@ -1069,7 +1120,7 @@ void Settings::ResetToDefaults() {
     video.graphicsAdapter = std::nullopt;
     video.forceIntegerScaling = false;
     video.forceAspectRatio = true;
-    video.forcedAspect = 4.0 / 3.0;
+    video.forcedAspect = {4, 3};
     video.rotation = Video::DisplayRotation::Normal;
     video.autoResizeWindow = false;
     video.displayVideoOutputInWindow = false;
@@ -2043,7 +2094,7 @@ SettingsSaveResult Settings::Save() {
             {"GraphicsAdapter", ToTOML(video.graphicsAdapter)},
             {"ForceIntegerScaling", video.forceIntegerScaling},
             {"ForceAspectRatio", video.forceAspectRatio},
-            {"ForcedAspect", video.forcedAspect},
+            {"ForcedAspect", ToTOML(video.forcedAspect)},
             {"Rotation", ToTOML(video.rotation)},
             {"AutoResizeWindow", video.autoResizeWindow},
             {"DisplayVideoOutputInWindow", video.displayVideoOutputInWindow},

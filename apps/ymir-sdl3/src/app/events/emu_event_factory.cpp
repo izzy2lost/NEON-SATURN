@@ -631,7 +631,7 @@ EmuEvent SetEmulateSH2Cache(bool enable) {
 
 EmuEvent SetSH2ClockFactor(uint32 factor) {
     return RunFunction(
-        [=](SharedContext &ctx) { ctx.saturn.instance->SetSH2ClockFactor(RatioU32::FromPercentage(factor)); });
+        [=](SharedContext &ctx) { ctx.saturn.instance->SetSH2ClockFactor(Ratio::FromPercentage(factor)); });
 }
 
 EmuEvent SetCDBlockLLE(bool enable) {

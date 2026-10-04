@@ -20,6 +20,7 @@
 #include <app/display.hpp>
 
 #include <ymir/util/observable.hpp>
+#include <ymir/util/ratio.hpp>
 
 #include "settings_defaults.hpp"
 
@@ -489,7 +490,7 @@ struct Settings {
 
         bool forceIntegerScaling;
         bool forceAspectRatio;
-        double forcedAspect;
+        Ratio forcedAspect;
         DisplayRotation rotation;
 
         bool autoResizeWindow;

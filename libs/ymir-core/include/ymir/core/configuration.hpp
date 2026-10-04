@@ -17,10 +17,10 @@
 
 namespace ymir::core {
 
-inline constexpr RatioU32 kMinSH2ClockRatio = RatioU32::FromPercentage(25u);
-inline constexpr RatioU32 kMaxSH2ClockRatio = RatioU32::FromPercentage(10000u);
+inline constexpr Ratio kMinSH2ClockRatio = Ratio::FromPercentage(25u);
+inline constexpr Ratio kMaxSH2ClockRatio = Ratio::FromPercentage(10000u);
 
-inline constexpr RatioU32 ClampSH2ClockRatio(RatioU32 ratio) {
+inline constexpr Ratio ClampSH2ClockRatio(Ratio ratio) {
     return std::clamp(ratio, kMinSH2ClockRatio, kMaxSH2ClockRatio);
 }
 
@@ -74,7 +74,7 @@ struct Configuration {
         /// The ratio is clamped to the range [25%..10000%]. The SH2 starts to choke on interrupts if it runs too
         /// slowly and, while going faster technically is feasible, a 2.8 GHz SH2 is already too much to emulate, let
         /// alone two of them.
-        util::Observable<RatioU32, ClampSH2ClockRatio> sh2ClockFactor = RatioU32::FromPercentage(100u);
+        util::Observable<Ratio, ClampSH2ClockRatio> sh2ClockFactor = Ratio::FromPercentage(100u);
     } system;
 
     /// @brief RTC configuration

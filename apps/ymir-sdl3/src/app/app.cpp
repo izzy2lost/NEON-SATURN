@@ -729,7 +729,7 @@ void App::RunEmulator() {
 
             const auto &videoSettings = settings.video;
             const bool forceAspectRatio = videoSettings.forceAspectRatio;
-            const double forcedAspect = videoSettings.forcedAspect;
+            const Ratio forcedAspect = videoSettings.forcedAspect;
             const bool horzDisplay = videoSettings.rotation == Settings::Video::DisplayRotation::Normal ||
                                      videoSettings.rotation == Settings::Video::DisplayRotation::_180;
 
@@ -757,8 +757,8 @@ void App::RunEmulator() {
                 scale = std::floor(scale);
             }
 
-            double baseWidth = forceAspectRatio ? std::ceil(screen.height * screen.scaleY * forcedAspect)
-                                                : screen.width * screen.scaleX;
+            double baseWidth =
+                forceAspectRatio ? forcedAspect.MulCeil(screen.height * screen.scaleY) : screen.width * screen.scaleX;
             double baseHeight = screen.height * screen.scaleY;
             if (!horzDisplay) {
                 std::swap(baseWidth, baseHeight);
@@ -932,8 +932,9 @@ void App::RunEmulator() {
     auto renderDispTexture = [&](double targetWidth, double targetHeight) {
         auto &videoSettings = settings.video;
         const bool forceAspectRatio = videoSettings.forceAspectRatio;
-        const double forcedAspect = videoSettings.forcedAspect;
-        const double dispWidth = (forceAspectRatio ? screen.height * forcedAspect : screen.width) / screen.scaleY;
+        const Ratio forcedAspect = videoSettings.forcedAspect;
+        const double dispWidth =
+            (forceAspectRatio ? forcedAspect.MulCeil(screen.height) : screen.width) / screen.scaleY;
         const double dispHeight = (double)screen.height / screen.scaleX;
         const double dispScaleX = (double)targetWidth / dispWidth;
         const double dispScaleY = (double)targetHeight / dispHeight;
@@ -2093,7 +2094,7 @@ void App::RunEmulator() {
         m_inputService.UpdateInputs(std::chrono::duration<double>(timeDelta).count());
 
         const bool prevForceAspectRatio = settings.video.forceAspectRatio;
-        const double prevForcedAspect = settings.video.forcedAspect;
+        const Ratio prevForcedAspect = settings.video.forcedAspect;
 
         // Hide mouse cursor if no interactions were made recently or if the mouse is captured
         const bool mouseMoved = io.MouseDelta.x != 0.0f && io.MouseDelta.y != 0.0f;
@@ -2361,22 +2362,22 @@ void App::RunEmulator() {
                     ImGui::MenuItem("Force integer scaling", nullptr, &videoSettings.forceIntegerScaling);
                     ImGui::MenuItem("Force aspect ratio", nullptr, &videoSettings.forceAspectRatio);
                     if (ImGui::SmallButton("4:3")) {
-                        videoSettings.forcedAspect = 4.0 / 3.0;
+                        videoSettings.forcedAspect = {4, 3};
                         settings.MakeDirty();
                     }
                     ImGui::SameLine();
                     if (ImGui::SmallButton("3:2")) {
-                        videoSettings.forcedAspect = 3.0 / 2.0;
+                        videoSettings.forcedAspect = {3, 2};
                         settings.MakeDirty();
                     }
                     ImGui::SameLine();
                     if (ImGui::SmallButton("16:10")) {
-                        videoSettings.forcedAspect = 16.0 / 10.0;
+                        videoSettings.forcedAspect = {16, 10};
                         settings.MakeDirty();
                     }
                     ImGui::SameLine();
                     if (ImGui::SmallButton("16:9")) {
-                        videoSettings.forcedAspect = 16.0 / 9.0;
+                        videoSettings.forcedAspect = {16, 9};
                         settings.MakeDirty();
                     }
 
@@ -2808,11 +2809,11 @@ void App::RunEmulator() {
                 const bool horzDisplay = videoSettings.rotation == Settings::Video::DisplayRotation::Normal ||
                                          videoSettings.rotation == Settings::Video::DisplayRotation::_180;
 
-                double aspectRatio = videoSettings.forceAspectRatio
-                                         ? 1.0 / videoSettings.forcedAspect
-                                         : (double)screen.height / screen.width * screen.scaleY / screen.scaleX;
+                Ratio aspectRatio = videoSettings.forceAspectRatio
+                                        ? videoSettings.forcedAspect.Inverse()
+                                        : Ratio{screen.height * screen.scaleY, screen.width * screen.scaleX};
                 if (!horzDisplay) {
-                    aspectRatio = 1.0 / aspectRatio;
+                    aspectRatio = aspectRatio.Inverse();
                 }
 
                 ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
@@ -2820,9 +2821,9 @@ void App::RunEmulator() {
                     (horzDisplay ? ImVec2(vdp::kMinResH, vdp::kMinResV) : ImVec2(vdp::kMinResV, vdp::kMinResH)),
                     ImVec2(FLT_MAX, FLT_MAX),
                     [](ImGuiSizeCallbackData *data) {
-                        double aspectRatio = *(double *)data->UserData;
+                        Ratio aspectRatio = *(Ratio *)data->UserData;
                         data->DesiredSize.y =
-                            (float)(int)(data->DesiredSize.x * aspectRatio) + ImGui::GetFrameHeightWithSpacing();
+                            (float)aspectRatio.MulCeil(data->DesiredSize.x) + ImGui::GetFrameHeightWithSpacing();
                     },
                     (void *)&aspectRatio);
 
@@ -3216,7 +3217,7 @@ void App::RunEmulator() {
         if (!settings.video.displayVideoOutputInWindow) {
             const auto &videoSettings = settings.video;
             const bool forceAspectRatio = videoSettings.forceAspectRatio;
-            const double forcedAspect = videoSettings.forcedAspect;
+            const Ratio forcedAspect = videoSettings.forcedAspect;
             const bool aspectRatioChanged = forceAspectRatio && forcedAspect != prevForcedAspect;
             const bool forceAspectRatioChanged = prevForceAspectRatio != forceAspectRatio;
             const bool screenSizeChanged = aspectRatioChanged || forceAspectRatioChanged || screen.resolutionChanged;
@@ -3242,8 +3243,8 @@ void App::RunEmulator() {
 
             wh -= menuBarHeight;
 
-            double baseWidth = forceAspectRatio ? std::ceil(screen.height * screen.scaleY * forcedAspect)
-                                                : screen.width * screen.scaleX;
+            double baseWidth =
+                forceAspectRatio ? forcedAspect.MulCeil(screen.height * screen.scaleY) : screen.width * screen.scaleX;
             double baseHeight = screen.height * screen.scaleY;
             if (!horzDisplay) {
                 std::swap(baseWidth, baseHeight);
@@ -3281,7 +3282,7 @@ void App::RunEmulator() {
                         screenScaleY = screen.prevScaleY;
                     }
                     if (screenSizeChanged) {
-                        double baseWidth = forceAspectRatio ? std::ceil(screenHeight * screenScaleY * prevForcedAspect)
+                        double baseWidth = forceAspectRatio ? prevForcedAspect.MulCeil(screenHeight * screenScaleY)
                                                             : screenWidth * screenScaleX;
                         double baseHeight = screenHeight * screenScaleY;
                         if (!horzDisplay) {
