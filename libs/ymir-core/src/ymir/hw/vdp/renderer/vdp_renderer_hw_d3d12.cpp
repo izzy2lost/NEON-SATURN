@@ -1042,6 +1042,8 @@ struct Direct3D12VDPRenderer::Impl {
         D3D12Resource fbramWritesBuffer;
         /// @brief FBRAM writes buffer SRV (offline).
         DescriptorRange fbramWritesSRV;
+        /// @brief CPU-side list of FBRAM writes.
+        std::vector<VDP1FBRAMWrite> cpuFBRAMWritesList;
 
         /// @brief FBRAM download buffer.
         D3D12Resource fbramDownloadBuffer;
@@ -3931,6 +3933,8 @@ struct Direct3D12VDPRenderer::Impl {
         return {};
     }
 
+    /// @brief Uploads the entire VDP1 FBRAM to the GPU.
+    /// @return nothing, or an error message
     [[nodiscard]] util::VoidResult<> VDP1UploadFBRAM() {
         static constexpr size_t kFrameSize = kVDP1FBRAMSize * 2;
 
@@ -3981,6 +3985,8 @@ struct Direct3D12VDPRenderer::Impl {
         return {};
     }
 
+    /// @brief Uploads modified portions of VDP1 FBRAM to the GPU
+    /// @return nothing, or an error message
     [[nodiscard]] util::VoidResult<> VDP1FlushFBRAM() {
         if (!vdp1.fbramDirty) {
             return {};
@@ -3997,7 +4003,6 @@ struct Direct3D12VDPRenderer::Impl {
         auto &fb = vdpState.mem1.FBRAM[vdpState.fbIndex.draw];
 
         // Group modified FBRAM writes into 32-bit chunks
-        std::vector<VDP1FBRAMWrite> writes{};
         size_t pos, count = 0;
         const uint64 *bitmapData = vdp1.fbramDirty.GetData();
         for (pos = vdp1.fbramDirty.FindNextGroup<4>(count); pos < vdp1.fbramDirty.Size();
@@ -4005,7 +4010,7 @@ struct Direct3D12VDPRenderer::Impl {
             const uint32 baseAddress = pos;
 
             for (size_t i = 0; i < count; i += 4) {
-                VDP1FBRAMWrite &write = writes.emplace_back();
+                VDP1FBRAMWrite &write = vdp1.cpuFBRAMWritesList.emplace_back();
                 write.address = baseAddress + i;
 
                 const uint8 bits = bitmapData[write.address >> 6u] >> (write.address & 63u);
@@ -4022,18 +4027,18 @@ struct Direct3D12VDPRenderer::Impl {
         }
         vdp1.fbramDirty.ClearAll();
 
-        assert(!writes.empty());
+        assert(!vdp1.cpuFBRAMWritesList.empty());
 
         // Get upload buffer chunk for this transfer
         UploadAllocation alloc{};
-        const size_t size = writes.size() * sizeof(VDP1FBRAMWrite);
+        const size_t size = vdp1.cpuFBRAMWritesList.size() * sizeof(VDP1FBRAMWrite);
         if (auto result = AllocateUploadBuffer(uploadBuffer, size, 4, alloc); !result) {
             return util::ErrorMessage{
                 fmt::format("Failed to allocate upload buffer for VDP1 FBRAM writes list: {}", result.Error().message)};
         }
 
         // Upload list
-        memcpy(alloc.data, writes.data(), size);
+        memcpy(alloc.data, vdp1.cpuFBRAMWritesList.data(), size);
         cmdList->CopyBufferRegion(dstResource, 0, uploadBufferPtr, alloc.offset, size);
 
         // Transition to SRV usage
@@ -4042,7 +4047,7 @@ struct Direct3D12VDPRenderer::Impl {
         barrierTracker.Flush(cmdList);
 
         // Dispatch FBRAM write compute shader
-        const uint32 writeCount = writes.size();
+        const uint32 writeCount = vdp1.cpuFBRAMWritesList.size();
         cmdList->SetPipelineState(vdp1.fbramWritePSO.GetPointer());
         cmdList->SetComputeRootSignature(vdp1.fbramWriteRootSig.GetPointer());
         cmdList->SetComputeRoot32BitConstants(0, sizeof(vdp1.cpuCommonRenderParams) / sizeof(uint32),
@@ -4056,6 +4061,8 @@ struct Direct3D12VDPRenderer::Impl {
 
         // Mark GPU-side FBRAM as dirty
         vdp1.fbramReadbackDirty = true;
+
+        vdp1.cpuFBRAMWritesList.clear();
 
         return {};
     }
@@ -6000,6 +6007,9 @@ struct Direct3D12VDPRenderer::Impl {
 
         // FIXME: this should not be needed
         VDP1SubmitSpans();
+        if (auto result = VDP1FlushFBRAM(); !result) {
+            devlog::warn<grp::dx12_vdp1>("VDP1 FBRAM flush failed: {}", result.Error().message);
+        }
 
         FrameContext &frameCtx = frames.GetCurrentFrame();
 
