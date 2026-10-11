@@ -47,20 +47,21 @@ if (Ymir_DEV_BUILD)
         set(Ymir_NIGHTLY_BUILD ON)
     else ()
         set(Ymir_NIGHTLY_BUILD OFF)
-        set (Ymir_LOCAL_BUILD ON)
+        set(Ymir_LOCAL_BUILD ON)
     endif ()
-    set (Ymir_STABLE_BUILD OFF)
+    set(Ymir_STABLE_BUILD OFF)
 else ()
-    set (Ymir_STABLE_BUILD ON)
+    set(Ymir_STABLE_BUILD ON)
 endif ()
 if (DEFINED Ymir_VERSION_BUILD AND NOT Ymir_VERSION_BUILD STREQUAL "")
     set(Ymir_VERSION "${Ymir_VERSION}+${Ymir_VERSION_BUILD}")
 endif ()
 
-## Selectively enable in-development features
+## Feature flags -- selectively enable in-development features
 ## Template:
-## option(Ymir_FF_[NAME] "[description]" ${Ymir_FEATUREFLAG_DEFAULT})
-option(Ymir_FF_HOST_CD_DRIVES "Enable support for reading discs from host drives" OFF)
+## option(Ymir_FF_[NAME] "[description]" [default-state])
+##   default state is a BOOL, usually OFF or ${Ymir_LOCAL_BUILD}
+option(Ymir_FF_HOST_CD_DRIVES "Enable support for reading discs from host drives" ${Ymir_LOCAL_BUILD})
 
 if (Ymir_LIBRARY_ONLY)
     message(STATUS "Ymir: Library-only build")

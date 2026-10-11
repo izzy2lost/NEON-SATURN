@@ -469,17 +469,6 @@ set(VERTEX_SHADER_SOURCES
 set(PIXEL_SHADER_SOURCES
     res/shaders/gctx/quad_ps.hlsl
 )
-## TODO: add per-platform shader code if needed
-# if (WIN32)
-#     list(APPEND VERTEX_SHADER_SOURCES
-#         res/shaders/d3d12/some_shader_vs.hlsl
-#     )
-#     list(APPEND PIXEL_SHADER_SOURCES
-#         res/shaders/d3d12/some_shader_ps.hlsl
-#     )
-# elseif (APPLE)
-# elseif (UNIX) # Linux and FreeBSD
-# endif ()
 
 set(COMPILED_SHADERS "")
 foreach (SHADER_SRC ${VERTEX_SHADER_SOURCES})
@@ -650,7 +639,7 @@ endif()
 
 ## Define additional macros
 target_compile_definitions(ymir-sdl3 PUBLIC Ymir_ENABLE_IMGUI_DEMO=$<BOOL:${Ymir_ENABLE_IMGUI_DEMO}>)
-target_compile_definitions(ymir-core PUBLIC Ymir_ENABLE_UPDATE_CHECKS=$<BOOL:${Ymir_ENABLE_UPDATE_CHECKS}>)
+target_compile_definitions(ymir-sdl3 PUBLIC Ymir_ENABLE_UPDATE_CHECKS=$<BOOL:${Ymir_ENABLE_UPDATE_CHECKS}>)
 target_compile_definitions(ymir-sdl3 PUBLIC Ymir_ORGANIZATION_NAME="StrikerX3")
 target_compile_definitions(ymir-sdl3 PUBLIC Ymir_APP_NAME="${PROJECT_NAME}")
 
