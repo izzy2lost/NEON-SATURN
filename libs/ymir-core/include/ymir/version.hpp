@@ -5,20 +5,6 @@
 @brief Ymir library version definitions.
 */
 
-#if Ymir_DEV_BUILD
-    #ifdef Ymir_BUILD_TIMESTAMP
-        #define Ymir_NIGHTLY_BUILD 1
-    #else
-        #define Ymir_NIGHTLY_BUILD 0
-    #endif
-#else
-    #define Ymir_DEV_BUILD 0
-    #define Ymir_NIGHTLY_BUILD 0
-#endif
-
-#define Ymir_STABLE_BUILD !Ymir_DEV_BUILD
-#define Ymir_LOCAL_BUILD (Ymir_DEV_BUILD && !Ymir_NIGHTLY_BUILD)
-
 namespace ymir::version {
 
 /// @brief The library version string in the format "<major>.<minor>.<patch>[-<prerelease>][+<build>]".

@@ -36,10 +36,26 @@ option(Ymir_ENABLE_IMGUI_DEMO "Enable ImGui demo window" ON)
 option(Ymir_ENABLE_UPDATE_CHECKS "Enable update checks" ON)
 cmake_dependent_option(Ymir_LIBRARY_ONLY "Compile ymir-core only" OFF is_top_level ON)
 
-## Feature flags
-## If ON, all feature flags will be enabled by default
-## All feature flags can be selectively overridden
-option(Ymir_FEATUREFLAG_DEFAULT "Enable all feature flags by default" ${Ymir_DEV_BUILD})
+## Version and build info
+if (DEFINED Ymir_VERSION_PRERELEASE AND NOT Ymir_VERSION_PRERELEASE STREQUAL "")
+    set(Ymir_VERSION "${Ymir_VERSION}-${Ymir_VERSION_PRERELEASE}")
+endif ()
+set (Ymir_LOCAL_BUILD OFF)
+if (Ymir_DEV_BUILD)
+    set(Ymir_VERSION "${Ymir_VERSION}-dev")
+    if (DEFINED Ymir_BUILD_TIMESTAMP)
+        set(Ymir_NIGHTLY_BUILD ON)
+    else ()
+        set(Ymir_NIGHTLY_BUILD OFF)
+        set (Ymir_LOCAL_BUILD ON)
+    endif ()
+    set (Ymir_STABLE_BUILD OFF)
+else ()
+    set (Ymir_STABLE_BUILD ON)
+endif ()
+if (DEFINED Ymir_VERSION_BUILD AND NOT Ymir_VERSION_BUILD STREQUAL "")
+    set(Ymir_VERSION "${Ymir_VERSION}+${Ymir_VERSION_BUILD}")
+endif ()
 
 ## Selectively enable in-development features
 ## Template:

@@ -3,8 +3,6 @@
 #include <util/os_exception_handler.hpp>
 #include <ymir/util/thread_name.hpp>
 
-#include <ymir/version.hpp>
-
 #include <cxxopts.hpp>
 #include <fmt/format.h>
 
