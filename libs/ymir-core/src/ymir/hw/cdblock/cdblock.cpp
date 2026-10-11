@@ -992,6 +992,14 @@ void CDBlock::ProcessDriveState() {
     }
 
     switch (GetStatusCode()) {
+    case kStatusCodeBusy:
+        if (m_busyDelay > 0) {
+            --m_busyDelay;
+        }
+        if (m_busyDelay == 0) {
+            m_status.statusCode = m_busyTargetStatus;
+        }
+        break;
     case kStatusCodeSeek:
         // HACK: Extremely hacky way to make the status transition from Seek to Play
         if (m_seekTicks > 0) {
@@ -2082,7 +2090,9 @@ void CDBlock::CmdSeekDisc() {
     devlog::trace<grp::base>("Seek position: {:06X}", startPos);
     if (startPos == 0xFFFFFF) {
         devlog::debug<grp::base>("Paused");
-        m_status.statusCode = kStatusCodePause;
+        m_status.statusCode = kStatusCodeBusy;
+        m_busyTargetStatus = kStatusCodePause;
+        m_busyDelay = 3;
         m_targetDriveCycles = kDriveCyclesNotPlaying;
         m_bufferFullPause = false;
     } else if (startPos == 0x000000) {

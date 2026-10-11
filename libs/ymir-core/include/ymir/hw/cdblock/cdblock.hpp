@@ -113,6 +113,9 @@ private:
         uint8 index;         // current index
     } m_status;
 
+    uint8 m_busyTargetStatus; // Target status for the Busy state
+    uint8 m_busyDelay;        // Number of ticks until the Busy state switches to the target state
+
     bool m_readyForPeriodicReports; // HACK to avoid overwriting the initial state during the boot sequence
 
     uint32 m_currDriveCycles;   // current cycle count for drive state processing

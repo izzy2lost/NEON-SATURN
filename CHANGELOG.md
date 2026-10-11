@@ -54,6 +54,7 @@ Introduces save state file version 14.
 - CD Block (HLE): Emulate read FIFO for all read transfers. (thanks to @celeriyacon)
 - CD Block (HLE): Get/Calculate Actual Size nuances.
 - CD Block (HLE): Handle default end of disc parameter in Play Disc. Fixes Gunbird song not resuming after pausing. (#625)
+- CD Block (HLE): Introduce Busy status when pausing playback. Fixes Amagi Shien not booting. (#309)
 - CD Block (HLE): Report current CD status and raise CMOK HIRQ signal when processing unimplemented commands.
 - CD Block (HLE): Report wait status when attempting to calculate actual size of more sectors than available in a partition.
 - CD Block (HLE): Read reset position flag correctly from parameters.
