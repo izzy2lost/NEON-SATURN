@@ -137,8 +137,11 @@ void SCSP::Reset(bool hard) {
 
     // Clear write queue
     ThreadEvent dummy;
-    while (m_threadEventQueue.try_dequeue(m_ctokThreadEventQueue, dummy)) {
+    while (m_threadEventQueue.try_dequeue_from_producer(m_ptokThreadEventQueue, dummy)) {
     }
+    m_eventsEnqueued = 0;
+    m_targetSlotStep.store(0, std::memory_order_release);
+    EnqueueEvent(ThreadEvent::Reset());
 
     m_scspInterruptLevel = false;
     m_lastSCSPInterruptLevel = false;
@@ -606,8 +609,11 @@ void SCSP::LoadState(const savestate::SCSPSaveState &state) {
 
     // Clear write queue
     ThreadEvent dummy;
-    while (m_threadEventQueue.try_dequeue(m_ctokThreadEventQueue, dummy)) {
+    while (m_threadEventQueue.try_dequeue_from_producer(m_ptokThreadEventQueue, dummy)) {
     }
+    m_eventsEnqueued = 0;
+    m_targetSlotStep.store(0, std::memory_order_release);
+    EnqueueEvent(ThreadEvent::Reset());
 
     m_scspInterruptLevel = (m_scuPendingInterrupts & m_scuEnabledInterrupts) != 0;
     m_lastSCSPInterruptLevel = m_scspInterruptLevel;
@@ -1361,15 +1367,21 @@ SCSP::Probe::Probe(SCSP &scsp)
 void SCSP::SCSPThreadLoop() {
     util::SetCurrentThreadName("SCSP thread");
 
+    uint32 currGranularity = m_stepGranularity;
+
     std::array<ThreadEvent, 64> events{};
 
     while (m_threadRunning) {
         const size_t numEvents =
-            m_threadEventQueue.wait_dequeue_bulk(m_ctokThreadEventQueue, events.begin(), events.size());
+            m_threadEventQueue.try_dequeue_bulk_from_producer(m_ptokThreadEventQueue, events.begin(), events.size());
         for (size_t i = 0; i < numEvents; ++i) {
             const auto &evt = events[i];
 
             switch (evt.type) {
+            case ThreadEvent::Type::Reset:
+                m_currSlotStep = 0;
+                m_eventsProcessed.store(0, std::memory_order_release);
+                break;
             case ThreadEvent::Type::Write: //
             {
                 const bool isReg = (evt.write.address >= 0x5B0'0000);
@@ -1391,42 +1403,69 @@ void SCSP::SCSPThreadLoop() {
                 break;
             }
 
-            case ThreadEvent::Type::Sample:
+            case ThreadEvent::Type::Quit: m_threadRunning = false; break;
+            }
+
+            m_eventsProcessed.fetch_add(1, std::memory_order_release);
+            m_eventsProcessed.notify_all();
+        }
+
+        // Process samples then substeps as needed
+        uint64 currStep = m_currSlotStep.load(std::memory_order_acquire);
+        const uint64 tgtStep = m_targetSlotStep.load(std::memory_order_acquire);
+        while (currStep < tgtStep) {
+            const uint64 delta = tgtStep - currStep;
+            if (delta >= 32u && m_currSlot == 0u && currGranularity >= 5) {
                 // Process one sample
                 if (m_debugTracing) {
                     TickSample<true, true>();
                 } else {
                     TickSample<false, true>();
                 }
-                break;
-
-            case ThreadEvent::Type::Slots:
+                currStep += 32u;
+            } else if (delta >= 16u && ((m_currSlot & 0xF) == 0u) && currGranularity >= 4) {
                 if (m_debugTracing) {
-                    switch (evt.stepShift) {
-                    case 0u: TickSlots<0u, true, true>(); break;
-                    case 1u: TickSlots<1u, true, true>(); break;
-                    case 2u: TickSlots<2u, true, true>(); break;
-                    case 3u: TickSlots<3u, true, true>(); break;
-                    case 4u: TickSlots<4u, true, true>(); break;
-                    case 5u: TickSlots<5u, true, true>(); break;
-                    }
+                    TickSlots<4u, true, true>();
                 } else {
-                    switch (evt.stepShift) {
-                    case 0u: TickSlots<0u, false, true>(); break;
-                    case 1u: TickSlots<1u, false, true>(); break;
-                    case 2u: TickSlots<2u, false, true>(); break;
-                    case 3u: TickSlots<3u, false, true>(); break;
-                    case 4u: TickSlots<4u, false, true>(); break;
-                    case 5u: TickSlots<5u, false, true>(); break;
-                    }
+                    TickSlots<4u, false, true>();
                 }
-                break;
-
-            case ThreadEvent::Type::Quit: m_threadRunning = false; break;
+                currStep += 16u;
+            } else if (delta >= 8u && ((m_currSlot & 0x7) == 0u) && currGranularity >= 3) {
+                if (m_debugTracing) {
+                    TickSlots<3u, true, true>();
+                } else {
+                    TickSlots<3u, false, true>();
+                }
+                currStep += 8u;
+            } else if (delta >= 4u && ((m_currSlot & 0x3) == 0u) && currGranularity >= 2) {
+                if (m_debugTracing) {
+                    TickSlots<2u, true, true>();
+                } else {
+                    TickSlots<2u, false, true>();
+                }
+                currStep += 4u;
+            } else if (delta >= 2u && ((m_currSlot & 0x1) == 0u) && currGranularity >= 1) {
+                if (m_debugTracing) {
+                    TickSlots<1u, true, true>();
+                } else {
+                    TickSlots<1u, false, true>();
+                }
+                currStep += 2u;
+            } else {
+                if (m_debugTracing) {
+                    TickSlots<0u, true, true>();
+                } else {
+                    TickSlots<0u, false, true>();
+                }
+                currStep += 1u;
             }
+        }
+        m_currSlotStep.store(currStep, std::memory_order_release);
+        m_currSlotStep.notify_all();
 
-            m_eventsProcessed.fetch_add(1, std::memory_order_release);
-            m_eventsProcessed.notify_all();
+        const uint32 newGranularity = m_stepGranularity;
+        if (currGranularity != newGranularity && (m_currSlot & ((1u << newGranularity) - 1u)) == 0) {
+            currGranularity = newGranularity;
         }
     }
 }
@@ -1436,10 +1475,16 @@ void SCSP::SyncSCSPThread() {
         return;
     }
 
-    uint64 target = m_eventsProcessed.load();
+    uint64 target = m_eventsProcessed.load(std::memory_order_acquire);
     while (target != m_eventsEnqueued) {
         m_eventsProcessed.wait(target, std::memory_order_acquire);
         target = m_eventsProcessed.load(std::memory_order_acquire);
+    }
+
+    target = m_currSlotStep.load(std::memory_order_acquire);
+    while (target != m_targetSlotStep.load(std::memory_order_acquire)) {
+        m_currSlotStep.wait(target, std::memory_order_acquire);
+        target = m_currSlotStep.load(std::memory_order_acquire);
     }
 
     PollSCSPInterrupts();
@@ -1518,13 +1563,15 @@ template void SCSP::WriteRegBus<uint8>(uint32 address, uint8 value);
 template void SCSP::WriteRegBus<uint16>(uint32 address, uint16 value);
 
 void SCSP::TickSampleThreaded() {
-    EnqueueEvent(ThreadEvent::Sample());
+    m_targetSlotStep.fetch_add(32u, std::memory_order_acq_rel);
+    m_targetSlotStep.notify_all();
     PollSCSPInterrupts();
 }
 
 template <uint32 stepShift>
 void SCSP::TickSlotsThreaded() {
-    EnqueueEvent(ThreadEvent::Slots(stepShift));
+    m_targetSlotStep.fetch_add(1u << stepShift);
+    m_targetSlotStep.notify_all();
     PollSCSPInterrupts();
 }
 

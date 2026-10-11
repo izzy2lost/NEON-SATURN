@@ -34,7 +34,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <blockingconcurrentqueue.h>
+#include <concurrentqueue.h>
 #include <iosfwd>
 #include <mutex>
 #include <optional>
@@ -1332,25 +1332,20 @@ private:
     };
 
     struct ThreadEvent {
-        enum class Type { Write, Sample, Slots, Quit };
+        enum class Type { Reset, Write, Quit };
 
         Type type;
         union {
             WriteEvent write;
-            uint32 stepShift;
         };
+
+        static ThreadEvent Reset() {
+            return ThreadEvent{.type = Type::Reset};
+        }
 
         static ThreadEvent Write(uint32 address, uint32 value, uint8 size) {
             return ThreadEvent{.type = Type::Write,
                                .write = WriteEvent{.address = address, .value = value, .size = size}};
-        }
-
-        static ThreadEvent Sample() {
-            return ThreadEvent{.type = Type::Sample};
-        }
-
-        static ThreadEvent Slots(uint32 stepShift) {
-            return ThreadEvent{.type = Type::Slots, .stepShift = stepShift};
         }
 
         static ThreadEvent Quit() {
@@ -1365,9 +1360,11 @@ private:
     std::atomic<uint64> m_eventsProcessed = 0;
     uint64 m_eventsEnqueued = 0;
 
-    moodycamel::BlockingConcurrentQueue<ThreadEvent, ConcQueueTraits> m_threadEventQueue;
+    std::atomic<uint64> m_targetSlotStep = 0;
+    std::atomic<uint64> m_currSlotStep = 0;
+
+    moodycamel::ConcurrentQueue<ThreadEvent, ConcQueueTraits> m_threadEventQueue;
     moodycamel::ProducerToken m_ptokThreadEventQueue{m_threadEventQueue};
-    moodycamel::ConsumerToken m_ctokThreadEventQueue{m_threadEventQueue};
 
     std::mutex m_cddaMutex;
     std::mutex m_midiQueueMutex;
