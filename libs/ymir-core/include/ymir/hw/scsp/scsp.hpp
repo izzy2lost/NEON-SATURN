@@ -238,6 +238,13 @@ private:
                               : OnTransitionalTickEvent<newStepShift, false, threaded>;
     }
 
+    // Retrieves a pointer to the transitional tick event processing function based on the current debug tracing mode.
+    template <uint32 newStepShift>
+    auto GetTransitionalTickEvent() {
+        return m_threadedSCSP ? GetTransitionalTickEvent<newStepShift, true>()
+                              : GetTransitionalTickEvent<newStepShift, false>();
+    }
+
     // Retrieves a pointer to the slot tick event processing function based on the current debug tracing mode.
     template <uint32 stepShift, bool threaded>
     auto GetSlotTickEvent() const {
@@ -245,10 +252,20 @@ private:
                               : OnSlotTickEvent<stepShift, false, threaded>;
     }
 
+    template <uint32 stepShift>
+    auto GetSlotTickEvent() const {
+        return m_threadedSCSP ? GetSlotTickEvent<stepShift, true>() : GetSlotTickEvent<stepShift, false>();
+    }
+
     // Retrieves a pointer to the sample tick event processing function based on the current debug tracing mode.
     template <bool threaded>
     auto GetSampleTickEvent() const {
         return m_debugTracing ? OnSampleTickEvent<true, threaded> : OnSampleTickEvent<false, threaded>;
+    }
+
+    // Retrieves a pointer to the sample tick event processing function based on the current debug tracing mode.
+    auto GetSampleTickEvent() const {
+        return m_threadedSCSP ? GetSampleTickEvent<true>() : GetSampleTickEvent<false>();
     }
 
     // Updates the step function for processing samples.
@@ -1148,7 +1165,7 @@ private:
     // -------------------------------------------------------------------------
     // Audio processing
 
-    template <uint32 stepShift, bool debug>
+    template <uint32 stepShift, bool debug, bool threaded>
     void TickSlots(); // Processes a single slot (16 SCSP cycles)
     template <bool debug, bool threaded>
     void TickSample(); // Processes a full sample (512 SCSP cycles)
@@ -1315,10 +1332,13 @@ private:
     };
 
     struct ThreadEvent {
-        enum class Type { Write, Sample, Quit };
+        enum class Type { Write, Sample, Slots, Quit };
 
         Type type;
-        WriteEvent write;
+        union {
+            WriteEvent write;
+            uint32 stepShift;
+        };
 
         static ThreadEvent Write(uint32 address, uint32 value, uint8 size) {
             return ThreadEvent{.type = Type::Write,
@@ -1327,6 +1347,10 @@ private:
 
         static ThreadEvent Sample() {
             return ThreadEvent{.type = Type::Sample};
+        }
+
+        static ThreadEvent Slots(uint32 stepShift) {
+            return ThreadEvent{.type = Type::Slots, .stepShift = stepShift};
         }
 
         static ThreadEvent Quit() {

@@ -624,7 +624,7 @@ void SCSP::OnSlotTickEvent(core::EventContext &eventContext, void *userContext) 
     if constexpr (threaded) {
         scsp.TickSlotsThreaded<stepShift>();
     } else {
-        scsp.TickSlots<stepShift, debug>();
+        scsp.TickSlots<stepShift, debug, false>();
     }
     eventContext.Reschedule(kCyclesPerSlot << stepShift);
 }
@@ -660,7 +660,7 @@ void SCSP::OnTransitionalTickEvent(core::EventContext &eventContext, void *userC
         }
     } else {
         // Not yet aligned; continue ticking slots one by one
-        scsp.TickSlots<0, debug>();
+        scsp.TickSlots<0, debug, threaded>();
         eventContext.Reschedule(kCyclesPerSlot);
     }
 }
@@ -676,52 +676,26 @@ void SCSP::SetStepGranularity(uint32 granularity) {
             const uint64 newTarget = target - (kCyclesPerSlot << m_stepGranularity) + (kCyclesPerSlot << granularity);
             m_scheduler.ScheduleAt(m_sampleTickEvent, newTarget);
 
-            if (!m_threadedSCSP) {
-                core::Scheduler::EventCallback callback;
-                switch (granularity) {
-                case 0u: callback = GetSlotTickEvent<0u, false>(); break;
-                case 1u:
-                    callback =
-                        (m_currSlot & 0x1) ? GetTransitionalTickEvent<1u, false>() : GetSlotTickEvent<1u, false>();
-                    break;
-                case 2u:
-                    callback =
-                        (m_currSlot & 0x3) ? GetTransitionalTickEvent<2u, false>() : GetSlotTickEvent<2u, false>();
-                    break;
-                case 3u:
-                    callback =
-                        (m_currSlot & 0x7) ? GetTransitionalTickEvent<3u, false>() : GetSlotTickEvent<3u, false>();
-                    break;
-                case 4u:
-                    callback =
-                        (m_currSlot & 0xF) ? GetTransitionalTickEvent<4u, false>() : GetSlotTickEvent<4u, false>();
-                    break;
-                default: util::unreachable();
-                }
-                m_scheduler.SetEventCallback(m_sampleTickEvent, this, callback);
+            core::Scheduler::EventCallback callback;
+            switch (granularity) {
+            case 0u: callback = GetSlotTickEvent<0u>(); break;
+            case 1u: callback = (m_currSlot & 0x1) ? GetTransitionalTickEvent<1u>() : GetSlotTickEvent<1u>(); break;
+            case 2u: callback = (m_currSlot & 0x3) ? GetTransitionalTickEvent<2u>() : GetSlotTickEvent<2u>(); break;
+            case 3u: callback = (m_currSlot & 0x7) ? GetTransitionalTickEvent<3u>() : GetSlotTickEvent<3u>(); break;
+            case 4u: callback = (m_currSlot & 0xF) ? GetTransitionalTickEvent<4u>() : GetSlotTickEvent<4u>(); break;
+            default: util::unreachable();
             }
+            m_scheduler.SetEventCallback(m_sampleTickEvent, this, callback);
         } else {
             // Going from smaller to larger steps requires the slot counter to be realigned.
             // Luckily, we don't need to reschedule it.
-            if (!m_threadedSCSP) {
-                switch (granularity) {
-                case 1u:
-                    m_scheduler.SetEventCallback(m_sampleTickEvent, this, GetTransitionalTickEvent<1u, false>());
-                    break;
-                case 2u:
-                    m_scheduler.SetEventCallback(m_sampleTickEvent, this, GetTransitionalTickEvent<2u, false>());
-                    break;
-                case 3u:
-                    m_scheduler.SetEventCallback(m_sampleTickEvent, this, GetTransitionalTickEvent<3u, false>());
-                    break;
-                case 4u:
-                    m_scheduler.SetEventCallback(m_sampleTickEvent, this, GetTransitionalTickEvent<4u, false>());
-                    break;
-                case 5u:
-                    m_scheduler.SetEventCallback(m_sampleTickEvent, this, GetTransitionalTickEvent<5u, false>());
-                    break;
-                default: util::unreachable();
-                }
+            switch (granularity) {
+            case 1u: m_scheduler.SetEventCallback(m_sampleTickEvent, this, GetTransitionalTickEvent<1u>()); break;
+            case 2u: m_scheduler.SetEventCallback(m_sampleTickEvent, this, GetTransitionalTickEvent<2u>()); break;
+            case 3u: m_scheduler.SetEventCallback(m_sampleTickEvent, this, GetTransitionalTickEvent<3u>()); break;
+            case 4u: m_scheduler.SetEventCallback(m_sampleTickEvent, this, GetTransitionalTickEvent<4u>()); break;
+            case 5u: m_scheduler.SetEventCallback(m_sampleTickEvent, this, GetTransitionalTickEvent<5u>()); break;
+            default: util::unreachable();
             }
         }
         m_stepGranularity = granularity;
@@ -729,17 +703,13 @@ void SCSP::SetStepGranularity(uint32 granularity) {
 }
 
 void SCSP::UpdateStepFunction() {
-    if (m_threadedSCSP) {
-        m_scheduler.SetEventCallback(m_sampleTickEvent, this, GetSampleTickEvent<true>());
-        return;
-    }
     switch (m_stepGranularity) {
-    case 0u: m_scheduler.SetEventCallback(m_sampleTickEvent, this, GetSlotTickEvent<0u, false>()); break;
-    case 1u: m_scheduler.SetEventCallback(m_sampleTickEvent, this, GetTransitionalTickEvent<1u, false>()); break;
-    case 2u: m_scheduler.SetEventCallback(m_sampleTickEvent, this, GetTransitionalTickEvent<2u, false>()); break;
-    case 3u: m_scheduler.SetEventCallback(m_sampleTickEvent, this, GetTransitionalTickEvent<3u, false>()); break;
-    case 4u: m_scheduler.SetEventCallback(m_sampleTickEvent, this, GetTransitionalTickEvent<4u, false>()); break;
-    case 5u: m_scheduler.SetEventCallback(m_sampleTickEvent, this, GetTransitionalTickEvent<5u, false>()); break;
+    case 0u: m_scheduler.SetEventCallback(m_sampleTickEvent, this, GetSlotTickEvent<0u>()); break;
+    case 1u: m_scheduler.SetEventCallback(m_sampleTickEvent, this, GetTransitionalTickEvent<1u>()); break;
+    case 2u: m_scheduler.SetEventCallback(m_sampleTickEvent, this, GetTransitionalTickEvent<2u>()); break;
+    case 3u: m_scheduler.SetEventCallback(m_sampleTickEvent, this, GetTransitionalTickEvent<3u>()); break;
+    case 4u: m_scheduler.SetEventCallback(m_sampleTickEvent, this, GetTransitionalTickEvent<4u>()); break;
+    case 5u: m_scheduler.SetEventCallback(m_sampleTickEvent, this, GetTransitionalTickEvent<5u>()); break;
     default: util::unreachable();
     }
 }
@@ -889,11 +859,11 @@ void SCSP::ExecuteDMA() {
     }
 }
 
-template <uint32 stepShift, bool debug>
+template <uint32 stepShift, bool debug, bool threaded>
 FORCE_INLINE void SCSP::TickSlots() {
     RunM68K(kM68KCyclesPerSlot << stepShift);
-    ProcessMidiInputQueue<false>();
-    StepSlots<stepShift, false>();
+    ProcessMidiInputQueue<threaded>();
+    StepSlots<stepShift, threaded>();
 }
 
 template <bool debug, bool threaded>
@@ -1430,6 +1400,28 @@ void SCSP::SCSPThreadLoop() {
                 }
                 break;
 
+            case ThreadEvent::Type::Slots:
+                if (m_debugTracing) {
+                    switch (evt.stepShift) {
+                    case 0u: TickSlots<0u, true, true>(); break;
+                    case 1u: TickSlots<1u, true, true>(); break;
+                    case 2u: TickSlots<2u, true, true>(); break;
+                    case 3u: TickSlots<3u, true, true>(); break;
+                    case 4u: TickSlots<4u, true, true>(); break;
+                    case 5u: TickSlots<5u, true, true>(); break;
+                    }
+                } else {
+                    switch (evt.stepShift) {
+                    case 0u: TickSlots<0u, false, true>(); break;
+                    case 1u: TickSlots<1u, false, true>(); break;
+                    case 2u: TickSlots<2u, false, true>(); break;
+                    case 3u: TickSlots<3u, false, true>(); break;
+                    case 4u: TickSlots<4u, false, true>(); break;
+                    case 5u: TickSlots<5u, false, true>(); break;
+                    }
+                }
+                break;
+
             case ThreadEvent::Type::Quit: m_threadRunning = false; break;
             }
 
@@ -1532,7 +1524,8 @@ void SCSP::TickSampleThreaded() {
 
 template <uint32 stepShift>
 void SCSP::TickSlotsThreaded() {
-    util::unreachable();
+    EnqueueEvent(ThreadEvent::Slots(stepShift));
+    PollSCSPInterrupts();
 }
 
 template void SCSP::TickSlotsThreaded<0>();
