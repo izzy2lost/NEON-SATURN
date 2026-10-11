@@ -31,8 +31,9 @@ namespace ymir::savestate {
 //  12 = 0.3.0
 //  13 = 0.3.2
 //  14 = 0.4.0-dev  (f192e30ef2d5bbaa1c3f78de63439a36fc26a423)
-//  15 = 0.4.0
-inline constexpr uint32 kVersion = 15;
+//  15 = 0.4.0-dev  (TBD)
+//  16 = 0.4.0
+inline constexpr uint32 kVersion = 16;
 
 } // namespace ymir::savestate
 
@@ -1254,6 +1255,11 @@ void serialize(Archive &ar, CDInterfaceSaveState &s, const uint32 version) {
 
 template <class Archive>
 void serialize(Archive &ar, CDBlockSaveState &s, SaveState &root, const uint32 version) {
+    // v16:
+    // - New fields
+    //   - xferQueue = filled with 0xFFFF
+    //   - xferQueueWritePos = 0
+    //   - xferQueueReadPos = 0
     // v13:
     // - New fields
     //   - RR = CR
@@ -1307,6 +1313,13 @@ void serialize(Archive &ar, CDBlockSaveState &s, SaveState &root, const uint32 v
     ar(s.readSpeed);
     ar(s.discAuthStatus, s.mpegAuthStatus);
     ar(s.xferType, s.xferPos, s.xferLength, s.xferCount, s.xferBuffer, s.xferBufferPos);
+    if (version >= 16) {
+        ar(s.xferQueue, s.xferQueueWritePos, s.xferQueueReadPos);
+    } else {
+        s.xferQueue.fill(0xFFFF);
+        s.xferQueueWritePos = 0;
+        s.xferQueueReadPos = 0;
+    }
     ar(s.xferSectorPos, s.xferSectorEnd, s.xferPartition);
     if (version >= 9) {
         ar(s.xferGetLength, s.xferDelCount);

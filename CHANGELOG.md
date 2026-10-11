@@ -50,6 +50,7 @@ Introduces save state file version 14.
 - Backup RAM: Remove strict language check when importing files. Fixes importing save files from Kronos's backup RAM cartridges. (#942)
 - CD Block (HLE): Adjust calculated sector sizes to requested get length.
 - CD Block (HLE): Create a dedicated scratch buffer for disc playback. Fixes crashes on replays in Virtual On - Cyber Troopers. (#246)
+- CD Block (HLE): Emulate read FIFO for all read transfers. (thanks to @celeriyacon)
 - CD Block (HLE): Get/Calculate Actual Size nuances.
 - CD Block (HLE): Handle default end of disc parameter in Play Disc. Fixes Gunbird song not resuming after pausing. (#625)
 - CD Block (HLE): Report current CD status and raise CMOK HIRQ signal when processing unimplemented commands.
