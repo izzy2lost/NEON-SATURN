@@ -190,6 +190,12 @@ void CDBlock::MapMemory(sys::SH2Bus &bus) {
             // Bus wait handler
             [](uint32, uint32, bool, void *) -> bool { return false; });
 
+        if (address & 0x8'0000) {
+            // 32-bit reads from 589'0000 trigger the FIFO once
+            bus.MapNormal(address, address + 0xFFF, this,
+                          [](uint32 address, void *ctx) -> uint32 { return cast(ctx).ReadReg<uint32>(address); });
+        }
+
         bus.MapSideEffectFree(
             address, address + 0xFFF, this,
             [](uint32 address, void *ctx) -> uint8 { return cast(ctx).PeekReg<uint8>(address); },
