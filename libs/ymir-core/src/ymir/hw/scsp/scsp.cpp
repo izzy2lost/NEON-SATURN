@@ -107,6 +107,8 @@ void SCSP::Reset(bool hard) {
     m_kyonex = false;
     m_kyonexExecute = false;
 
+    m_suppressSlotEnd = false;
+
     m_masterVolume = 0;
     m_mem4MB = false;
     m_dac18Bits = false;
@@ -450,6 +452,8 @@ void SCSP::SaveState(savestate::SCSPSaveState &state) const {
     state.KYONEX = m_kyonex;
     state.KYONEXExec = m_kyonexExecute;
 
+    state.suppressSlotEnd = m_suppressSlotEnd;
+
     state.MVOL = m_masterVolume;
     state.DAC18B = m_dac18Bits;
     state.MEM4MB = m_mem4MB;
@@ -559,6 +563,8 @@ void SCSP::LoadState(const savestate::SCSPSaveState &state) {
 
     m_kyonex = state.KYONEX;
     m_kyonexExecute = state.KYONEXExec;
+
+    m_suppressSlotEnd = state.suppressSlotEnd;
 
     m_masterVolume = state.MVOL & 0xF;
     m_dac18Bits = state.DAC18B;
@@ -1190,11 +1196,7 @@ FORCE_INLINE void SCSP::SlotProcessStep2_3(Slot &slot) {
 }
 
 FORCE_INLINE void SCSP::SlotProcessStep2_4(Slot &slot) {
-    if (slot.soundSource == Slot::SoundSource::SoundRAM && !slot.active) {
-        return;
-    }
-
-    slot.IncrementSampleCounter();
+    slot.IncrementSampleCounter(m_suppressSlotEnd);
 }
 
 FORCE_INLINE void SCSP::SlotProcessStep3_2(Slot &slot) {

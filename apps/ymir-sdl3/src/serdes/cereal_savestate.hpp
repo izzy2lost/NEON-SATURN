@@ -31,9 +31,10 @@ namespace ymir::savestate {
 //  12 = 0.3.0
 //  13 = 0.3.2
 //  14 = 0.4.0-dev  (f192e30ef2d5bbaa1c3f78de63439a36fc26a423)
-//  15 = 0.4.0-dev  (TBD)
-//  16 = 0.4.0
-inline constexpr uint32 kVersion = 16;
+//  15 = 0.4.0-dev  (36557bfe6adc6c961fe0f365337cd5712d9b09b2)
+//  16 = 0.4.0-dev  (TBD)
+//  17 = 0.4.0
+inline constexpr uint32 kVersion = 17;
 
 } // namespace ymir::savestate
 
@@ -903,6 +904,9 @@ void serialize(Archive &ar, M68KSaveState &s) {
 
 template <class Archive>
 void serialize(Archive &ar, SCSPSaveState &s, const uint32 version) {
+    // v17:
+    // - New fields
+    //   - suppressSlotEnd = false
     // v6:
     // - New fields
     //   - SCILV = {0,0,0}
@@ -1006,6 +1010,11 @@ void serialize(Archive &ar, SCSPSaveState &s, const uint32 version) {
         ar(s.KYONEXExec);
     } else {
         s.KYONEXExec = false;
+    }
+    if (version >= 17) {
+        ar(s.suppressSlotEnd);
+    } else {
+        s.suppressSlotEnd = false;
     }
     ar(s.MVOL);
     if (version >= 6) {
