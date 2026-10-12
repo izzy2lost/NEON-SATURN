@@ -1440,6 +1440,8 @@ struct VulkanVDPRenderer::Impl {
         util::DirtyBitmap<kVDP1FBRAMSize> fbramDirty;
         /// @brief FBRAM writes buffer.
         GpuBuffer fbramWritesBuffer;
+        /// @brief CPU-side list of FBRAM writes, reused across flushes to avoid heap allocations.
+        std::vector<VDP1FBRAMWrite> cpuFBRAMWritesList;
 
         /// @brief FBRAM download buffer.
         GpuBuffer fbramDownloadBuffer;
@@ -1548,7 +1550,7 @@ struct VulkanVDPRenderer::Impl {
         if (mode.msbOn) {
             // MSB -> mode 3 (MSB)
             bit::deposit_into<1, 2>(value, 3);
-        } else if (vdpState.regs1.pixel8Bits) {
+        } else if (vdpState.regs1.tvmr.pixel8Bits) {
             // 8-bit sprite data -> mode 0 (Copy) -- shading modes not supported
             bit::deposit_into<1, 2>(value, 0);
         } else if (mode.colorCalcBits == 3) {
@@ -1605,7 +1607,7 @@ struct VulkanVDPRenderer::Impl {
     size_t MakeVDP1OutputMergerShaderIndex(VDP1Command::DrawMode mode) const {
         size_t value = 0;
         bit::deposit_into<0>(value, enhancements.transparentMeshes);
-        if (vdpState.regs1.pixel8Bits) {
+        if (vdpState.regs1.tvmr.pixel8Bits) {
             // 8-bit sprite data -> mode 0 (Copy) -- shading modes not supported
             bit::deposit_into<1, 2>(value, 0);
         } else if (mode.colorCalcBits == 1) {
@@ -3390,8 +3392,8 @@ struct VulkanVDPRenderer::Impl {
         } else {
             // Expand every native pixel into a block, following the framebuffer line layout used by the shaders
             const VDP1Regs &regs1 = vdpState.regs1;
-            const size_t pixelSize = regs1.pixel8Bits ? 1 : 2;
-            const size_t lineSize = regs1.fbSizeH * pixelSize;
+            const size_t pixelSize = regs1.tvmr.pixel8Bits ? 1 : 2;
+            const size_t lineSize = regs1.tvmr.fbSizeH * pixelSize;
             const size_t scaledLineSize = lineSize * resolutionScale;
             const size_t numLines = kVDP1FBRAMSize / lineSize;
             for (size_t fb = 0; fb < 2; ++fb) {
@@ -3444,7 +3446,8 @@ struct VulkanVDPRenderer::Impl {
         auto &fb = vdpState.mem1.FBRAM[vdpState.fbIndex.draw];
 
         // Group modified FBRAM writes into 32-bit chunks
-        std::vector<VDP1FBRAMWrite> writes{};
+        std::vector<VDP1FBRAMWrite> &writes = vdp1.cpuFBRAMWritesList;
+        writes.clear();
         size_t pos, count = 0;
         const uint64 *bitmapData = vdp1.fbramDirty.GetData();
         for (pos = vdp1.fbramDirty.FindNextGroup<4>(count); pos < vdp1.fbramDirty.Size();
@@ -3520,7 +3523,7 @@ struct VulkanVDPRenderer::Impl {
         vdp1.cpuEraseParams.coords.scaleV = scaleV;
 
         vdp1.cpuEraseParams.erase.writeValue = bit::byte_swap<uint16>(regs1.eraseWriteValueLatch);
-        vdp1.cpuEraseParams.erase.addressShift = regs1.eraseOffsetShift - 8;
+        vdp1.cpuEraseParams.erase.addressShift = regs1.tvmr.eraseOffsetShift - 8;
 
         vdp1.cpuEraseParams.vblank.enable = cycles != 0;
         if (vdp1.cpuEraseParams.vblank.enable) {
@@ -3753,9 +3756,9 @@ struct VulkanVDPRenderer::Impl {
             const VkDescriptorSet mergerSet = isMergerOIT ? shared.outputMergerOITSet : shared.outputMergerSet;
             const VDP1Regs &regs1 = vdpState.regs1;
             const VDP2Regs &regs2 = vdpState.regs2;
-            const uint32 pixelsPerEntry = regs1.pixel8Bits ? 4u : 2u; // each entry is 32 bits
-            const uint32 mergeW = regs1.fbSizeH * resolutionScale / pixelsPerEntry;
-            const uint32 mergeH = regs1.fbSizeV * resolutionScale;
+            const uint32 pixelsPerEntry = regs1.tvmr.pixel8Bits ? 4u : 2u; // each entry is 32 bits
+            const uint32 mergeW = regs1.tvmr.fbSizeH * resolutionScale / pixelsPerEntry;
+            const uint32 mergeH = regs1.tvmr.fbSizeV * resolutionScale;
             const uint32 mergeZ = regs2.TVMD.IsInterlaced() && enhancements.deinterlace ? 2 : 1;
 
             // Dispatch output merger shader
@@ -3776,9 +3779,9 @@ struct VulkanVDPRenderer::Impl {
         const bool doubleDensity = regs2.TVMD.LSMDn == InterlaceMode::DoubleDensity;
 
         auto &displayParams = params.displayParams;
-        displayParams.fbSizeH = std::countr_zero(regs1.fbSizeH) - 9u;
-        displayParams.fbSizeV = std::countr_zero(regs1.fbSizeV) - 8u;
-        displayParams.pixel8Bits = regs1.pixel8Bits;
+        displayParams.fbSizeH = std::countr_zero(regs1.tvmr.fbSizeH) - 9u;
+        displayParams.fbSizeV = std::countr_zero(regs1.tvmr.fbSizeV) - 8u;
+        displayParams.pixel8Bits = regs1.tvmr.pixel8Bits;
         displayParams.doubleDensity = doubleDensity;
         displayParams.dblInterlaceEnable = regs1.dblInterlaceEnable;
         displayParams.dblInterlaceDrawLine = regs1.dblInterlaceDrawLine;
@@ -4959,15 +4962,15 @@ struct VulkanVDPRenderer::Impl {
         params.rotParams.coeffBDataSize = rotParamsB.coeffDataSize;
         params.rotParams.coeffBDataMode = static_cast<HLSLuint>(rotParamsB.coeffDataMode);
 
-        params.spriteParams.rotate = regs1.fbRotEnable;
-        params.spriteParams.pixel8Bits = regs1.pixel8Bits;
+        params.spriteParams.rotate = regs1.tvmr.fbRotEnable;
+        params.spriteParams.pixel8Bits = regs1.tvmr.pixel8Bits;
         params.spriteParams.type = regs2.spriteParams.type;
-        params.spriteParams.fbSizeH = std::countr_zero(regs1.fbSizeH) - 9;
-        params.spriteParams.fbSizeV = std::countr_zero(regs1.fbSizeV) - 8;
+        params.spriteParams.fbSizeH = std::countr_zero(regs1.tvmr.fbSizeH) - 9;
+        params.spriteParams.fbSizeV = std::countr_zero(regs1.tvmr.fbSizeV) - 8;
         params.spriteParams.inHalfResH = false;
         params.spriteParams.outHalfResH = false;
-        if (!regs1.hdtvEnable && !regs1.fbRotEnable) {
-            if (regs1.pixel8Bits) {
+        if (!regs1.tvmr.hdtvEnable && !regs1.tvmr.fbRotEnable) {
+            if (regs1.tvmr.pixel8Bits) {
                 params.spriteParams.inHalfResH = (regs2.TVMD.HRESOn & 0b110) == 0b000;
             } else {
                 params.spriteParams.outHalfResH = (regs2.TVMD.HRESOn & 0b110) == 0b010;
@@ -5461,6 +5464,9 @@ struct VulkanVDPRenderer::Impl {
 
         // FIXME: this should not be needed
         VDP1SubmitSpans();
+        if (auto result = VDP1FlushFBRAM(); !result) {
+            Report<grp::vk_vdp1>(devlog::level::warn, "VDP1 FBRAM flush failed: {}", result.Error().message);
+        }
 
         FrameContext &frameCtx = frames.GetCurrentFrame();
 
