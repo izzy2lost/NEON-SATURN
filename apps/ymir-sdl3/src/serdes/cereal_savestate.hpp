@@ -1257,6 +1257,7 @@ template <class Archive>
 void serialize(Archive &ar, CDBlockSaveState &s, SaveState &root, const uint32 version) {
     // v16:
     // - New fields
+    //   - busyDelay = 0
     //   - xferQueue = filled with 0xFFFF
     //   - xferQueueWritePos = 0
     //   - xferQueueReadPos = 0
@@ -1296,6 +1297,11 @@ void serialize(Archive &ar, CDBlockSaveState &s, SaveState &root, const uint32 v
     }
     ar(s.HIRQ, s.HIRQMASK);
     serialize(ar, s.status, version);
+    if (version >= 16) {
+        ar(s.busyDelay);
+    } else {
+        s.busyDelay = 0;
+    }
     ar(s.readyForPeriodicReports);
     ar(s.currDriveCycles, s.targetDriveCycles);
     if (version >= 9) {

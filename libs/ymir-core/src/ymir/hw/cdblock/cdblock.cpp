@@ -294,6 +294,7 @@ void CDBlock::SaveState(savestate::CDBlockSaveState &state) const {
     state.status.track = m_status.track;
     state.status.index = m_status.index;
 
+    state.busyDelay = m_busyDelay;
     state.readyForPeriodicReports = m_readyForPeriodicReports;
 
     state.currDriveCycles = m_currDriveCycles;
@@ -444,6 +445,7 @@ void CDBlock::LoadState(const savestate::CDBlockSaveState &state) {
     m_status.track = state.status.track;
     m_status.index = state.status.index;
 
+    m_busyDelay = state.busyDelay;
     m_readyForPeriodicReports = state.readyForPeriodicReports;
 
     m_currDriveCycles = state.currDriveCycles;
