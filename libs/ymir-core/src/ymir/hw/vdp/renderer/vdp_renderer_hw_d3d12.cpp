@@ -3895,6 +3895,7 @@ struct Direct3D12VDPRenderer::Impl {
         for (uint32 i = 0; i < size; ++i) {
             vdp1.fbramDirty.Set(address + i);
         }
+        VDP1SubmitSpans();
     }
 
     [[nodiscard]] util::VoidResult<> VDP1FlushVRAM() {
@@ -4239,9 +4240,6 @@ struct Direct3D12VDPRenderer::Impl {
         if (auto result = VDP1FlushVRAM(); !result) {
             devlog::warn<grp::dx12_vdp1>("VDP1 VRAM flush failed: {}", result.Error().message);
         }
-        if (auto result = VDP1FlushFBRAM(); !result) {
-            devlog::warn<grp::dx12_vdp1>("VDP1 FBRAM flush failed: {}", result.Error().message);
-        }
 
         ID3D12Resource *uploadBufferPtr = uploadBuffer.GetBufferResource().GetPointer();
         UploadAllocation alloc{};
@@ -4420,6 +4418,11 @@ struct Direct3D12VDPRenderer::Impl {
 
     uint16 VDP1AddCommand(const VDP1CommandData &data, bool textured) {
         FrameContext &frameCtx = frames.GetCurrentFrame();
+
+        // Flush any pending FBRAM writes
+        if (auto result = VDP1FlushFBRAM(); !result) {
+            devlog::warn<grp::dx12_vdp1>("VDP1 FBRAM flush failed: {}", result.Error().message);
+        }
 
         // If list is full, flush it
         if (frameCtx.cpuCmdCount + 1 >= kMaxVDP1Commands) {
