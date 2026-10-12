@@ -77,6 +77,7 @@ Introduces save state file version 14.
     - Bug Too! (#622)
     - Black/Matrix (#861)
 - Media: Don't read the Path Table past the size specified in the Volume Descriptor. Fixes CD Block HLE not able to read disc images made with some lazy patches that don't properly clean up the Path Table. (#912)
+- Media (CUE): Concatenate reads from composite readers. Fixes Cold Case (Homebrew) crashing when starting the game. (#626)
 - Media (CUE): Don't accumulate pre/postgaps multiple times per track. Fixes some audio track offset issues for single-BIN dumps. (#146)
 - Media (CUE): Properly compute track count on discs with sparse track numbers. Fixes audio playback on some homebrew discs that omit tracks (e.g. The Rockin'-B All Stars version 06/03/23 skips track 2).
 - Media (CUE): Use CUE sheet timestamps to compute track lengths. Fixes some audio track offset issues for single-BIN dumps. (#146)
