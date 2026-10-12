@@ -1096,6 +1096,11 @@ private:
         }
 
         if (m_config.rewindEnabled) {
+            // Rewind snapshots leave the GPU renderer's VDP1 framebuffers to be filled in on the rewind thread, so
+            // taking one does not stall the emulator until the GPU has finished the frame.
+            m_rewindBuffer.PrepareState = [this](ymir::savestate::SaveState &state) {
+                m_saturn.FinishDeferredSaveState(state);
+            };
             m_rewindBuffer.Start();
         }
         return true;
@@ -1127,7 +1132,9 @@ private:
         // Capture only while running forwards, otherwise rewinding would immediately
         // overwrite the timeline it is walking back through.
         if (rewindRunning && !rewinding) {
-            m_saturn.SaveState(m_rewindBuffer.NextState);
+            // The previous snapshot may still be waiting for the GPU on the rewind thread
+            m_rewindBuffer.WaitForProcessing();
+            m_saturn.SaveState(m_rewindBuffer.NextState, true);
             m_rewindBuffer.ProcessState();
         }
     }
