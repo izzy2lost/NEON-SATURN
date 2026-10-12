@@ -32,7 +32,7 @@ namespace ymir::savestate {
 //  13 = 0.3.2
 //  14 = 0.4.0-dev  (f192e30ef2d5bbaa1c3f78de63439a36fc26a423)
 //  15 = 0.4.0-dev  (36557bfe6adc6c961fe0f365337cd5712d9b09b2)
-//  16 = 0.4.0-dev  (TBD)
+//  16 = 0.4.0-dev  (aae1dbef2cdba5b2666ba6e5a95f29b7ca9e8b53)
 //  17 = 0.4.0
 inline constexpr uint32 kVersion = 17;
 
