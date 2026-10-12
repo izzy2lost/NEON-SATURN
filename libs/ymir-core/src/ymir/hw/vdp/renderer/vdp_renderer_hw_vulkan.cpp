@@ -3549,13 +3549,23 @@ struct VulkanVDPRenderer::Impl {
             for (size_t fb = 0; fb < 2; ++fb) {
                 const uint8 *src = vdpState.mem1.FBRAM[fb].data();
                 uint8 *dst = static_cast<uint8 *>(alloc.data) + fb * ScaledFBSize();
+                // Fixed-size copies so that the compiler emits plain stores instead of a memcpy call per pixel
+                auto expandLine = [&]<size_t kPixelSize>(const uint8 *srcLine, uint8 *scaledLine) {
+                    uint8 *out = scaledLine;
+                    for (size_t pixel = 0; pixel < lineSize / kPixelSize; ++pixel) {
+                        const uint8 *srcPixel = srcLine + pixel * kPixelSize;
+                        for (size_t dx = 0; dx < resolutionScale; ++dx) {
+                            memcpy(out, srcPixel, kPixelSize);
+                            out += kPixelSize;
+                        }
+                    }
+                };
                 for (size_t line = 0; line < numLines; ++line) {
                     uint8 *scaledLine = dst + line * resolutionScale * scaledLineSize;
-                    for (size_t pixel = 0; pixel < lineSize / pixelSize; ++pixel) {
-                        const uint8 *srcPixel = src + line * lineSize + pixel * pixelSize;
-                        for (size_t dx = 0; dx < resolutionScale; ++dx) {
-                            memcpy(scaledLine + (pixel * resolutionScale + dx) * pixelSize, srcPixel, pixelSize);
-                        }
+                    if (pixelSize == 1) {
+                        expandLine.template operator()<1>(src + line * lineSize, scaledLine);
+                    } else {
+                        expandLine.template operator()<2>(src + line * lineSize, scaledLine);
                     }
                     for (size_t dy = 1; dy < resolutionScale; ++dy) {
                         memcpy(scaledLine + dy * scaledLineSize, scaledLine, scaledLineSize);
