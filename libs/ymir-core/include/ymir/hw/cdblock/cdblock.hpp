@@ -113,8 +113,7 @@ private:
         uint8 index;         // current index
     } m_status;
 
-    uint8 m_busyTargetStatus; // Target status for the Busy state
-    uint8 m_busyDelay;        // Number of ticks until the Busy state switches to the target state
+    uint8 m_busyDelay; // Number of ticks to report Busy status
 
     bool m_readyForPeriodicReports; // HACK to avoid overwriting the initial state during the boot sequence
 
@@ -180,7 +179,7 @@ private:
     void ReportCDStatus(uint8 statusCode);
 
     // Gets the current CD status code without the flags and taking into account the Play->Pause transition period
-    uint8 GetStatusCode() const;
+    uint8 GetStatusCode(bool ignoreBusy = false) const;
 
     // -------------------------------------------------------------------------
     // Data transfers
