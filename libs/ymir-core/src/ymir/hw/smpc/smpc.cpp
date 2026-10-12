@@ -505,10 +505,13 @@ FORCE_INLINE void SMPC::WriteCOMREG(uint8 value) {
             // TODO: these should take ~100ms (about 2.8 million SH-2 cycles) to complete
             // Doing a shorter delay here to make it snappier
             m_scheduler.ScheduleFromNow(m_commandEvent, 200000);
-        } else {
-            // TODO: CDON and CDOFF execute in 40 microseconds; all other commands take 30 microseconds to complete
+        } else if (COMREG == Command::CDON || COMREG == Command::CDOFF) {
+            // CDON and CDOFF execute in 40 microseconds
             // HACK: delay for longer to allow Quake (EU) to boot
             m_scheduler.ScheduleFromNow(m_commandEvent, 240);
+        } else {
+            // All other commands take 30 microseconds to complete
+            m_scheduler.ScheduleFromNow(m_commandEvent, 120);
         }
     }
 }
