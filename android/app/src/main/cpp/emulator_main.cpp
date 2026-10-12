@@ -551,7 +551,11 @@ private:
     std::mutex m_coreMutex{};
     std::mutex m_inputMutex{};
 
+    /// Copy of the last software-rendered frame. The software renderer reuses its buffer for the next frame.
     std::vector<std::uint32_t> m_framebuffer;
+    /// Pixels of the last completed frame: either m_framebuffer, or the Vulkan renderer's readback buffer, which
+    /// stays untouched until two more frames have been delivered, so it is read in place without a copy.
+    const std::uint32_t *m_framePixels = nullptr;
     std::uint32_t m_frameWidth = 320;
     std::uint32_t m_frameHeight = 224;
     std::uint32_t m_textureWidth = 0;
@@ -639,8 +643,7 @@ private:
     /// Saves the last emulated frame as a PNG, resampled to the display aspect ratio: Saturn
     /// pixels are not square, so e.g. a 320x224 frame is meant to be seen at 4:3.
     bool WriteThumbnail(const std::filesystem::path &path) const {
-        if (m_framebuffer.empty() || m_frameWidth == 0 || m_frameHeight == 0 ||
-            m_framebuffer.size() < static_cast<std::size_t>(m_frameWidth) * m_frameHeight) {
+        if (m_framePixels == nullptr || m_frameWidth == 0 || m_frameHeight == 0) {
             return false;
         }
 
@@ -653,8 +656,8 @@ private:
         std::vector<std::uint8_t> rgb(static_cast<std::size_t>(outWidth) * outHeight * 3);
         std::uint8_t *dst = rgb.data();
         for (std::uint32_t y = 0; y < outHeight; ++y) {
-            const std::uint32_t *srcRow = &m_framebuffer[static_cast<std::size_t>(y * m_frameHeight / outHeight) *
-                                                         m_frameWidth];
+            const std::uint32_t *srcRow =
+                &m_framePixels[static_cast<std::size_t>(y * m_frameHeight / outHeight) * m_frameWidth];
             for (std::uint32_t x = 0; x < outWidth; ++x) {
                 const std::uint32_t pixel = srcRow[x * m_frameWidth / outWidth];
                 *dst++ = static_cast<std::uint8_t>(pixel);
@@ -870,14 +873,14 @@ private:
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
-        if (!m_framebuffer.empty() && m_frameWidth > 0 && m_frameHeight > 0) {
+        if (m_framePixels != nullptr && m_frameWidth > 0 && m_frameHeight > 0) {
             EnsureGLTexture(m_frameWidth, m_frameHeight);
             if (m_frameDirty) {
                 glBindTexture(GL_TEXTURE_2D, m_glTexture);
                 glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
                 glTexSubImage2D(
                     GL_TEXTURE_2D, 0, 0, 0, static_cast<GLsizei>(m_frameWidth), static_cast<GLsizei>(m_frameHeight),
-                    GL_RGBA, GL_UNSIGNED_BYTE, m_framebuffer.data());
+                    GL_RGBA, GL_UNSIGNED_BYTE, m_framePixels);
                 m_frameDirty = false;
             }
         }
@@ -1027,7 +1030,7 @@ private:
         m_saturn.VDP.SetSoftwareRenderCallback(
             util::MakeClassMemberOptionalCallback<&EmulatorApp::OnFrameComplete>(this));
         m_saturn.VDP.SetVulkanFrameReadyCallback(
-            util::MakeClassMemberOptionalCallback<&EmulatorApp::OnFrameComplete>(this));
+            util::MakeClassMemberOptionalCallback<&EmulatorApp::OnVulkanFrameReady>(this));
 
         m_saturn.SCSP.SetSampleCallback(
             util::MakeClassMemberOptionalCallback<&app::AudioSystem::ReceiveSample>(&m_audioSystem));
@@ -1359,6 +1362,17 @@ private:
             framebuffer,
             static_cast<std::size_t>(width) * static_cast<std::size_t>(height),
             m_framebuffer.begin());
+        m_framePixels = m_framebuffer.data();
+        m_frameDirty = true;
+    }
+
+    void OnVulkanFrameReady(std::uint32_t *framebuffer, std::uint32_t width, std::uint32_t height) {
+        if (width == 0 || height == 0) {
+            return;
+        }
+        m_frameWidth = width;
+        m_frameHeight = height;
+        m_framePixels = framebuffer;
         m_frameDirty = true;
     }
 
@@ -1442,9 +1456,9 @@ private:
             return;
         }
 
-        if (m_frameDirty && !m_framebuffer.empty()) {
+        if (m_frameDirty && m_framePixels != nullptr) {
             SDL_UpdateTexture(
-                m_texture, nullptr, m_framebuffer.data(), static_cast<int>(m_frameWidth * sizeof(std::uint32_t)));
+                m_texture, nullptr, m_framePixels, static_cast<int>(m_frameWidth * sizeof(std::uint32_t)));
             m_frameDirty = false;
         }
 
