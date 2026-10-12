@@ -1256,7 +1256,7 @@ void CDBlock::UpdateInterrupts() {
 }
 
 void CDBlock::ReportCDStatus() {
-    ReportCDStatus(m_status.statusCode);
+    ReportCDStatus(GetStatusCode());
 }
 
 void CDBlock::ReportCDStatus(uint8 statusCode) {
@@ -2038,6 +2038,10 @@ void CDBlock::CmdEndDataTransfer() {
     const uint32 transferCount = m_xferCount;
 
     EndTransfer();
+
+    if (m_busyDelay == 0) {
+        m_busyDelay = 1;
+    }
 
     // Output structure:
     // status code      transferred word count bits 23-16

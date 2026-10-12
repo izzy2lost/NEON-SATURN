@@ -54,7 +54,15 @@ Introduces save state file version 14.
 - CD Block (HLE): Emulate read FIFO for all read transfers. (thanks to @celeriyacon)
 - CD Block (HLE): Get/Calculate Actual Size nuances.
 - CD Block (HLE): Handle default end of disc parameter in Play Disc. Fixes Gunbird song not resuming after pausing. (#625)
-- CD Block (HLE): Introduce Busy status when pausing playback. Fixes Amagi Shien not booting. (#309)
+- CD Block (HLE): Introduce Busy status when pausing playback and ending data transfers. Fixes multiple games:
+    - Amagi Shien now goes in-game. (#309)
+    - Brain Battle Q (Japan) now goes in-game. (#586)
+    - Flash SegaSaturn Vol. 29 - Langrisser V demo now plays in full. (#571) 
+    - Hebereke's Popoitto now goes in-game.
+    - Hissatsu Pachinko Collection now goes past the SEGA licensing screen and reaches in-game. (#536)
+    - Legend of K-1 - The Best Collection FMVs no longer corrupt. (#758)
+    - Magical Drop III - Toretate Zoukan-gou! now plays intro animation after Data East logo. (#464)
+    - WanChai Connection now goes in-game. (#600)
 - CD Block (HLE): Report current CD status and raise CMOK HIRQ signal when processing unimplemented commands.
 - CD Block (HLE): Report wait status when attempting to calculate actual size of more sectors than available in a partition.
 - CD Block (HLE): Read reset position flag correctly from parameters.
