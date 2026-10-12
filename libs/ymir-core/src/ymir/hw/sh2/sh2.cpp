@@ -460,19 +460,32 @@ FLATTEN uint64 SH2::Advance(uint64 cycles, uint64 spilloverCycles) {
         // TODO: choose between interpreter (cached or uncached) and JIT recompiler
         m_cyclesExecuted += InterpretNext<debug, emulateCache>();
 
-        // If PC is not in any of these places, something went horribly wrong
-
-        // Address bits 28 and 27 are disconnected and games generally don't use these mirrors.
-        // Might not always be horribly wrong, but is highly likely to be a bad jump.
-        // Unaligned addresses (bit 0 set) are a sign of potential memory corruption.
-        YMIR_DEV_ASSERT((PC & 0x18000001) == 0);
-        // PC should be in the cached and uncached spaces or the cache data array areas.
-        // Anywhere else is highly suspicious or outright forbidden by the CPU.
-        YMIR_DEV_ASSERT((PC >> 29u) == 0b000 || (PC >> 29u) == 0b001 || (PC >> 29u) == 0b100 || (PC >> 29u) == 0b101 ||
-                        (PC >> 29u) == 0b110);
-
-        // Check for breakpoints and watchpoints in debug tracing mode
+        // Check for breakpoints and watchpoints and validate PC in debug tracing mode
         if constexpr (debug) {
+            // If PC is not in any of these places, something went horribly wrong
+
+            // Unaligned addresses (bit 0 set) are a sign of potential memory corruption.
+            const bool pcUnaligned = (PC & 1) != 0;
+
+            if (pcUnaligned) {
+                m_debugBreakMgr->SignalDebugBreak(debug::DebugBreakInfo::SH2UnalignedPC(IsMaster(), PC));
+                break;
+            }
+
+            // Address bits 28 and 27 are disconnected and games generally don't use these mirrors.
+            // Might not always be horribly wrong, but is highly likely to be a bad jump.
+            const bool pcInUnusedMirrors = (PC & 0x18000000) != 0;
+
+            // PC should be in the cached and uncached spaces or the cache data array areas.
+            // Anywhere else is highly suspicious or outright forbidden by the CPU.
+            const bool pcInIllegalArea = (PC >> 29u) != 0b000 && (PC >> 29u) != 0b001 && (PC >> 29u) != 0b100 &&
+                                         (PC >> 29u) != 0b101 && (PC >> 29u) != 0b110;
+
+            if (pcInUnusedMirrors || pcInIllegalArea) {
+                m_debugBreakMgr->SignalDebugBreak(debug::DebugBreakInfo::SH2IllegalPC(IsMaster(), PC));
+                break;
+            }
+
             if (m_debugBreakMgr) {
                 if (CheckBreakpoint()) {
                     break;

@@ -1221,14 +1221,17 @@ void App::RunEmulator() {
         {&m_context, [](const debug::DebugBreakInfo &info, void *ctx) {
              auto &sharedCtx = *static_cast<SharedContext *>(ctx);
              sharedCtx.EnqueueEvent(events::emu::SetPaused(true));
+
+             using enum debug::DebugBreakInfo::Event;
+
              switch (info.event) {
-                 using enum debug::DebugBreakInfo::Event;
              case SH2Breakpoint: //
                  sharedCtx.DisplayMessage(fmt::format("{}SH2 breakpoint hit at {:08X}",
                                                       (info.details.sh2Breakpoint.master ? 'M' : 'S'),
                                                       info.details.sh2Breakpoint.pc));
                  sharedCtx.EnqueueEvent(events::gui::OpenSH2DebuggerWindow(info.details.sh2Breakpoint.master, true));
                  break;
+
              case SH2Watchpoint: //
              {
                  const auto &wtptInfo = info.details.sh2Watchpoint;
@@ -1267,7 +1270,20 @@ void App::RunEmulator() {
                  sharedCtx.EnqueueEvent(events::gui::OpenSH2DebuggerWindow(wtptInfo.master, true));
                  break;
              }
-             default: sharedCtx.DisplayMessage("Paused due to a debug break event"); break;
+
+             case SH2IllegalPC: //
+                 sharedCtx.DisplayMessage(fmt::format("{}SH2 hit illegal PC at {:08X}",
+                                                      (info.details.sh2IllegalPC.master ? 'M' : 'S'),
+                                                      info.details.sh2IllegalPC.pc));
+                 sharedCtx.EnqueueEvent(events::gui::OpenSH2DebuggerWindow(info.details.sh2IllegalPC.master, true));
+                 break;
+
+             case SH2UnalignedPC: //
+                 sharedCtx.DisplayMessage(fmt::format("{}SH2 hit unaligned PC at {:08X}",
+                                                      (info.details.sh2UnalignedPC.master ? 'M' : 'S'),
+                                                      info.details.sh2UnalignedPC.pc));
+                 sharedCtx.EnqueueEvent(events::gui::OpenSH2DebuggerWindow(info.details.sh2UnalignedPC.master, true));
+                 break;
              }
          }});
 

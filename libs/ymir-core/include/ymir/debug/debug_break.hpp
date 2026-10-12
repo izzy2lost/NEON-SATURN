@@ -38,6 +38,14 @@ struct DebugBreakInfo {
         /// @brief An SH-2 CPU hit a watchpoint.
         /// The `DebugBreakInfo::details::sh2Watchpoint` field has details about this event.
         SH2Watchpoint,
+
+        /// @brief An SH-2 CPU's program counter reached an illegal address.
+        /// The `DebugBreakInfo::details::sh2IllegalPC` field has details about this event.
+        SH2IllegalPC,
+
+        /// @brief An SH-2 CPU's program counter is unaligned (bit 0 set).
+        /// The `DebugBreakInfo::details::sh2UnalignedPC` field has details about this event.
+        SH2UnalignedPC,
     } event;
 
     /// @brief Details about the event.
@@ -61,6 +69,16 @@ struct DebugBreakInfo {
                             ///<   bit 2 = address + 2 (32-bit accesses only)
                             ///<   bit 3 = address + 3 (32-bit accesses only)
         } sh2Watchpoint;
+
+        struct SH2IllegalPC {
+            bool master; ///< Triggered from the MSH2 (`true`) or SSH2 (`false`)
+            uint32 pc;   ///< Offending PC address
+        } sh2IllegalPC;
+
+        struct SH2UnalignedPC {
+            bool master; ///< Triggered from the MSH2 (`true`) or SSH2 (`false`)
+            uint32 pc;   ///< Offending PC address
+        } sh2UnalignedPC;
     } details;
 
     /// @brief Constructs a `DebugBreakInfo` for an SH-2 breakpoint hit.
@@ -86,6 +104,23 @@ struct DebugBreakInfo {
             .details = {
                 .sh2Watchpoint = {
                     .master = master, .write = write, .size = size, .address = address, .pc = pc, .mask = mask}}};
+    }
+
+    /// @brief Constructs a `DebugBreakInfo` for an SH-2 illegal PC address event.
+    /// @param[in] master whether the event was triggered from the MSH2 (`true`) or SSH2 (`false`) CPU
+    /// @param[in] pc the offending PC address
+    /// @return a `DebugBreakInfo` struct with the `Event::SH2IllegalPC` event
+    static DebugBreakInfo SH2IllegalPC(bool master, uint32 pc) {
+        return DebugBreakInfo{.event = Event::SH2IllegalPC, .details = {.sh2IllegalPC = {.master = master, .pc = pc}}};
+    }
+
+    /// @brief Constructs a `DebugBreakInfo` for an SH-2 unaligned PC address event.
+    /// @param[in] master whether the event was triggered from the MSH2 (`true`) or SSH2 (`false`) CPU
+    /// @param[in] pc the offending PC address
+    /// @return a `DebugBreakInfo` struct with the `Event::SH2UnalignedPC` event
+    static DebugBreakInfo SH2UnalignedPC(bool master, uint32 pc) {
+        return DebugBreakInfo{.event = Event::SH2UnalignedPC,
+                              .details = {.sh2UnalignedPC = {.master = master, .pc = pc}}};
     }
 };
 
