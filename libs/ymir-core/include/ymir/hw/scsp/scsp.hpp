@@ -1357,10 +1357,13 @@ private:
     std::atomic<bool> m_threadRunning = false;
     std::atomic<bool> m_threadedSCSP = false;
 
-    std::atomic<uint64> m_eventsProcessed = 0;
+    // Written by the emulator thread and read by the SCSP thread
+    alignas(64) std::atomic<uint32> m_wakeSeq = 0; // sequence
+    std::atomic<uint64> m_targetSlotStep = 0;
     uint64 m_eventsEnqueued = 0;
 
-    std::atomic<uint64> m_targetSlotStep = 0;
+    // Written by the SCSP thread and read by the emulator thread
+    alignas(64) std::atomic<uint64> m_eventsProcessed = 0;
     std::atomic<uint64> m_currSlotStep = 0;
 
     moodycamel::ConcurrentQueue<ThreadEvent, ConcQueueTraits> m_threadEventQueue;
@@ -1379,6 +1382,14 @@ private:
 
     // Forces the emulator thread to wait until the SCSP catches up.
     void SyncSCSPThread();
+
+    // Signals the SCSP thread that there is new work (events or slot steps).
+    // Must be called after the work has been published.
+    void WakeSCSPThread();
+
+    // Suspends the thread until new work arrives.
+    // seq is the work sequence number snapshotted at the start of a loop iteration.
+    void WaitForSCSPWork(uint32 seq);
 
     // Stops the SCSP thread if running and waits for it to finish.
     void StopSCSPThread();

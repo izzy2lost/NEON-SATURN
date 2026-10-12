@@ -11,8 +11,8 @@ int main(int argc, char **argv) {
     // runCurlSandbox();
     // runSH2PerfSandbox();
     // runDiscInfoExtractor(argc, argv);
-    // runDeadlockTest(argc, argv);
-    runHostCDSandbox();
+    runDeadlockTest(argc, argv);
+    // runHostCDSandbox();
 
     return EXIT_SUCCESS;
 }

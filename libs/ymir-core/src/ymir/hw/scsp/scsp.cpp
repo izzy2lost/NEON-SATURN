@@ -1372,45 +1372,53 @@ void SCSP::SCSPThreadLoop() {
     std::array<ThreadEvent, 64> events{};
 
     while (m_threadRunning) {
-        const size_t numEvents =
-            m_threadEventQueue.try_dequeue_bulk_from_producer(m_ptokThreadEventQueue, events.begin(), events.size());
-        for (size_t i = 0; i < numEvents; ++i) {
-            const auto &evt = events[i];
+        const uint64 seq = m_wakeSeq.load(std::memory_order_acquire);
 
-            switch (evt.type) {
-            case ThreadEvent::Type::Reset:
-                m_currSlotStep = 0;
-                m_eventsProcessed.store(0, std::memory_order_release);
+        // Process all enqueued events
+        while (true) {
+            const size_t numEvents = m_threadEventQueue.try_dequeue_bulk_from_producer(m_ptokThreadEventQueue,
+                                                                                       events.begin(), events.size());
+            if (numEvents == 0) {
                 break;
-            case ThreadEvent::Type::Write: //
-            {
-                const bool isReg = (evt.write.address >= 0x5B0'0000);
-                if (isReg) {
-                    if (evt.write.size == 1) {
-                        WriteReg<uint8, SCSPAccessType::SCU>(evt.write.address & 0xFFF,
-                                                             static_cast<uint8>(evt.write.value));
+            }
+            for (size_t i = 0; i < numEvents; ++i) {
+                const auto &evt = events[i];
+
+                switch (evt.type) {
+                case ThreadEvent::Type::Reset:
+                    m_currSlotStep = 0;
+                    m_eventsProcessed.store(0, std::memory_order_release);
+                    break;
+                case ThreadEvent::Type::Write: //
+                {
+                    const bool isReg = (evt.write.address >= 0x5B0'0000);
+                    if (isReg) {
+                        if (evt.write.size == 1) {
+                            WriteReg<uint8, SCSPAccessType::SCU>(evt.write.address & 0xFFF,
+                                                                 static_cast<uint8>(evt.write.value));
+                        } else {
+                            WriteReg<uint16, SCSPAccessType::SCU>(evt.write.address & 0xFFF,
+                                                                  static_cast<uint16>(evt.write.value));
+                        }
                     } else {
-                        WriteReg<uint16, SCSPAccessType::SCU>(evt.write.address & 0xFFF,
-                                                              static_cast<uint16>(evt.write.value));
+                        if (evt.write.size == 1) {
+                            WriteWRAM<uint8>(evt.write.address & 0x7FFFF, static_cast<uint8>(evt.write.value));
+                        } else {
+                            WriteWRAM<uint16>(evt.write.address & 0x7FFFF, static_cast<uint16>(evt.write.value));
+                        }
                     }
-                } else {
-                    if (evt.write.size == 1) {
-                        WriteWRAM<uint8>(evt.write.address & 0x7FFFF, static_cast<uint8>(evt.write.value));
-                    } else {
-                        WriteWRAM<uint16>(evt.write.address & 0x7FFFF, static_cast<uint16>(evt.write.value));
-                    }
+                    break;
                 }
-                break;
-            }
 
-            case ThreadEvent::Type::Quit: m_threadRunning = false; break;
-            }
+                case ThreadEvent::Type::Quit: m_threadRunning = false; break;
+                }
 
-            m_eventsProcessed.fetch_add(1, std::memory_order_release);
-            m_eventsProcessed.notify_all();
+                m_eventsProcessed.fetch_add(1, std::memory_order_release);
+                m_eventsProcessed.notify_all();
+            }
         }
 
-        // Process samples then substeps as needed
+        // Process samples/substeps
         uint64 currStep = m_currSlotStep.load(std::memory_order_acquire);
         const uint64 tgtStep = m_targetSlotStep.load(std::memory_order_acquire);
         while (currStep < tgtStep) {
@@ -1467,7 +1475,28 @@ void SCSP::SCSPThreadLoop() {
         if (currGranularity != newGranularity && (m_currSlot & ((1u << newGranularity) - 1u)) == 0) {
             currGranularity = newGranularity;
         }
+
+        if (m_threadRunning) {
+            WaitForSCSPWork(seq);
+        }
     }
+}
+
+void SCSP::WakeSCSPThread() {
+    m_wakeSeq.fetch_add(1, std::memory_order_release);
+    m_wakeSeq.notify_one();
+}
+
+void SCSP::WaitForSCSPWork(uint32 seq) {
+    // Spin-wait to avoid the expensive wait if possible
+    static constexpr int kSpinCount = 1200;
+    for (int i = 0; i < kSpinCount; ++i) {
+        if (m_wakeSeq.load(std::memory_order_acquire) != seq) {
+            return;
+        }
+        std::this_thread::yield();
+    }
+    m_wakeSeq.wait(seq, std::memory_order_acquire);
 }
 
 void SCSP::SyncSCSPThread() {
@@ -1517,6 +1546,7 @@ void SCSP::EnqueueWrite(uint32 address, T value) {
 void SCSP::EnqueueEvent(ThreadEvent &&event) {
     ++m_eventsEnqueued;
     m_threadEventQueue.enqueue(m_ptokThreadEventQueue, std::move(event));
+    WakeSCSPThread();
 }
 
 template void SCSP::EnqueueWrite<uint8>(uint32 address, uint8 value);
@@ -1564,14 +1594,14 @@ template void SCSP::WriteRegBus<uint16>(uint32 address, uint16 value);
 
 void SCSP::TickSampleThreaded() {
     m_targetSlotStep.fetch_add(32u, std::memory_order_acq_rel);
-    m_targetSlotStep.notify_all();
+    WakeSCSPThread();
     PollSCSPInterrupts();
 }
 
 template <uint32 stepShift>
 void SCSP::TickSlotsThreaded() {
-    m_targetSlotStep.fetch_add(1u << stepShift);
-    m_targetSlotStep.notify_all();
+    m_targetSlotStep.fetch_add(1u << stepShift, std::memory_order_acq_rel);
+    WakeSCSPThread();
     PollSCSPInterrupts();
 }
 

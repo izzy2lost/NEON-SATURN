@@ -47,6 +47,7 @@ void runDeadlockTest(int argc, char **argv) {
         sat->configuration.swRenderer.threadedVDP1 = true;
         sat->configuration.swRenderer.threadedVDP2 = true;
         sat->configuration.swRenderer.threadedDeinterlacer = true;
+        sat->VDP.UseNullRenderer();
         sat->LoadIPL(std::span<uint8, ymir::sys::kIPLSize>(ipl));
 
         const auto t0 = clk::now();
