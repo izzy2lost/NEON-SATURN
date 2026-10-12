@@ -82,6 +82,27 @@ public:
     /// @brief Performs any necessary synchronization before saving a state.
     virtual void PreSaveStateSync() = 0;
 
+    /// @brief Performs the synchronization before saving a state, possibly leaving the VDP1 framebuffers to be filled
+    /// in later by `FinishDeferredSaveStateSync`.
+    ///
+    /// Renderers that keep VDP1 FBRAM on the GPU can start copying it back here without waiting for the GPU, so that
+    /// the emulator thread does not stall. The default implementation performs a regular `PreSaveStateSync`.
+    ///
+    /// @return `true` if the FBRAM in the save state must be completed with `FinishDeferredSaveStateSync`
+    virtual bool BeginDeferredSaveStateSync() {
+        PreSaveStateSync();
+        return false;
+    }
+
+    /// @brief Completes a save state synchronization started by `BeginDeferredSaveStateSync`, writing the captured
+    /// VDP1 FBRAM into the save state. Does nothing if no capture is pending.
+    ///
+    /// May be called from a thread other than the emulator thread, but must complete before the next call to
+    /// `BeginDeferredSaveStateSync` and before the renderer is destroyed.
+    ///
+    /// @param[out] fbram the save state FBRAM to fill in
+    virtual void FinishDeferredSaveStateSync(std::array<std::array<uint8, kVDP1FBRAMSize>, 2> &fbram) {}
+
     /// @brief Performs any necessary synchronization after loading a state.
     virtual void PostLoadStateSync() = 0;
 

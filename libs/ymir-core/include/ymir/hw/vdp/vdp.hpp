@@ -282,7 +282,14 @@ public:
     // -------------------------------------------------------------------------
     // Save states
 
-    void SaveState(savestate::VDPSaveState &state) const;
+    /// @brief Saves the VDP state.
+    /// @param[out] state the state object to store into
+    /// @param[in] deferFBRAMSync whether the renderer may fill in VDP1 FBRAM later instead of waiting for it here.
+    /// If `true`, `FinishDeferredSaveState` must be called on the state before it is used.
+    void SaveState(savestate::VDPSaveState &state, bool deferFBRAMSync = false) const;
+    /// @brief Completes a state saved with `deferFBRAMSync` set. May be called from another thread.
+    /// @param[in,out] state the state object to complete
+    void FinishDeferredSaveState(savestate::VDPSaveState &state) const;
     [[nodiscard]] bool ValidateState(const savestate::VDPSaveState &state) const;
     void LoadState(const savestate::VDPSaveState &state);
 

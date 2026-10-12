@@ -116,11 +116,14 @@ FLATTEN void RewindBuffer::ProcThread() {
     while (m_running) {
         m_nextStateEvent.Wait();
         m_nextStateEvent.Reset();
+
+        std::unique_lock lock{m_lock};
+        if (PrepareState) {
+            PrepareState(NextState);
+        }
         if (!m_running) {
             break;
         }
-
-        std::unique_lock lock{m_lock};
 
         // Serialize state to next buffer
         std::vector<char> &buffer = GetBuffer();

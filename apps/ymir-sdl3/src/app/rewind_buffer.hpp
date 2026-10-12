@@ -7,6 +7,7 @@
 #include <ymir/core/types.hpp>
 
 #include <array>
+#include <functional>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -49,6 +50,12 @@ public:
 
     // Tells the rewind buffer processor thread that the next state is ready to be processed.
     // Should be invoked by the emulator thread after saving a state to NextState.
+    /// @brief Waits until the state handed over by the last `ProcessState` call has been read, so that `NextState`
+    /// can be overwritten safely.
+    void WaitForProcessing() {
+        m_stateProcessedEvent.Wait();
+    }
+
     void ProcessState() {
         m_stateProcessedEvent.Wait();
         m_stateProcessedEvent.Reset();
@@ -61,6 +68,11 @@ public:
 
     // Next state to be processed. Should be filled in by the emulator before invoking ProcessState()
     ymir::savestate::SaveState NextState;
+
+    /// @brief Optional hook run on the processing thread right before `NextState` is serialized. Used to complete
+    /// states saved with deferred GPU synchronization (see `ymir::Saturn::FinishDeferredSaveState`).
+    /// Also runs when the buffer is stopped so that no deferred work is left pending. Set it before calling `Start`.
+    std::function<void(ymir::savestate::SaveState &)> PrepareState;
 
     int LZ4Accel = 64; // LZ4 acceleration factor (1 to 65537)
 

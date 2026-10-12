@@ -356,7 +356,7 @@ void Saturn::AutodetectRegion() {
     }
 }
 
-void Saturn::SaveState(savestate::SaveState &state) const {
+void Saturn::SaveState(savestate::SaveState &state, bool deferVDP1FBRAM) const {
     m_scheduler.SaveState(state.scheduler);
     m_system.SaveState(state.system);
     mem.SaveState(state.system);
@@ -367,7 +367,7 @@ void Saturn::SaveState(savestate::SaveState &state) const {
     slaveSH2.SaveState(state.ssh2);
     SCU.SaveState(state.scu);
     SMPC.SaveState(state.smpc);
-    VDP.SaveState(state.vdp);
+    VDP.SaveState(state.vdp, deferVDP1FBRAM);
     SCSP.SaveState(state.scsp);
     state.cdblockLLE = m_cdblockLLE;
     if (m_cdblockLLE) {
@@ -382,6 +382,10 @@ void Saturn::SaveState(savestate::SaveState &state) const {
     }
     state.discHash = GetDiscHash();
     m_cdif.SaveState(state.cdif);
+}
+
+void Saturn::FinishDeferredSaveState(savestate::SaveState &state) const {
+    VDP.FinishDeferredSaveState(state.vdp);
 }
 
 bool Saturn::LoadState(const savestate::SaveState &state, bool skipROMChecks) {

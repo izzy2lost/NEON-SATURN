@@ -10,6 +10,11 @@
 //                      renderer's output upscaled with nearest neighbor filtering
 //   LAYER_MASK=<mask>  enable only the given VDP2 layers (debug render option bits)
 //   SAVE=1             dump mismatching frames as PPM images
+//   SAVESTATE=1        also check deferred save states: every Vulkan frame is snapshotted with a deferred VDP1 FBRAM
+//                      sync completed on another thread one frame later (like rewind), and compared against a regular
+//                      save state from an identical Saturn running in lockstep. SAVESTATE=control takes regular
+//                      states on both (measures GPU run-to-run nondeterminism); SAVESTATE=same compares a deferred
+//                      capture against a regular sync on the same Saturn, which must match exactly
 //   YMIR_VULKAN_DEVICE=<name substring>, YMIR_VULKAN_VALIDATION=1  (see the renderer)
 
 #include <ymir/hw/vdp/renderer/vdp_renderer.hpp>
@@ -23,6 +28,7 @@
 #include <memory>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace ymir;
@@ -79,7 +85,9 @@ using Scene = std::function<void(Bus &, int frame)>;
 
 enum class Kind { SW, VK };
 
-static std::vector<Frame> Run(Kind kind, const Scene &scene, int numFrames, vdp::config::Enhancements enh, bool &ok) {
+static int g_stateFailures = 0;
+
+static std::unique_ptr<Saturn> MakeSaturn() {
     auto sat = std::make_unique<Saturn>();
     sat->configuration.swRenderer.threadedVDP1 = false;
     sat->configuration.swRenderer.threadedVDP2 = false;
@@ -95,6 +103,11 @@ static std::vector<Frame> Run(Kind kind, const Scene &scene, int numFrames, vdp:
     ipl[0x12] = 0x00;
     ipl[0x13] = 0x09;
     sat->LoadIPL(ipl);
+    return sat;
+}
+
+static std::vector<Frame> Run(Kind kind, const Scene &scene, int numFrames, vdp::config::Enhancements enh, bool &ok) {
+    auto sat = MakeSaturn();
 
     std::vector<Frame> frames;
     auto cb = [&](uint32 *fb, uint32 w, uint32 h) {
@@ -131,11 +144,68 @@ static std::vector<Frame> Run(Kind kind, const Scene &scene, int numFrames, vdp:
     }
     sat->Reset(true);
 
+    // Deferred save state check: a second Saturn takes regular save states for reference
+    const bool checkStates = kind == Kind::VK && std::getenv("SAVESTATE") != nullptr;
+    std::unique_ptr<Saturn> ref;
+    if (checkStates) {
+        ref = MakeSaturn();
+        const char *scaleEnv = std::getenv("SCALE");
+        if (!ref->VDP.UseVulkanRenderer(scaleEnv ? std::atoi(scaleEnv) : 1)) {
+            ok = false;
+            return {};
+        }
+        ref->VDP.SetEnhancements(enh);
+        ref->Reset(true);
+    }
+    auto deferredState = std::make_unique<savestate::SaveState>();
+    auto refState = std::make_unique<savestate::SaveState>();
+    bool statePending = false;
+    int pendingFrame = 0;
+    auto checkPendingState = [&] {
+        if (!statePending) {
+            return;
+        }
+        // Complete the deferred state on another thread, as the rewind buffer does
+        std::thread([&] { sat->FinishDeferredSaveState(*deferredState); }).join();
+        statePending = false;
+        if (deferredState->vdp.FBRAM != refState->vdp.FBRAM) {
+            size_t diffs = 0;
+            for (size_t fb = 0; fb < 2; ++fb) {
+                for (size_t i = 0; i < deferredState->vdp.FBRAM[fb].size(); ++i) {
+                    diffs += deferredState->vdp.FBRAM[fb][i] != refState->vdp.FBRAM[fb][i];
+                }
+            }
+            std::printf("  deferred save state FBRAM mismatch after frame %d: %zu bytes differ\n", pendingFrame, diffs);
+            ++g_stateFailures;
+        }
+    };
+
     Bus b{*sat};
+    std::unique_ptr<Bus> refBus = ref ? std::make_unique<Bus>(*ref) : nullptr;
     for (int i = 0; i < numFrames; ++i) {
         scene(b, i);
         sat->RunFrame();
+        if (checkStates && std::strcmp(std::getenv("SAVESTATE"), "same") == 0) {
+            // Deferred capture finished on another thread vs. a regular sync of the same GPU FBRAM: must be identical
+            sat->SaveState(*deferredState, true);
+            std::thread([&] { sat->FinishDeferredSaveState(*deferredState); }).join();
+            sat->SaveState(*refState);
+            statePending = true;
+            pendingFrame = i;
+            checkPendingState();
+        } else if (checkStates) {
+            scene(*refBus, i);
+            ref->RunFrame();
+            checkPendingState();
+            // SAVESTATE=control takes regular save states on both Saturns to measure run-to-run nondeterminism
+            const bool control = std::strcmp(std::getenv("SAVESTATE"), "control") == 0;
+            sat->SaveState(*deferredState, !control);
+            ref->SaveState(*refState);
+            statePending = true;
+            pendingFrame = i;
+        }
     }
+    checkPendingState();
     ok = true;
     return frames;
 }
@@ -715,5 +785,8 @@ int main(int argc, char **argv) {
         Compare(t.name, sw, vk, t.firstFrame);
     }
     std::printf("%d/%d tests failed\n", g_failures, ran);
-    return g_failures ? 1 : 0;
+    if (std::getenv("SAVESTATE") != nullptr) {
+        std::printf("%d deferred save state mismatches\n", g_stateFailures);
+    }
+    return g_failures || g_stateFailures ? 1 : 0;
 }

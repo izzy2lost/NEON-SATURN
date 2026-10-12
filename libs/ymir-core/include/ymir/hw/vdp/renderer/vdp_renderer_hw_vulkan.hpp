@@ -70,6 +70,8 @@ public:
     // Save states
 
     void PreSaveStateSync() override;
+    bool BeginDeferredSaveStateSync() override;
+    void FinishDeferredSaveStateSync(std::array<std::array<uint8, kVDP1FBRAMSize>, 2> &fbram) override;
     void PostLoadStateSync() override;
 
     void SaveState(savestate::VDPSaveState::VDPRendererSaveState &state) override;

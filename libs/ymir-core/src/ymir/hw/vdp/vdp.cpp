@@ -468,8 +468,12 @@ FORCE_INLINE void VDP::VDP2WriteReg(uint32 address, uint16 value) {
 // -----------------------------------------------------------------------------
 // Save states
 
-void VDP::SaveState(savestate::VDPSaveState &state) const {
-    m_renderer->PreSaveStateSync();
+void VDP::SaveState(savestate::VDPSaveState &state, bool deferFBRAMSync) const {
+    if (deferFBRAMSync) {
+        m_renderer->BeginDeferredSaveStateSync();
+    } else {
+        m_renderer->PreSaveStateSync();
+    }
 
     m_state.SaveState(state);
     m_renderer->SaveState(state.renderer);
@@ -491,6 +495,10 @@ bool VDP::ValidateState(const savestate::VDPSaveState &state) const {
         return false;
     }
     return true;
+}
+
+void VDP::FinishDeferredSaveState(savestate::VDPSaveState &state) const {
+    m_renderer->FinishDeferredSaveStateSync(state.FBRAM);
 }
 
 void VDP::LoadState(const savestate::VDPSaveState &state) {

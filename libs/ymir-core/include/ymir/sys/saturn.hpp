@@ -257,7 +257,15 @@ struct Saturn {
 
     /// @brief Saves the complete system state into the given state object.
     /// @param[out] state the state object to store into
-    void SaveState(savestate::SaveState &state) const;
+    /// @param[in] deferVDP1FBRAM whether the VDP1 framebuffers may be filled in later instead of waiting for the GPU
+    /// renderer here. If `true`, `FinishDeferredSaveState` must be called on the state before it is used. Meant for
+    /// frequent snapshots such as rewind, which can complete the state on another thread.
+    void SaveState(savestate::SaveState &state, bool deferVDP1FBRAM = false) const;
+
+    /// @brief Completes a state saved with `deferVDP1FBRAM` set, waiting for the GPU renderer if necessary.
+    /// May be called from a thread other than the emulator thread.
+    /// @param[in,out] state the state object to complete
+    void FinishDeferredSaveState(savestate::SaveState &state) const;
 
     /// @brief Validates and loads a complete system state from the given state object.
     ///

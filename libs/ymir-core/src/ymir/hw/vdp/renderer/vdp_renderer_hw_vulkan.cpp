@@ -1453,6 +1453,14 @@ struct VulkanVDPRenderer::Impl {
         /// @brief Set by `VDP1DebugSyncFB` to lazily sync FBRAM when convenient.
         std::atomic_bool fbramDebugSyncRequest{false};
 
+        /// @brief Host-visible copy of FBRAM taken for a deferred save state.
+        /// Kept separate from the download buffer so that regular syncs cannot overwrite a capture being read.
+        GpuBuffer fbramCaptureBuffer;
+        /// @brief Signaled once the GPU has finished copying FBRAM into the capture buffer.
+        UniqueFence fbramCaptureFence;
+        /// @brief Set while a capture is in flight or not yet consumed by `VDP1FinishFBRAMCapture`.
+        std::atomic_bool fbramCapturePending{false};
+
         // ---------------------------------------------------------------------
 
         /// @brief Common rendering parameters, uploaded as 32-bit root constants.
@@ -2379,7 +2387,11 @@ struct VulkanVDPRenderer::Impl {
     /// @brief Resources for a single frame.
     struct FrameContext {
         UniqueCommandPool cmdPool;
-        VkCommandBuffer cmdBuffer = VK_NULL_HANDLE;
+        /// @brief Command buffers allocated from the pool. A frame normally records into the first one only; the rest
+        /// are used after intermediate submissions (see `SubmitIntermediateCommands`).
+        std::vector<VkCommandBuffer> cmdBuffers;
+        /// @brief Index of the command buffer being recorded.
+        size_t cmdBufferIndex = 0;
         UniqueFence fence;
         uint64 signaledValue = 0; // fence value associated with this frame. 0 means never used
 
@@ -2554,17 +2566,66 @@ struct VulkanVDPRenderer::Impl {
         if (VkResult res = vkResetCommandPool(vk.device, frame.cmdPool, 0); res != VK_SUCCESS) {
             return VkError("Could not reset command pool", res);
         }
+        frame.cmdBufferIndex = 0;
+        return BeginCommandBuffer(frame);
+    }
+
+    /// @brief Begins recording the frame's command buffer at `cmdBufferIndex`, allocating it if needed.
+    util::VoidResult<> BeginCommandBuffer(FrameContext &frame) {
+        if (frame.cmdBufferIndex >= frame.cmdBuffers.size()) {
+            const VkCommandBufferAllocateInfo cmdInfo{
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                .commandPool = frame.cmdPool,
+                .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                .commandBufferCount = 1,
+            };
+            VkCommandBuffer cmdBuffer = VK_NULL_HANDLE;
+            if (VkResult res = vkAllocateCommandBuffers(vk.device, &cmdInfo, &cmdBuffer); res != VK_SUCCESS) {
+                return VkError("Could not allocate command buffer", res);
+            }
+            frame.cmdBuffers.push_back(cmdBuffer);
+        }
+        VkCommandBuffer cmdBuffer = frame.cmdBuffers[frame.cmdBufferIndex];
         const VkCommandBufferBeginInfo beginInfo{
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
         };
-        if (VkResult res = vkBeginCommandBuffer(frame.cmdBuffer, &beginInfo); res != VK_SUCCESS) {
+        if (VkResult res = vkBeginCommandBuffer(cmdBuffer, &beginInfo); res != VK_SUCCESS) {
             return VkError("Could not begin command buffer", res);
         }
-        cmd = frame.cmdBuffer;
+        cmd = cmdBuffer;
         // Commands from previous submissions must complete before this command buffer uses their results
         barrierTracker.MarkPending();
         return {};
+    }
+
+    /// @brief Submits the commands recorded so far without a fence and continues recording the same frame in a new
+    /// command buffer, letting the GPU start on them without waiting.
+    ///
+    /// Completion is tracked by the frame's fence, which the final `SubmitCommands` signals after this work because
+    /// submissions to the queue complete in order. Upload buffer allocations made so far are released with that fence.
+    util::VoidResult<> SubmitIntermediateCommands() {
+        if (cmd == VK_NULL_HANDLE) {
+            return {};
+        }
+        FrameContext &frame = frames.GetCurrentFrame();
+        VkCommandBuffer cmdBuffer = cmd;
+        cmd = VK_NULL_HANDLE;
+        if (VkResult res = vkEndCommandBuffer(cmdBuffer); res != VK_SUCCESS) {
+            deviceLost = true;
+            return VkError("Could not end command buffer", res);
+        }
+        const VkSubmitInfo submitInfo{
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &cmdBuffer,
+        };
+        if (VkResult res = vkQueueSubmit(vk.queue, 1, &submitInfo, VK_NULL_HANDLE); res != VK_SUCCESS) {
+            deviceLost = true;
+            return VkError("Could not submit command buffer; GPU rendering stopped", res);
+        }
+        ++frame.cmdBufferIndex;
+        return BeginCommandBuffer(frame);
     }
 
     /// @brief Makes the results of recorded transfers visible to CPU reads once the command buffer completes.
@@ -2587,7 +2648,8 @@ struct VulkanVDPRenderer::Impl {
         if (cmd == VK_NULL_HANDLE) {
             return {};
         }
-        if (VkResult res = vkEndCommandBuffer(frame.cmdBuffer); res != VK_SUCCESS) {
+        VkCommandBuffer cmdBuffer = cmd;
+        if (VkResult res = vkEndCommandBuffer(cmdBuffer); res != VK_SUCCESS) {
             cmd = VK_NULL_HANDLE;
             deviceLost = true;
             return VkError("Could not end command buffer", res);
@@ -2597,7 +2659,7 @@ struct VulkanVDPRenderer::Impl {
         const VkSubmitInfo submitInfo{
             .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .commandBufferCount = 1,
-            .pCommandBuffers = &frame.cmdBuffer,
+            .pCommandBuffers = &cmdBuffer,
         };
         const uint64 signalValue = frames.GetNextFenceValue();
         uploadBuffer.EndFrame(signalValue);
@@ -2671,9 +2733,11 @@ struct VulkanVDPRenderer::Impl {
                 .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
                 .commandBufferCount = 1,
             };
-            if (VkResult res = vkAllocateCommandBuffers(device, &cmdInfo, &frame.cmdBuffer); res != VK_SUCCESS) {
+            VkCommandBuffer cmdBuffer = VK_NULL_HANDLE;
+            if (VkResult res = vkAllocateCommandBuffers(device, &cmdInfo, &cmdBuffer); res != VK_SUCCESS) {
                 return VkError(fmt::format("Could not allocate command buffer #{}", i), res);
             }
+            frame.cmdBuffers.push_back(cmdBuffer);
 
             const VkFenceCreateInfo fenceInfo{.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
             VkFence fence = VK_NULL_HANDLE;
@@ -2818,6 +2882,16 @@ struct VulkanVDPRenderer::Impl {
         // TODO: add deinterlace and transparent mesh buffers to save state
         YMIR_VK_TRY(vdp1.fbramDownloadBuffer.Create(vk, kVDP1FBRAMSize * 2, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                                     MemoryUsage::Readback, "VDP1 FBRAM download buffer"));
+        YMIR_VK_TRY(vdp1.fbramCaptureBuffer.Create(vk, kVDP1FBRAMSize * 2, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                   MemoryUsage::Readback, "VDP1 FBRAM capture buffer"));
+        {
+            const VkFenceCreateInfo fenceInfo{.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+            VkFence fence = VK_NULL_HANDLE;
+            if (VkResult res = vkCreateFence(device, &fenceInfo, nullptr, &fence); res != VK_SUCCESS) {
+                return VkError("Could not create VDP1 FBRAM capture fence", res);
+            }
+            vdp1.fbramCaptureFence.Assign(device, fence);
+        }
 
         // -------------------------------------------------------------------------------------------------------------
         // Layouts and pipelines
@@ -3183,6 +3257,9 @@ struct VulkanVDPRenderer::Impl {
         if (vk.device != VK_NULL_HANDLE) {
             vkDeviceWaitIdle(vk.device);
         }
+        // A capture may still be pending if its save state was never completed; nobody can consume it anymore
+        vdp1.fbramCapturePending.store(false, std::memory_order_release);
+        vdp1.fbramCapturePending.notify_all();
     }
 
     /// @brief Selects the descriptor set layout for a polygon drawing shader variant.
@@ -3329,6 +3406,79 @@ struct VulkanVDPRenderer::Impl {
 
     void VDP1DebugSyncFB() {
         vdp1.fbramDebugSyncRequest.store(true, std::memory_order_release);
+    }
+
+    /// @brief Starts copying VDP1 FBRAM into the capture buffer for a deferred save state without waiting for the GPU.
+    /// @return `true` if a capture was started and must be completed with `VDP1FinishFBRAMCapture`, `false` if the CPU
+    /// copy of FBRAM is already current (or the GPU is unusable)
+    bool VDP1BeginFBRAMCapture() {
+        // The previous capture must be consumed before the capture buffer and fence can be reused.
+        // This normally returns immediately since captures are consumed well within a frame.
+        vdp1.fbramCapturePending.wait(true, std::memory_order_acquire);
+
+        VDP1SubmitSpans();
+        if (!vdp1.fbramReadbackDirty && !vdp1.fbramReadbackCopyPending) {
+            // The GPU has not modified FBRAM since it was last downloaded, so the CPU copy is current
+            return false;
+        }
+        if (deviceLost || cmd == VK_NULL_HANDLE) {
+            return false;
+        }
+
+        // Apply pending CPU writes to the GPU copy so they are part of the capture
+        if (auto result = VDP1FlushFBRAM(); !result) {
+            Report<grp::vk_vdp1>(devlog::level::warn, "VDP1 FBRAM flush failed: {}", result.Error().message);
+        }
+
+        barrierTracker.Flush(cmd);
+        if (resolutionScale > 1) {
+            // Convert the scaled framebuffers into native FBRAM contents first
+            Dispatch(vdp1.fbramDownsamplePSO, vdp1.fbramDownsampleRootSig, vdp1.fbramDownsampleSet,
+                     &vdp1.cpuCommonRenderParams, sizeof(vdp1.cpuCommonRenderParams),
+                     (kVDP1FBRAMSize * 2 / sizeof(uint32) + 63) / 64, 1, 1);
+            barrierTracker.Flush(cmd);
+            CopyBuffer(vdp1.fbramNativeBuffer.buffer, 0, vdp1.fbramCaptureBuffer.buffer, 0, kVDP1FBRAMSize * 2);
+        } else {
+            CopyBuffer(vdp1.fbramBuffer.buffer, 0, vdp1.fbramCaptureBuffer.buffer, 0, kVDP1FBRAMSize * 2);
+        }
+        RecordHostReadBarrier();
+
+        if (auto result = SubmitIntermediateCommands(); !result) {
+            Report<grp::vk_vdp1>(devlog::level::warn, "VDP1 FBRAM capture failed: {}", result.Error().message);
+            return false;
+        }
+
+        // An empty submission signals its fence once all previously submitted work has completed
+        VkFence fence = vdp1.fbramCaptureFence;
+        vkResetFences(vk.device, 1, &fence);
+        if (VkResult res = vkQueueSubmit(vk.queue, 0, nullptr, fence); res != VK_SUCCESS) {
+            deviceLost = true;
+            Report<grp::vk_vdp1>(devlog::level::warn, "VDP1 FBRAM capture failed: {} ({})", VkResultName(res),
+                                 static_cast<sint32>(res));
+            return false;
+        }
+        vdp1.fbramCapturePending.store(true, std::memory_order_release);
+        return true;
+    }
+
+    /// @brief Waits for a capture started by `VDP1BeginFBRAMCapture` and copies it out. Thread-safe with respect to the
+    /// emulator thread. Does nothing if no capture is pending.
+    /// @param[out] fbram receives the captured FBRAM contents
+    void VDP1FinishFBRAMCapture(std::array<std::array<uint8, kVDP1FBRAMSize>, 2> &fbram) {
+        if (!vdp1.fbramCapturePending.load(std::memory_order_acquire)) {
+            return;
+        }
+        static_assert(sizeof(fbram) == kVDP1FBRAMSize * 2);
+        VkFence fence = vdp1.fbramCaptureFence;
+        if (VkResult res = vkWaitForFences(vk.device, 1, &fence, VK_TRUE, UINT64_MAX); res == VK_SUCCESS) {
+            vdp1.fbramCaptureBuffer.Invalidate();
+            memcpy(fbram.data(), vdp1.fbramCaptureBuffer.mapped, kVDP1FBRAMSize * 2);
+        } else {
+            Report<grp::vk_vdp1>(devlog::level::warn, "Waiting for VDP1 FBRAM capture failed: {} ({})",
+                                 VkResultName(res), static_cast<sint32>(res));
+        }
+        vdp1.fbramCapturePending.store(false, std::memory_order_release);
+        vdp1.fbramCapturePending.notify_all();
     }
 
     void VDP1WriteFB(uint32 address, uint32 size) {
@@ -5697,6 +5847,14 @@ void VulkanVDPRenderer::Reset(bool hard) {
 void VulkanVDPRenderer::PreSaveStateSync() {
     // Save states include FBRAM, which is only brought back from the GPU on demand
     m_impl->VDP1SyncFB();
+}
+
+bool VulkanVDPRenderer::BeginDeferredSaveStateSync() {
+    return m_impl->VDP1BeginFBRAMCapture();
+}
+
+void VulkanVDPRenderer::FinishDeferredSaveStateSync(std::array<std::array<uint8, kVDP1FBRAMSize>, 2> &fbram) {
+    m_impl->VDP1FinishFBRAMCapture(fbram);
 }
 
 void VulkanVDPRenderer::PostLoadStateSync() {
