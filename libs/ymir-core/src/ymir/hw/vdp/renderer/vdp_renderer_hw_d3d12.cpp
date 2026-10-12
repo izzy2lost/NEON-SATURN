@@ -4050,6 +4050,9 @@ struct Direct3D12VDPRenderer::Impl {
                                         D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
         barrierTracker.Flush(cmdList);
 
+        VDP1UpdateCommonRenderParams();
+        vdp1.cpuCommonRenderParams.displayParams.drawFB = vdpState.fbIndex.draw;
+
         // Dispatch FBRAM write compute shader
         const uint32 writeCount = vdp1.cpuFBRAMWritesList.size();
         cmdList->SetPipelineState(vdp1.fbramWritePSO.GetPointer());
