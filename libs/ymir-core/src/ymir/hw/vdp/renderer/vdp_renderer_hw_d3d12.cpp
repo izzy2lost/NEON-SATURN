@@ -4072,9 +4072,16 @@ struct Direct3D12VDPRenderer::Impl {
     }
 
     void VDP1EraseFramebuffer(uint64 cycles) {
-        // Vertical scale is doubled in double-interlace mode
         const VDP1Regs &regs1 = vdpState.regs1;
+
+        if (regs1.eraseX1Latch == regs1.eraseX3Latch || regs1.eraseY1Latch == regs1.eraseY3Latch) {
+            // Nothing to erase
+            return;
+        }
+
         const VDP2Regs &regs2 = vdpState.regs2;
+
+        // Vertical scale is doubled in double-interlace mode
         const bool doubleDensity = regs2.TVMD.LSMDn == InterlaceMode::DoubleDensity;
         const uint32 scaleV = doubleDensity ? 1u : 0u;
 
