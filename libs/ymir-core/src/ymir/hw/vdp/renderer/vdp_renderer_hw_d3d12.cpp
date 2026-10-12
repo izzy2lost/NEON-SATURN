@@ -969,7 +969,7 @@ struct Direct3D12VDPRenderer::Impl {
         FORCE_INLINE void MarkRange(uint32 address, uint32 size) {
             size = std::max(size, 1u);
             uint32 first = address >> blockSizeBits;
-            uint32 last = (address + size - 1) >> blockSizeBits;
+            uint32 last = std::min<uint32>((address + size - 1u) >> blockSizeBits, m_usage.size() - 1u);
             for (uint32 i = first; i <= last; ++i) {
                 m_usage[i] = m_currGen;
             }
