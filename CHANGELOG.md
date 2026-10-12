@@ -89,6 +89,7 @@ Introduces save state file version 14.
 - Media (CUE): Don't accumulate pre/postgaps multiple times per track. Fixes some audio track offset issues for single-BIN dumps. (#146)
 - Media (CUE): Properly compute track count on discs with sparse track numbers. Fixes audio playback on some homebrew discs that omit tracks (e.g. The Rockin'-B All Stars version 06/03/23 skips track 2).
 - Media (CUE): Use CUE sheet timestamps to compute track lengths. Fixes some audio track offset issues for single-BIN dumps. (#146)
+- SCSP: Clear slot PLFOS on reset. (thanks to @celeriyacon)
 - SCSP: Handle rare one-shot PCM bug. (thanks to @celeriyacon)
 - SCU: Allow 8-bit writes to DSP registers.
 - Settings: Apply CD Block LLE configuration at startup. Fixes Ymir always launching with CD Block HLE mode when LLE was enabled in the settings file.
