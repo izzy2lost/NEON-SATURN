@@ -4105,8 +4105,8 @@ struct Direct3D12VDPRenderer::Impl {
             // Compute last line and pixel that can be drawn with the given cycle budget
             const uint32 lineWidth = (vdp1.cpuEraseParams.coords.x3 << 3u) - (vdp1.cpuEraseParams.coords.x1 << 3u);
             if (lineWidth > 0) {
-                vdp1.cpuEraseParams.vblank.maxY = cycles / lineWidth;
-                vdp1.cpuEraseParams.vblank.maxX = cycles % lineWidth;
+                vdp1.cpuEraseParams.vblank.maxY = cycles / lineWidth + vdp1.cpuEraseParams.coords.y1;
+                vdp1.cpuEraseParams.vblank.maxX = cycles % lineWidth + vdp1.cpuEraseParams.coords.x1;
             } else {
                 vdp1.cpuEraseParams.vblank.maxY = 0;
                 vdp1.cpuEraseParams.vblank.maxX = 0;
