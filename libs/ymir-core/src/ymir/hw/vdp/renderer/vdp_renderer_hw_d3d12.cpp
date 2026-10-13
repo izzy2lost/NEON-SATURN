@@ -4051,7 +4051,6 @@ struct Direct3D12VDPRenderer::Impl {
         barrierTracker.Flush(cmdList);
 
         VDP1UpdateCommonRenderParams();
-        vdp1.cpuCommonRenderParams.displayParams.drawFB = vdpState.fbIndex.draw;
 
         // Dispatch FBRAM write compute shader
         const uint32 writeCount = vdp1.cpuFBRAMWritesList.size();
