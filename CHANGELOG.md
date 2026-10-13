@@ -98,6 +98,11 @@ Introduces save state file version 14.
 - SCU: Ignore DMA writes to VDP1 registers. Fixes GunBlaze-S not booting. (#410)
 - Settings: Apply CD Block LLE configuration at startup. Fixes Ymir always launching with CD Block HLE mode when LLE was enabled in the settings file.
 - SMPC: Ignore SSHON command when the Slave SH2 is already enabled. Fixes black screens on level transitions in Guardian Heroes. (#951)
+- SMPC: Tweak response delay for most commands to allow more games to boot:
+    - Destruction Derby (Europe)
+    - Fighting Vipers (Japan) (Rev A)
+    - Fist (Japan)
+    - Idol Mahjong - Final Romance R (Japan) and its Kisekae Discs
 - SMPC: Update peripheral PDR1/2 registers when reading and when updating EXLE. Fixes many cases of games not recognizing Virtua Gun inputs or missing shots. (#787)
 - VDP1: Don't clear COPR when beginning a new VDP1 frame. Fixes lockups in Alone in the Dark - Alone in the Dark - One-Eyed Jack's Revenge. (#938)
 - VDP1: Don't sync VDP1 FBRAM on debug reads. Fixes deadlock when viewing the framebuffer area in a memory viewer window.

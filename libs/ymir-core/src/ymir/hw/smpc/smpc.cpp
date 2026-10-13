@@ -507,8 +507,22 @@ FORCE_INLINE void SMPC::WriteCOMREG(uint8 value) {
             m_scheduler.ScheduleFromNow(m_commandEvent, 200000);
         } else {
             // TODO: CDON and CDOFF execute in 40 microseconds; all other commands take 30 microseconds to complete
-            // HACK: delay for longer to allow Quake (EU) to boot
-            m_scheduler.ScheduleFromNow(m_commandEvent, 240);
+            // These games don't like long delays (240 is too long):
+            // - Destruction Derby (Europe)
+            // - Fighting Vipers (Japan)
+            // - Fist (Japan)
+            // - Idol Mahjong - Final Romance R (Japan)
+            // - Idol Mahjong - Final Romance R (Japan) (Kisekae Disc Kanzenban)
+            // - Idol Mahjong - Final Romance R (Japan) (Kisekae Disc)
+            // These games don't like short delays (120 is too short):
+            // - Fighters Megamix (Japan)
+            // - Fighters Megamix (USA)
+            // - Fighting Vipers (Japan) (Demo)
+            // - Jissen! Pachi-Slot Hisshou-hou! 4 (Japan)
+            // - Virtua Cop (Europe)
+            // - Virtua Cop 2 (Europe)
+            // - Quake (Europe)
+            m_scheduler.ScheduleFromNow(m_commandEvent, 200);
         }
     }
 }
