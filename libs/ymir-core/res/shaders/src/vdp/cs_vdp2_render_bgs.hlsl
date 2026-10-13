@@ -373,7 +373,7 @@ RotCoefficient ReadRotCoefficient(const uint coeffDataSize, const uint coeffData
     if (coeffDataSize == 1) {
         // One-word coefficient data
         const uint address = offset * 2;
-        const uint data = coeffTableCRAM ? Read16(g_cramRotCoeff, address) : Read16(g_vram, address);
+        const uint data = coeffTableCRAM ? Read16(g_cramRotCoeff, address & ~0x800) : Read16(g_vram, address);
         coeff.value = SignExtend(data, 15);
         coeff.lineColorData = 0;
         coeff.transparent = BitTest(data, 15);
@@ -386,7 +386,7 @@ RotCoefficient ReadRotCoefficient(const uint coeffDataSize, const uint coeffData
     } else {
         // Two-word coefficient data
         const uint address = offset * 4;
-        const uint data = coeffTableCRAM ? Read32(g_cramRotCoeff, address) : Read32(g_vram, address);
+        const uint data = coeffTableCRAM ? Read32(g_cramRotCoeff, address & ~0x800) : Read32(g_vram, address);
         coeff.value = SignExtend(data, 24);
         coeff.lineColorData = BitExtract(data, 24, 7);
         coeff.transparent = BitTest(data, 31);
