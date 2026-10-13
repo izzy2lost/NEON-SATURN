@@ -37,8 +37,6 @@ static const uint interlaceMode = BitExtract(g_commonParams.displayParams, 2, 2)
 static const uint oddField = BitExtract(g_commonParams.displayParams, 4, 1);
 static const bool exclusiveMonitor = BitTest(g_commonParams.displayParams, 5);
 static const bool hiResH = BitTest(g_commonParams.displayParams, 8);
-static const bool dblInterlaceEnable = BitTest(g_commonParams.displayParams, 15);
-static const bool dblInterlaceDrawLine = BitTest(g_commonParams.displayParams, 16);
 
 static const bool rotate = BitTest(g_commonParams.spriteParams, 0);
 static const bool pixel8Bits = BitTest(g_commonParams.spriteParams, 1);
@@ -87,8 +85,7 @@ uint ReadMesh16(uint address, uint field) {
 }
 
 uint GetY(uint y) {
-    const bool interlaced = interlaceMode >= 2;
-    if (!deinterlace && interlaced && !exclusiveMonitor) {
+    if (!deinterlace && interlaceMode >= kInterlaceModeSingleDensity && !exclusiveMonitor) {
         return (y << 1) | oddField;
     } else {
         return y;
@@ -477,7 +474,7 @@ SpriteOutput DrawSprite(uint2 pos, uint2 scaledPos, uint index) {
     }
     const uint fbAddr = scaledSpritePos.x + scaledSpritePos.y * fbSize.x * kScale;
 
-    if (InsideWindows(pos)) {
+    if (InsideWindows(outPos)) {
         return output;
     }
 
