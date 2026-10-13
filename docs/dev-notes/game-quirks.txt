@@ -19,3 +19,12 @@ Akumajou Dracula X
 
   Luckily, the game calls the save function twice in a row, so the checksum is updated with the new date/time and, as
   long as the RTC clock doesn't increment the minute in between the two consecutive saves, the problem is fixed.
+
+Sonic Jam
+---------
+  VDP1 DIE/DIL misuse
+  -------------------
+  In the game selection screen (with the game cartridges), the game sets up double-interlace mode on VDP2 and DIE/DIL on
+  VDP1, but as soon as a VDP1 frame is requested, it disables both DIE and DIL, causing the sprite layer to be rendered
+  without deinterlacing. Handling these flags incorrectly (e.g. latching or delaying processing) will cause the sprite
+  layer to be rendererd at half height.
