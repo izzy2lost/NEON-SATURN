@@ -149,6 +149,14 @@ uint GetSpanIndex(uint pixelIndex) {
     return lb - 1u;
 }
 
+uint ReadVRAM8(uint address) {
+    return Read8(g_vram, address & 0x7FFFF);
+}
+
+uint ReadVRAM16(uint address) {
+    return Read16(g_vram, address & 0x7FFFE);
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // DDA steppers
 
@@ -449,51 +457,46 @@ struct LineStepper {
     }
 };
 
-// VDP1 VRAM addresses wrap around at 512 KiB; textures near the end of VRAM continue at the start
-uint VRAMAddress(uint address) {
-    return address & (kVDP1VRAMSize - 1u);
-}
-
 void ReadTexel(uint u, uint v, uint charAddress, uint charSizeH, uint colorMode, uint colorData, out uint color, out bool transparent, out bool hasEndCode) {
     const uint charIndex = u + v * charSizeH;
 
     switch (colorMode) {
         case 0: // 4 bpp, 16 colors, bank mode
-            color = Read8(g_vram, VRAMAddress(charAddress + (charIndex >> 1)));
+            color = ReadVRAM8(charAddress + (charIndex >> 1));
             color = (color >> ((~u & 1) * 4)) & 0xF;
             hasEndCode = color == 0xF;
             transparent = color == 0x0;
             color |= colorData & 0xFFF0;
             break;
         case 1: // 4 bpp, 16 colors, lookup table mode
-            color = Read8(g_vram, VRAMAddress(charAddress + (charIndex >> 1)));
+            color = ReadVRAM8(charAddress + (charIndex >> 1));
             color = (color >> ((~u & 1) * 4)) & 0xF;
             hasEndCode = color == 0xF;
             transparent = color == 0x0;
-            color = Read16(g_vram, VRAMAddress(color * 2 + colorData * 8));
+            color = ReadVRAM16(color * 2 + colorData * 8);
             break;
         case 2: // 8 bpp, 64 colors, bank mode
-            color = Read8(g_vram, VRAMAddress(charAddress + charIndex));
+            color = ReadVRAM8(charAddress + charIndex);
             transparent = color == 0x00;
             hasEndCode = color == 0xFF;
             color &= 0x3F;
             color |= colorData & 0xFFC0;
             break;
         case 3: // 8 bpp, 128 colors, bank mode
-            color = Read8(g_vram, VRAMAddress(charAddress + charIndex));
+            color = ReadVRAM8(charAddress + charIndex);
             transparent = color == 0x00;
             hasEndCode = color == 0xFF;
             color &= 0x7F;
             color |= colorData & 0xFF80;
             break;
         case 4: // 8 bpp, 256 colors, bank mode
-            color = Read8(g_vram, VRAMAddress(charAddress + charIndex));
+            color = ReadVRAM8(charAddress + charIndex);
             transparent = color == 0x00;
             hasEndCode = color == 0xFF;
             color |= colorData & 0xFF00;
             break;
         case 5: // 16 bpp, 32768 colors, RGB mode
-            color = Read16(g_vram, VRAMAddress((charAddress & ~0xF) + charIndex * 2));
+            color = ReadVRAM16((charAddress & ~0xF) + charIndex * 2);
             transparent = !BitTest(color, 15);
             hasEndCode = color == 0x7FFF;
             break;

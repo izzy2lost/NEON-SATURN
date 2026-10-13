@@ -74,6 +74,30 @@ uint GetY(uint y, bool doubleDensityOnly) {
     }
 }
 
+uint ReadVRAM4(uint address, uint nibble) {
+    return Read4(g_vram, address & 0x7FFFF, nibble);
+}
+
+uint ReadVRAM8(uint address) {
+    return Read8(g_vram, address & 0x7FFFF);
+}
+
+uint ReadVRAM16(uint address) {
+    return Read16(g_vram, address & 0x7FFFE);
+}
+
+uint ReadVRAM32(uint address) {
+    return Read32(g_vram, address & 0x7FFFC);
+}
+
+uint ReadCRAMRotCoeff16(uint address) {
+    return Read16(g_cramRotCoeff, address & 0x7FE);
+}
+
+uint ReadCRAMRotCoeff32(uint address) {
+    return Read32(g_cramRotCoeff, address & 0x7FC);
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Windows
 
@@ -84,8 +108,8 @@ bool InsideWindow(GlobalWindowParams window, bool invert, uint2 pos) {
     // Read line window if enabled
     if (window.lineWindowTableEnable) {
         const uint address = window.lineWindowTableAddress + pos.y * 4;
-        start.x = Read16(g_vram, address + 0);
-        end.x = Read16(g_vram, address + 2);
+        start.x = ReadVRAM16(address + 0);
+        end.x = ReadVRAM16(address + 2);
     }
 
     start.x = SignExtend(start.x, 16);
@@ -304,40 +328,40 @@ struct RotCoefficient {
 RotTable ReadRotTable(const uint address) {
     RotTable table;
 
-    table.Xst = SignExtend(Read32(g_vram, address + 0x00) >> 6, 23);
-    table.Yst = SignExtend(Read32(g_vram, address + 0x04) >> 6, 23);
-    table.Zst = SignExtend(Read32(g_vram, address + 0x08) >> 6, 23);
+    table.Xst = SignExtend(ReadVRAM32(address + 0x00) >> 6, 23);
+    table.Yst = SignExtend(ReadVRAM32(address + 0x04) >> 6, 23);
+    table.Zst = SignExtend(ReadVRAM32(address + 0x08) >> 6, 23);
 
-    table.deltaXst = SignExtend(Read32(g_vram, address + 0x0C) >> 6, 13);
-    table.deltaYst = SignExtend(Read32(g_vram, address + 0x10) >> 6, 13);
+    table.deltaXst = SignExtend(ReadVRAM32(address + 0x0C) >> 6, 13);
+    table.deltaYst = SignExtend(ReadVRAM32(address + 0x10) >> 6, 13);
 
-    table.deltaX = SignExtend(Read32(g_vram, address + 0x14) >> 6, 13);
-    table.deltaY = SignExtend(Read32(g_vram, address + 0x18) >> 6, 13);
+    table.deltaX = SignExtend(ReadVRAM32(address + 0x14) >> 6, 13);
+    table.deltaY = SignExtend(ReadVRAM32(address + 0x18) >> 6, 13);
 
-    table.A = SignExtend(Read32(g_vram, address + 0x1C) >> 6, 14);
-    table.B = SignExtend(Read32(g_vram, address + 0x20) >> 6, 14);
-    table.C = SignExtend(Read32(g_vram, address + 0x24) >> 6, 14);
-    table.D = SignExtend(Read32(g_vram, address + 0x28) >> 6, 14);
-    table.E = SignExtend(Read32(g_vram, address + 0x2C) >> 6, 14);
-    table.F = SignExtend(Read32(g_vram, address + 0x30) >> 6, 14);
+    table.A = SignExtend(ReadVRAM32(address + 0x1C) >> 6, 14);
+    table.B = SignExtend(ReadVRAM32(address + 0x20) >> 6, 14);
+    table.C = SignExtend(ReadVRAM32(address + 0x24) >> 6, 14);
+    table.D = SignExtend(ReadVRAM32(address + 0x28) >> 6, 14);
+    table.E = SignExtend(ReadVRAM32(address + 0x2C) >> 6, 14);
+    table.F = SignExtend(ReadVRAM32(address + 0x30) >> 6, 14);
 
-    table.Px = SignExtend(Read16(g_vram, address + 0x34), 14);
-    table.Py = SignExtend(Read16(g_vram, address + 0x36), 14);
-    table.Pz = SignExtend(Read16(g_vram, address + 0x38), 14);
+    table.Px = SignExtend(ReadVRAM16(address + 0x34), 14);
+    table.Py = SignExtend(ReadVRAM16(address + 0x36), 14);
+    table.Pz = SignExtend(ReadVRAM16(address + 0x38), 14);
 
-    table.Cx = SignExtend(Read16(g_vram, address + 0x3C), 14);
-    table.Cy = SignExtend(Read16(g_vram, address + 0x3E), 14);
-    table.Cz = SignExtend(Read16(g_vram, address + 0x40), 14);
+    table.Cx = SignExtend(ReadVRAM16(address + 0x3C), 14);
+    table.Cy = SignExtend(ReadVRAM16(address + 0x3E), 14);
+    table.Cz = SignExtend(ReadVRAM16(address + 0x40), 14);
 
-    table.Mx = SignExtend(Read32(g_vram, address + 0x44) >> 6, 24);
-    table.My = SignExtend(Read32(g_vram, address + 0x48) >> 6, 24);
+    table.Mx = SignExtend(ReadVRAM32(address + 0x44) >> 6, 24);
+    table.My = SignExtend(ReadVRAM32(address + 0x48) >> 6, 24);
 
-    table.kx = SignExtend(Read32(g_vram, address + 0x4C), 24);
-    table.ky = SignExtend(Read32(g_vram, address + 0x50), 24);
+    table.kx = SignExtend(ReadVRAM32(address + 0x4C), 24);
+    table.ky = SignExtend(ReadVRAM32(address + 0x50), 24);
 
-    table.KAst = Read32(g_vram, address + 0x54) >> 6;
-    table.dKAst = SignExtend(Read32(g_vram, address + 0x58) >> 6, 20);
-    table.dKAx = SignExtend(Read32(g_vram, address + 0x5C) >> 6, 20);
+    table.KAst = ReadVRAM32(address + 0x54) >> 6;
+    table.dKAst = SignExtend(ReadVRAM32(address + 0x58) >> 6, 20);
+    table.dKAx = SignExtend(ReadVRAM32(address + 0x5C) >> 6, 20);
 
     return table;
 }
@@ -373,7 +397,7 @@ RotCoefficient ReadRotCoefficient(const uint coeffDataSize, const uint coeffData
     if (coeffDataSize == 1) {
         // One-word coefficient data
         const uint address = offset * 2;
-        const uint data = coeffTableCRAM ? Read16(g_cramRotCoeff, address & ~0x800) : Read16(g_vram, address);
+        const uint data = coeffTableCRAM ? ReadCRAMRotCoeff16(address) : ReadVRAM16(address);
         coeff.value = SignExtend(data, 15);
         coeff.lineColorData = 0;
         coeff.transparent = BitTest(data, 15);
@@ -386,7 +410,7 @@ RotCoefficient ReadRotCoefficient(const uint coeffDataSize, const uint coeffData
     } else {
         // Two-word coefficient data
         const uint address = offset * 4;
-        const uint data = coeffTableCRAM ? Read32(g_cramRotCoeff, address & ~0x800) : Read32(g_vram, address);
+        const uint data = coeffTableCRAM ? ReadCRAMRotCoeff32(address) : ReadVRAM32(address);
         coeff.value = SignExtend(data, 24);
         coeff.lineColorData = BitExtract(data, 24, 7);
         coeff.transparent = BitTest(data, 31);
@@ -501,7 +525,7 @@ RotCoefficient CalcRotationCoefficient(uint2 pos, uint index) {
     RotCoefficient coeff;
     if (coeffTableEnable) {
         // Current coefficient address (16.10)
-        const int dKAx = SignExtend(Read32(g_vram, base.tableAddress + 0x5C) >> 6, 20);
+        const int dKAx = SignExtend(ReadVRAM32(base.tableAddress + 0x5C) >> 6, 20);
         const uint KAxofs = coeffDataPerDot ? pos.x * dKAx : 0;
         const uint KA = base.KA + KAxofs;
 
@@ -573,7 +597,7 @@ Character FetchTwoWordCharacter(const BaseBGParams params, uint pageAddress, uin
         return kBlankCharacter;
     }
 
-    const uint charData = Read32(g_vram, charAddress);
+    const uint charData = ReadVRAM32(charAddress);
 
     Character ch;
     ch.charNum = BitExtract(charData, 0, 15);
@@ -592,7 +616,7 @@ Character FetchOneWordCharacter(const BaseBGParams params, uint pageAddress, uin
         return kBlankCharacter;
     }
 
-    const uint charData = Read16(g_vram, charAddress);
+    const uint charData = ReadVRAM16(charAddress);
     return ExtractOneWordCharacter(params, charData);
 }
 
@@ -617,7 +641,7 @@ uint4 FetchPixel(const BaseBGParams params, uint baseAddress, uint2 dotPos, uint
         const uint dotAddress = baseAddress + (dotOffset >> 1);
         const uint dotBank = BitExtract(dotAddress, 17, 2);
         const uint vramAccessOffset = applyVRAMDelay ? (BitExtract(params.vramDataOffset, dotBank, 1) << 3) : 0;
-        const uint dotData = BitTest(charPatAccess, dotBank) ? Read4(g_vram, dotAddress + vramAccessOffset, ~dotPos.x & 1) : 0;
+        const uint dotData = BitTest(charPatAccess, dotBank) ? ReadVRAM4(dotAddress + vramAccessOffset, ~dotPos.x & 1) : 0;
         const uint colorIndex = palNum | dotData;
         colorData = BitExtract(dotData, 1, 3);
         outColor = FetchCRAMColor(cramOffset, colorIndex);
@@ -628,7 +652,7 @@ uint4 FetchPixel(const BaseBGParams params, uint baseAddress, uint2 dotPos, uint
         const uint dotAddress = baseAddress + dotOffset;
         const uint dotBank = BitExtract(dotAddress, 17, 2);
         const uint vramAccessOffset = applyVRAMDelay ? (BitExtract(params.vramDataOffset, dotBank, 1) << 3) : 0;
-        const uint dotData = BitTest(charPatAccess, dotBank) ? Read8(g_vram, dotAddress + vramAccessOffset) : 0;
+        const uint dotData = BitTest(charPatAccess, dotBank) ? ReadVRAM8(dotAddress + vramAccessOffset) : 0;
         const uint colorIndex = (palNum & 0x700) | dotData;
         colorData = BitExtract(dotData, 1, 3);
         outColor = FetchCRAMColor(cramOffset, colorIndex);
@@ -639,7 +663,7 @@ uint4 FetchPixel(const BaseBGParams params, uint baseAddress, uint2 dotPos, uint
         const uint dotAddress = baseAddress + (dotOffset << 1);
         const uint dotBank = BitExtract(dotAddress, 17, 2);
         const uint vramAccessOffset = applyVRAMDelay ? (BitExtract(params.vramDataOffset, dotBank, 1) << 3) : 0;
-        const uint dotData = BitTest(charPatAccess, dotBank) ? Read16(g_vram, dotAddress + vramAccessOffset) : 0;
+        const uint dotData = BitTest(charPatAccess, dotBank) ? ReadVRAM16(dotAddress + vramAccessOffset) : 0;
         const uint colorIndex = dotData & 0x7FF;
         colorData = BitExtract(dotData, 1, 3);
         outColor = FetchCRAMColor(cramOffset, colorIndex);
@@ -650,7 +674,7 @@ uint4 FetchPixel(const BaseBGParams params, uint baseAddress, uint2 dotPos, uint
         const uint dotAddress = baseAddress + (dotOffset << 1);
         const uint dotBank = BitExtract(dotAddress, 17, 2);
         const uint vramAccessOffset = applyVRAMDelay ? (BitExtract(params.vramDataOffset, dotBank, 1) << 3) : 0;
-        const uint dotData = BitTest(charPatAccess, dotBank) ? Read16(g_vram, dotAddress + vramAccessOffset) : 0;
+        const uint dotData = BitTest(charPatAccess, dotBank) ? ReadVRAM16(dotAddress + vramAccessOffset) : 0;
         outColor = Color555(dotData);
         outTransparent = enableTransparency && outColor.w == 0;
         outSpecColorCalc = GetSpecialColorCalcFlag(params, 7, specColorCalc, true);
@@ -659,7 +683,7 @@ uint4 FetchPixel(const BaseBGParams params, uint baseAddress, uint2 dotPos, uint
         const uint dotAddress = baseAddress + (dotOffset << 2);
         const uint dotBank = BitExtract(dotAddress, 17, 2);
         const uint vramAccessOffset = applyVRAMDelay ? (BitExtract(params.vramDataOffset, dotBank, 1) << 3) : 0;
-        const uint dotData = BitTest(charPatAccess, dotBank) ? Read32(g_vram, dotAddress + vramAccessOffset) : 0;
+        const uint dotData = BitTest(charPatAccess, dotBank) ? ReadVRAM32(dotAddress + vramAccessOffset) : 0;
         outColor = Color888(dotData);
         outTransparent = enableTransparency && outColor.w == 0;
         outSpecColorCalc = GetSpecialColorCalcFlag(params, 7, specColorCalc, true);
@@ -861,16 +885,16 @@ uint4 DrawNBG(uint2 pos, // pixel coordinates
         const uint baseTableAddr = lineScrollTableAddress + (pos.y >> lineScrollIntervalShift) * lineScrollTableInc;
         if (lineScrollXEnable) {
             const uint tableAddr = baseTableAddr + lineScrollXOffset;
-            baseFracScroll.x = BitExtract(Read32(g_vram, tableAddr), 8, 19);
+            baseFracScroll.x = BitExtract(ReadVRAM32(tableAddr), 8, 19);
         }
         if (lineScrollYEnable) {
             const uint tableAddr = baseTableAddr + lineScrollYOffset;
-            baseFracScroll.y = BitExtract(Read32(g_vram, tableAddr), 8, 19);
+            baseFracScroll.y = BitExtract(ReadVRAM32(tableAddr), 8, 19);
             pos.y &= (1u << lineScrollIntervalShift) - 1u; // reset cumulative scrollIncV increment
         }
         if (lineZoomEnable) {
             const uint tableAddr = baseTableAddr + lineZoomOffset;
-            scrollInc.x = BitExtract(Read32(g_vram, tableAddr), 8, 11);
+            scrollInc.x = BitExtract(ReadVRAM32(tableAddr), 8, 11);
         }
     }
 
@@ -892,7 +916,7 @@ uint4 DrawNBG(uint2 pos, // pixel coordinates
         const uint vcellScrollTableAddress = BitExtract(g_commonParams.vcellScroll, 0, 19);
         const uint vcellScrollInc = BitExtract(g_commonParams.vcellScroll, 19, 3) << 2u;
         const uint vcellAddress = vcellScrollTableAddress + offset * vcellScrollInc + vcellScrollOffset;
-        const uint vcellScrollY = BitExtract(Read32(g_vram, vcellAddress), 8, 19);
+        const uint vcellScrollY = BitExtract(ReadVRAM32(vcellAddress), 8, 19);
         baseFracScroll.y += vcellScrollY;
     }
 
@@ -996,7 +1020,7 @@ void StoreRotationLineColorData(uint2 pos, uint2 rotPos, uint index, uint rotSel
     const uint lineColorY = lineColorPerLine ? pos.y : 0;
     const uint lineColorAddress = lineColorBaseAddress + lineColorY * 2;
 
-    uint cramAddress = Read16(g_vram, lineColorAddress);
+    uint cramAddress = ReadVRAM16(lineColorAddress);
 
     if (useCoeffLineColor) {
         const uint coeffParamsOffset = 6 + coeffSel * 5;

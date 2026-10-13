@@ -66,6 +66,14 @@ static const uint kVDP1MeshFBOffset = kScaledFBSize * 2 * 2;
 // ---------------------------------------------------------------------------------------------------------------------
 // Utilities
 
+uint GetY(uint y) {
+    if (!deinterlace && interlaceMode >= kInterlaceModeSingleDensity && !exclusiveMonitor) {
+        return (y << 1) | oddField;
+    } else {
+        return y;
+    }
+}
+
 uint ReadSprite8(uint address, uint field) {
     address += kSpriteFBBaseOffset + field * kDeinterlaceFBBaseOffset;
     return BitExtract(g_spriteFB.Load(address & ~3), (address & 3) * 8, 8);
@@ -84,12 +92,12 @@ uint ReadMesh16(uint address, uint field) {
     return ReadSprite16(kVDP1MeshFBOffset + address, field);
 }
 
-uint GetY(uint y) {
-    if (!deinterlace && interlaceMode >= kInterlaceModeSingleDensity && !exclusiveMonitor) {
-        return (y << 1) | oddField;
-    } else {
-        return y;
-    }
+uint ReadVRAM16(uint address) {
+    return Read16(g_vram, address & 0x7FFFE);
+}
+
+uint ReadVRAM32(uint address) {
+    return Read32(g_vram, address & 0x7FFFC);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -119,8 +127,8 @@ bool InsideWindow(GlobalWindowParams window, bool invert, uint2 pos) {
     // Read line window if enabled
     if (window.lineWindowTableEnable) {
         const uint address = window.lineWindowTableAddress + pos.y * 4;
-        start.x = Read16(g_vram, address + 0);
-        end.x = Read16(g_vram, address + 2);
+        start.x = ReadVRAM16(address + 0);
+        end.x = ReadVRAM16(address + 2);
     }
 
     start.x = SignExtend(start.x, 16);
@@ -202,14 +210,14 @@ bool InsideWindows(uint2 pos) {
 uint2 CalcRotationSpriteCoordinates(uint2 pos) {
     const RotParamBase base = g_rotParamBases[pos.y];
 
-    const int Xst = SignExtend(Read32(g_vram, base.tableAddress + 0x00) >> 6, 23);
-    const int Yst = SignExtend(Read32(g_vram, base.tableAddress + 0x04) >> 6, 23);
+    const int Xst = SignExtend(ReadVRAM32(base.tableAddress + 0x00) >> 6, 23);
+    const int Yst = SignExtend(ReadVRAM32(base.tableAddress + 0x04) >> 6, 23);
 
-    const int deltaXst = SignExtend(Read32(g_vram, base.tableAddress + 0x0C) >> 6, 13);
-    const int deltaYst = SignExtend(Read32(g_vram, base.tableAddress + 0x10) >> 6, 13);
+    const int deltaXst = SignExtend(ReadVRAM32(base.tableAddress + 0x0C) >> 6, 13);
+    const int deltaYst = SignExtend(ReadVRAM32(base.tableAddress + 0x10) >> 6, 13);
 
-    const int deltaX = SignExtend(Read32(g_vram, base.tableAddress + 0x14) >> 6, 13);
-    const int deltaY = SignExtend(Read32(g_vram, base.tableAddress + 0x18) >> 6, 13);
+    const int deltaX = SignExtend(ReadVRAM32(base.tableAddress + 0x14) >> 6, 13);
+    const int deltaY = SignExtend(ReadVRAM32(base.tableAddress + 0x18) >> 6, 13);
 
     // Current sprite coordinates (13.10)
     // 10 + 0*10 + 0*10 = 10 + 10 + 10 = 10 frac bits
