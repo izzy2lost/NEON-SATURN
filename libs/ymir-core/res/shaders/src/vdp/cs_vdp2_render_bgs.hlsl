@@ -939,7 +939,7 @@ uint4 DrawNBG(uint2 pos, // pixel coordinates
             // Read previous character.
             // If we're at the start of the line, read last character from previous line.
             // If at the start of the screen, read last character in the screen.
-            if (pos.x >= 8) {
+            if (pos.x >= 8 - (((baseFracScroll.x + params.scrollAmount.x) >> 8) & 7)) {
                 // Not at left edge of the screen - read character to the left
                 scrollPos.x -= 8;
             } else {
@@ -951,7 +951,7 @@ uint4 DrawNBG(uint2 pos, // pixel coordinates
                 } else {
                     // At top edge of the screen - read last character read the previous screen
                     // TODO: read character from the previous screen (store on CPU side)
-                    scrollPos.y += displayResV - 8;
+                    scrollPos.y += displayResV;
                 }
             }
         }
