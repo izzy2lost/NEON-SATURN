@@ -6385,6 +6385,7 @@ void Direct3D12VDPRenderer::VDP1WriteFB(uint32 address, uint16 value) {
 void Direct3D12VDPRenderer::VDP1WriteReg(uint32 address, uint16 value) {
     // All important registers are passed as root 32-bit constants.
     // Nothing needs to be marked dirty as a result of VDP1 register changes.
+    // TODO: if anything in the render params changes as a result of this write, flush pending spans or FBRAM writes
 }
 
 // -------------------------------------------------------------------------
