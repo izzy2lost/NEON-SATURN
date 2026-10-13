@@ -2065,6 +2065,8 @@ struct Direct3D12VDPRenderer::Impl {
 
         void Reset() {
             cmdAlloc->Reset();
+            cpuSpanCount = 0;
+            cpuCmdCount = 0;
         }
     };
 
