@@ -987,6 +987,14 @@ struct Direct3D12VDPRenderer::Impl {
         uint32 m_currGen = 1u;
     };
 
+    /// @brief Current action being processed on the VDP1 side.
+    enum class VDP1Action {
+        None,       ///< No action -- just reset or flushed everything
+        Drawing,    ///< Executing drawing commands
+        FBRAMWrite, ///< Writing to FBRAM
+        RegWrite,   ///< Writing to registers
+    };
+
     struct VDP1Resources {
         VDP1Resources() {
             memset(&cpuCommonRenderParams, 0, sizeof(cpuCommonRenderParams));
@@ -1123,14 +1131,17 @@ struct Direct3D12VDPRenderer::Impl {
         // ---------------------------------------------------------------------
         // Rendering state
 
-        // Currently active polygon drawing shader
+        /// @brief Currently active polygon drawing shader
         size_t currPolyDrawShaderIndex = -1;
-        // Currently active output merger shader
+        /// @brief Currently active output merger shader
         size_t currOutputMergerShaderIndex = -1;
-        // Set to true if any transparent mesh polygon was drawn
+        /// @brief Set to true if any transparent mesh polygon was drawn
         bool transparentMeshDrawn = false;
-        // Whether to double vertical coordinates when drawing VDP1 sprites
+        /// @brief Whether to double vertical coordinates when drawing VDP1 sprites
         bool doubleV = false;
+
+        /// @brief Current action being processed on the VDP1 side.
+        VDP1Action action = VDP1Action::None;
     } vdp1;
 
     /// @brief Constructs a polygon drawing shader index from its variant options.
@@ -1169,6 +1180,35 @@ struct Direct3D12VDPRenderer::Impl {
             .meshMode = bit::extract<0>(index),
             .shadingMode = bit::extract<1, 2>(index),
         };
+    }
+
+    /// @brief Updates the current VDP1 action, flushing any pending work if necessary.
+    /// @param[in] newAction the new action
+    void VDP1UpdateAction(VDP1Action newAction) {
+        if (vdp1.action != newAction) {
+            switch (vdp1.action) {
+            case VDP1Action::None: break;
+            case VDP1Action::Drawing:
+                if (auto result = VDP1SubmitSpans(); !result) {
+                    devlog::warn<grp::dx12_vdp1>("Failed to submit VDP1 spans: {}", result.Error().message);
+                }
+                break;
+            case VDP1Action::FBRAMWrite:
+                if (auto result = VDP1FlushFBRAM(); !result) {
+                    devlog::warn<grp::dx12_vdp1>("Failed to submit VDP1 FBRAM writes: {}", result.Error().message);
+                }
+
+                break;
+            case VDP1Action::RegWrite: VDP1UpdateCommonRenderParams(); break;
+            }
+
+            vdp1.action = newAction;
+        }
+    }
+
+    /// @brief Flushes any pending VDP1 work.
+    void VDP1FlushWork() {
+        VDP1UpdateAction(VDP1Action::None);
     }
 
     /// @brief Determines if the given polygon drawing shader variant uses OIT shading mode.
@@ -3789,6 +3829,7 @@ struct Direct3D12VDPRenderer::Impl {
         if (auto result = VDP1UploadFBRAM(); !result) {
             devlog::warn<grp::dx12_base>("Failed to upload VDP1 FBRAM: {}", result.Error().message);
         }
+        vdp1.action = VDP1Action::None;
 
         // VDP2
         vdp2.vramDirty.SetAll();
@@ -3850,7 +3891,7 @@ struct Direct3D12VDPRenderer::Impl {
     void VDP1WriteVRAM(uint32 address) {
         // Submit spans if the target address is in use by a textured polygon in the current batch
         if (vdp1.vramTexUsageTracker.IsInUse(address)) [[unlikely]] {
-            devlog::debug<grp::dx12_vdp1>("VDP1 VRAM write to {:05X} which is in use by pending spans; submitting now",
+            devlog::trace<grp::dx12_vdp1>("VDP1 VRAM write to {:05X} which is in use by pending spans; submitting now",
                                           address);
             VDP1SubmitSpans();
         }
@@ -3864,7 +3905,7 @@ struct Direct3D12VDPRenderer::Impl {
         }
         vdp1.fbramReadbackCopyPending = false;
 
-        // Submit partial command list
+        // Submit partial GPU command list
         auto result = SubmitCommandList();
         if (!result) {
             devlog::warn<grp::dx12_base>("Failed to submit command list: {}", result.Error().message);
@@ -3879,13 +3920,11 @@ struct Direct3D12VDPRenderer::Impl {
     }
 
     void VDP1SyncFB() {
-        // Submit pending spans to ensure we're synced as far as possible
-        VDP1SubmitSpans();
-
-        // Copy FBRAM to readback buffer if modified
+        // NOTE: intentionally not syncing FBRAM writes because these happened before the reads
+        if (vdp1.action != VDP1Action::FBRAMWrite) {
+            VDP1FlushWork();
+        }
         VDP1CopyFBRAMToReadback();
-
-        // Download FBRAM from readback buffer
         VDP1DownloadFBRAM();
     }
 
@@ -3894,10 +3933,14 @@ struct Direct3D12VDPRenderer::Impl {
     }
 
     void VDP1WriteFB(uint32 address, uint32 size) {
+        VDP1UpdateAction(VDP1Action::FBRAMWrite);
         for (uint32 i = 0; i < size; ++i) {
             vdp1.fbramDirty.Set(address + i);
         }
-        VDP1SubmitSpans();
+    }
+
+    void VDP1WriteReg() {
+        VDP1UpdateAction(VDP1Action::RegWrite);
     }
 
     [[nodiscard]] util::VoidResult<> VDP1FlushVRAM() {
@@ -4052,8 +4095,6 @@ struct Direct3D12VDPRenderer::Impl {
                                         D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_SHADER_RESOURCE);
         barrierTracker.Flush(cmdList);
 
-        VDP1UpdateCommonRenderParams();
-
         // Dispatch FBRAM write compute shader
         const uint32 writeCount = vdp1.cpuFBRAMWritesList.size();
         cmdList->SetPipelineState(vdp1.fbramWritePSO.GetPointer());
@@ -4187,6 +4228,8 @@ struct Direct3D12VDPRenderer::Impl {
     }
 
     void VDP1ExecuteCommand(uint32 cmdAddress, VDP1Command::Control control) {
+        VDP1UpdateAction(VDP1Action::Drawing);
+
         switch (control.command) {
         case VDP1Command::CommandType::DrawNormalSprite: VDP1Cmd_DrawNormalSprite(cmdAddress, control); break;
         case VDP1Command::CommandType::DrawScaledSprite: VDP1Cmd_DrawScaledSprite(cmdAddress, control); break;
@@ -4245,7 +4288,6 @@ struct Direct3D12VDPRenderer::Impl {
         // We should have a shader selected by now
         assert(vdp1.currPolyDrawShaderIndex != -1);
 
-        VDP1UpdateCommonRenderParams();
         vdp1.cpuPolyDrawParams.numSpans = frameCtx.cpuSpanCount;
 
         if (auto result = VDP1FlushVRAM(); !result) {
@@ -4429,11 +4471,6 @@ struct Direct3D12VDPRenderer::Impl {
 
     uint16 VDP1AddCommand(const VDP1CommandData &data, bool textured) {
         FrameContext &frameCtx = frames.GetCurrentFrame();
-
-        // Flush any pending FBRAM writes
-        if (auto result = VDP1FlushFBRAM(); !result) {
-            devlog::warn<grp::dx12_vdp1>("VDP1 FBRAM flush failed: {}", result.Error().message);
-        }
 
         // If list is full, flush it
         if (frameCtx.cpuCmdCount + 1 >= kMaxVDP1Commands) {
@@ -6022,11 +6059,7 @@ struct Direct3D12VDPRenderer::Impl {
             return;
         }
 
-        // FIXME: this should not be needed
-        VDP1SubmitSpans();
-        if (auto result = VDP1FlushFBRAM(); !result) {
-            devlog::warn<grp::dx12_vdp1>("VDP1 FBRAM flush failed: {}", result.Error().message);
-        }
+        VDP1FlushWork();
 
         FrameContext &frameCtx = frames.GetCurrentFrame();
 
@@ -6387,7 +6420,7 @@ void Direct3D12VDPRenderer::VDP1WriteFB(uint32 address, uint16 value) {
 void Direct3D12VDPRenderer::VDP1WriteReg(uint32 address, uint16 value) {
     // All important registers are passed as root 32-bit constants.
     // Nothing needs to be marked dirty as a result of VDP1 register changes.
-    // TODO: if anything in the render params changes as a result of this write, flush pending spans or FBRAM writes
+    m_impl->VDP1WriteReg();
 }
 
 // -------------------------------------------------------------------------
