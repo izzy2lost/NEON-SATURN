@@ -9,6 +9,7 @@ import android.widget.ImageButton
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts.OpenDocument
+import androidx.activity.result.contract.ActivityResultContracts.OpenMultipleDocuments
 import androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -53,6 +54,8 @@ class LauncherActivity : AppCompatActivity() {
     private var librarySettingsDialog: AlertDialog? = null
     /* Updates the open Settings dialog's CD Block row after an import. */
     private var refreshCdbSettingsRow: ((String?) -> Unit)? = null
+    /* Updates the open Settings dialog's BIOS list after an import. */
+    private var refreshBiosSettingsRow: (() -> Unit)? = null
     private var launchInProgress = false
 
     private var currentViewMode = BootstrapStore.VIEW_MODE_LIST
@@ -60,9 +63,9 @@ class LauncherActivity : AppCompatActivity() {
     private val coverFlowTransformer = CoverFlowScrollTransformer()
     private var snapHelper: SnapHelper? = null
 
-    private val importIplLauncher = registerForActivityResult(OpenDocument()) { uri ->
-        uri ?: return@registerForActivityResult
-        importDocument(uri, ContentBucket.IPL) { file -> store.saveIpl(file.absolutePath) }
+    // Several BIOS files can be imported; the emulator picks the one for each disc's region
+    private val importIplLauncher = registerForActivityResult(OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) importBiosFiles(uris)
     }
 
     private val importCdbLauncher = registerForActivityResult(OpenDocument()) { uri ->
@@ -220,12 +223,47 @@ class LauncherActivity : AppCompatActivity() {
         }
     }
 
+    private fun importBiosFiles(uris: List<Uri>) {
+        val imported = mutableListOf<String>()
+        val skipped = mutableListOf<String>()
+        for (uri in uris) {
+            val file = runCatching { importer.importDocument(uri, ContentBucket.IPL) }.getOrElse { error ->
+                skipped += error.message ?: error::class.java.simpleName
+                continue
+            }
+            when {
+                file.length() != BiosIdentifier.IPL_SIZE -> {
+                    file.delete()
+                    skipped += getString(R.string.bios_import_wrong_size, file.name)
+                }
+                BiosIdentifier.isDuplicate(file, paths.iplDir) -> {
+                    file.delete()
+                    skipped += getString(R.string.bios_import_duplicate, file.name)
+                }
+                else -> {
+                    imported += BiosIdentifier.label(this, BiosIdentifier.identify(file))
+                    if (store.load().iplPath?.let { File(it).isFile } != true) {
+                        store.saveIpl(file.absolutePath)
+                    }
+                }
+            }
+        }
+
+        val message = buildList {
+            if (imported.isNotEmpty()) add(getString(R.string.bios_imported, imported.joinToString(", ")))
+            addAll(skipped)
+        }.joinToString("\n")
+        if (message.isNotEmpty()) Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+        refreshUi(forceRescan = false)
+        refreshBiosSettingsRow?.invoke()
+    }
+
     private fun refreshUi(forceRescan: Boolean) {
         val selection = resolveSelection()
         val gamesFolderUri = selection.gamesFolderUri
         val setupComplete = selection.iplPath != null && gamesFolderUri != null
 
-        iplValueText.text = selection.iplPath?.let(::fileLabel) ?: getString(R.string.not_set)
+        iplValueText.text = BiosIdentifier.summary(this, paths.iplDir) ?: getString(R.string.not_set)
         refreshCdbSettingsRow?.invoke(selection.cdbPath)
         val folderLabel = gamesFolderUri?.let(::folderLabel) ?: getString(R.string.not_set)
         gamesFolderValueText.text = folderLabel
@@ -366,6 +404,20 @@ class LauncherActivity : AppCompatActivity() {
             store.saveRewindEnabled(isChecked)
         }
 
+        // BIOS files: every one imported is a candidate for the disc's region
+        val biosListText = content.findViewById<TextView>(R.id.biosListText)
+        val updateBiosRow = {
+            biosListText.text = BiosIdentifier.summary(this, paths.iplDir) ?: getString(R.string.not_set)
+        }
+        updateBiosRow()
+        refreshBiosSettingsRow = updateBiosRow
+        content.findViewById<MaterialButton>(R.id.addBiosButton).setOnClickListener {
+            importIplLauncher.launch(arrayOf("*/*"))
+        }
+        content.findViewById<MaterialButton>(R.id.removeBiosButton).setOnClickListener {
+            showRemoveBiosDialog(updateBiosRow)
+        }
+
         // CD Block ROM: optional, and off by default since real firmware breaks some games
         val cdbValueText = content.findViewById<TextView>(R.id.cdbValueText)
         val removeCdbButton = content.findViewById<MaterialButton>(R.id.removeCdbButton)
@@ -448,10 +500,39 @@ class LauncherActivity : AppCompatActivity() {
         dialog.setOnDismissListener {
             librarySettingsDialog = null
             refreshCdbSettingsRow = null
+            refreshBiosSettingsRow = null
         }
 
         librarySettingsDialog = dialog
         dialog.show()
+    }
+
+    private fun showRemoveBiosDialog(onRemoved: () -> Unit) {
+        val files = BiosIdentifier.listBiosFiles(paths.iplDir)
+        if (files.size <= 1) {
+            // The library needs a BIOS; Redo setup is the way to start over
+            Toast.makeText(this, getString(R.string.bios_remove_last), Toast.LENGTH_SHORT).show()
+            return
+        }
+        val labels = files.map { "${BiosIdentifier.label(this, BiosIdentifier.identify(it))}\n${it.name}" }
+            .toTypedArray()
+        val checked = BooleanArray(files.size)
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.bios_remove_title)
+            .setMultiChoiceItems(labels, checked) { _, which, isChecked -> checked[which] = isChecked }
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.bios_remove_confirm) { _, _ ->
+                val toRemove = files.filterIndexed { index, _ -> checked[index] }
+                if (toRemove.size == files.size) {
+                    Toast.makeText(this, getString(R.string.bios_remove_last), Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                toRemove.forEach(File::delete)
+                // resolveSelection falls back to the first file left
+                refreshUi(forceRescan = false)
+                onRemoved()
+            }
+            .show()
     }
 
     private fun refreshLibrary(gamesFolderUri: String) {

@@ -6,6 +6,8 @@ namespace neonsaturn::android {
 
 struct BootstrapConfig {
     std::string iplPath;
+    /// Every imported IPL ROM; the one matching the disc's region replaces iplPath once the disc is in.
+    std::string iplDir;
     std::string cdbPath;
     std::string discPath;
     std::string dataRoot;

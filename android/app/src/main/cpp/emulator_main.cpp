@@ -1,4 +1,5 @@
 #include "bootstrap.hpp"
+#include "ipl_select.hpp"
 
 #include "audio_system.hpp"
 #include "rewind_buffer.hpp"
@@ -176,6 +177,8 @@ BootstrapConfig BootstrapConfigFromArgs(int argc, char **argv) {
         const std::string_view argument = argv[index] == nullptr ? std::string_view{} : std::string_view{argv[index]};
         if (const auto value = ArgValue(argument, "--ipl="); !value.empty()) {
             config.iplPath.assign(value);
+        } else if (const auto value = ArgValue(argument, "--ipl-dir="); !value.empty()) {
+            config.iplDir.assign(value);
         } else if (const auto value = ArgValue(argument, "--cdb="); !value.empty()) {
             config.cdbPath.assign(value);
         } else if (const auto value = ArgValue(argument, "--disc="); !value.empty()) {
@@ -1094,7 +1097,9 @@ private:
 
         {
             std::scoped_lock lock{m_coreMutex};
+            // Sets the SMPC area code from the disc header
             m_saturn.LoadDisc(std::move(disc));
+            UseIPLForRegion();
             m_coreInitialized = true;
         }
 
@@ -1107,6 +1112,30 @@ private:
             m_rewindBuffer.Start();
         }
         return true;
+    }
+
+    // Swaps in the imported IPL ROM made for the disc's region, if one is better than the one loaded.
+    void UseIPLForRegion() {
+        if (m_config.iplDir.empty()) {
+            return;
+        }
+        const auto candidates = ScanIPLDirectory(m_config.iplDir);
+        const uint8_t areaCode = m_saturn.SMPC.GetAreaCode();
+        const auto *chosen = SelectIPL(candidates, areaCode);
+        if (chosen == nullptr) {
+            SDL_Log("No known IPL ROM for area code %X; keeping %s", areaCode, m_config.iplPath.c_str());
+            return;
+        }
+        if (chosen->path == std::filesystem::path{m_config.iplPath}) {
+            return;
+        }
+        if (const auto result = util::LoadIPLROM(chosen->path, m_saturn); !result.succeeded) {
+            SDL_Log("IPL load failed for %s: %s", chosen->path.c_str(), result.errorMessage.c_str());
+            return;
+        }
+        SDL_Log("Using IPL ROM %s (%s) for area code %X", chosen->path.c_str(), chosen->info->version, areaCode);
+        m_config.iplPath = chosen->path.string();
+        m_saturn.Reset(true);
     }
 
     // Mirrors the desktop frontend's rewind stepping. On a successful pop the restored
