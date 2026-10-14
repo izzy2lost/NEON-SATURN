@@ -749,7 +749,7 @@ class LauncherActivity : AppCompatActivity() {
             libraryAdapter.submitList(currentLibraryEntries)
         } else {
             val il = CoverArtManager.imageLoader(this, paths)
-            val cfa = CoverFlowAdapter(::launchGame, mode, il)
+            val cfa = CoverFlowAdapter(::launchGame, mode, il, paths)
             coverFlowAdapter = cfa
 
             libraryRecyclerView.layoutManager =
@@ -782,8 +782,8 @@ class LauncherActivity : AppCompatActivity() {
                 coverFlowTransformer.applyTransforms(libraryRecyclerView)
             }
 
-            // Download the cover index; when ready, rebind all visible items so covers appear
-            CoverArtManager.ensureIndexLoaded(mode) {
+            // Load the saved/bundled cover index, then refresh it online; when ready, rebind all visible items so covers appear
+            CoverArtManager.ensureIndexLoaded(this, paths, mode) {
                 coverFlowAdapter?.notifyDataSetChanged()
                 libraryRecyclerView.post {
                     coverFlowTransformer.applyTransforms(libraryRecyclerView)

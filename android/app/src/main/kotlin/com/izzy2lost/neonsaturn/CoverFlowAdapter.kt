@@ -15,7 +15,8 @@ import coil.request.CachePolicy
 class CoverFlowAdapter(
     private val onGameSelected: (GameLibraryEntry) -> Unit,
     private val coverMode: Int,
-    private val imageLoader: ImageLoader
+    private val imageLoader: ImageLoader,
+    private val paths: NeonSaturnPaths
 ) : RecyclerView.Adapter<CoverFlowAdapter.CoverViewHolder>() {
 
     private var entries: List<GameLibraryEntry> = emptyList()
@@ -44,7 +45,7 @@ class CoverFlowAdapter(
 
     override fun onBindViewHolder(holder: CoverViewHolder, position: Int) {
         val entry = entries[position % entries.size]
-        holder.bind(entry, coverMode, imageLoader, onGameSelected)
+        holder.bind(entry, coverMode, imageLoader, paths, onGameSelected)
     }
 
     override fun getItemCount(): Int = if (entries.isEmpty()) 0 else Int.MAX_VALUE
@@ -85,25 +86,32 @@ class CoverFlowAdapter(
             entry: GameLibraryEntry,
             coverMode: Int,
             imageLoader: ImageLoader,
+            paths: NeonSaturnPaths,
             onGameSelected: (GameLibraryEntry) -> Unit
         ) {
             titleText.text = entry.title
-            val url = CoverArtManager.coverUrl(entry.title, coverMode)
+            // A saved cover file, or a URL that is saved for offline once it loads
+            val model = CoverArtManager.coverModel(paths, entry.title, coverMode)
             val placeholderRes = if (coverMode == BootstrapStore.VIEW_MODE_NA_COVERS)
                 R.drawable.ic_cover_placeholder_na
             else
                 R.drawable.ic_cover_placeholder_japan
 
-            if (url != null) {
-                coverImage.load(url, imageLoader) {
+            if (model != null) {
+                coverImage.load(model, imageLoader) {
                     crossfade(true)
+                    if (model is String) {
+                        listener(onSuccess = { _, _ ->
+                            CoverArtManager.saveForOffline(paths, entry.title, coverMode)
+                        })
+                    }
                     memoryCachePolicy(CachePolicy.ENABLED)
                     diskCachePolicy(CachePolicy.ENABLED)
                     placeholder(placeholderRes)
                     error(placeholderRes)
                 }
-                // Same URL into reflection — Coil serves from memory cache immediately
-                reflectionImage.load(url, imageLoader) {
+                // Same model into reflection — Coil serves from memory cache immediately
+                reflectionImage.load(model, imageLoader) {
                     memoryCachePolicy(CachePolicy.ENABLED)
                     diskCachePolicy(CachePolicy.ENABLED)
                     placeholder(placeholderRes)
