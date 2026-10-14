@@ -8,6 +8,9 @@
     <string name="cdb_title">CD Block ROM</string>
     <string name="import_ipl">Import BIOS</string>
     <string name="import_cdb">Import CD Block ROM</string>
+    <string name="remove_cdb">Remove CD Block ROM</string>
+    <string name="settings_cdb_note">Optional. Uses the real CD Block firmware instead of the built-in high-level emulation. This could cause some games to not work correctly, so leave it unset unless you need it. Takes effect the next time a game starts.</string>
+    <string name="cdb_removed">CD Block ROM removed</string>
     <string name="games_folder_title">Games Folder</string>
     <string name="choose_games_folder">Choose Games Folder</string>
     <string name="games_folder_unknown">Unknown folder</string>

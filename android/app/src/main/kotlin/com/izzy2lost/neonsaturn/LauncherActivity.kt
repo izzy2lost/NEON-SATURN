@@ -40,7 +40,6 @@ class LauncherActivity : AppCompatActivity() {
     private lateinit var libraryContainer: android.view.View
     private lateinit var librarySettingsButton: ImageButton
     private lateinit var iplValueText: TextView
-    private lateinit var cdbValueText: TextView
     private lateinit var gamesFolderValueText: TextView
     private lateinit var emptyLibraryText: TextView
     private lateinit var libraryProgressIndicator: LinearProgressIndicator
@@ -52,6 +51,8 @@ class LauncherActivity : AppCompatActivity() {
     private var currentLibraryEntries: List<GameLibraryEntry> = emptyList()
     private var libraryScanGeneration = 0
     private var librarySettingsDialog: AlertDialog? = null
+    /* Updates the open Settings dialog's CD Block row after an import. */
+    private var refreshCdbSettingsRow: ((String?) -> Unit)? = null
     private var launchInProgress = false
 
     private var currentViewMode = BootstrapStore.VIEW_MODE_LIST
@@ -102,7 +103,6 @@ class LauncherActivity : AppCompatActivity() {
         libraryContainer = findViewById(R.id.libraryContainer)
         librarySettingsButton = findViewById(R.id.librarySettingsButton)
         iplValueText = findViewById(R.id.iplValueText)
-        cdbValueText = findViewById(R.id.cdbValueText)
         gamesFolderValueText = findViewById(R.id.gamesFolderValueText)
         emptyLibraryText = findViewById(R.id.emptyLibraryText)
         libraryProgressIndicator = findViewById(R.id.libraryProgressIndicator)
@@ -131,9 +131,6 @@ class LauncherActivity : AppCompatActivity() {
 
         findViewById<MaterialButton>(R.id.importIplButton).setOnClickListener {
             importIplLauncher.launch(arrayOf("*/*"))
-        }
-        findViewById<MaterialButton>(R.id.importCdbButton).setOnClickListener {
-            importCdbLauncher.launch(arrayOf("*/*"))
         }
         findViewById<MaterialButton>(R.id.chooseGamesFolderButton).setOnClickListener {
             gamesFolderLauncher.launch(null)
@@ -229,7 +226,7 @@ class LauncherActivity : AppCompatActivity() {
         val setupComplete = selection.iplPath != null && gamesFolderUri != null
 
         iplValueText.text = selection.iplPath?.let(::fileLabel) ?: getString(R.string.not_set)
-        cdbValueText.text = selection.cdbPath?.let(::fileLabel) ?: getString(R.string.not_set_optional)
+        refreshCdbSettingsRow?.invoke(selection.cdbPath)
         val folderLabel = gamesFolderUri?.let(::folderLabel) ?: getString(R.string.not_set)
         gamesFolderValueText.text = folderLabel
 
@@ -369,6 +366,26 @@ class LauncherActivity : AppCompatActivity() {
             store.saveRewindEnabled(isChecked)
         }
 
+        // CD Block ROM: optional, and off by default since real firmware breaks some games
+        val cdbValueText = content.findViewById<TextView>(R.id.cdbValueText)
+        val removeCdbButton = content.findViewById<MaterialButton>(R.id.removeCdbButton)
+        val updateCdbRow = { cdbPath: String? ->
+            cdbValueText.text = cdbPath?.let(::fileLabel) ?: getString(R.string.not_set_optional)
+            removeCdbButton.isVisible = cdbPath != null
+        }
+        updateCdbRow(resolveSelection().cdbPath)
+        refreshCdbSettingsRow = updateCdbRow
+        content.findViewById<MaterialButton>(R.id.importCdbButton).setOnClickListener {
+            importCdbLauncher.launch(arrayOf("*/*"))
+        }
+        removeCdbButton.setOnClickListener {
+            // resolveSelection falls back to any ROM left in the folder, so delete them all
+            paths.cdbDir.listFiles()?.filter(File::isFile)?.forEach(File::delete)
+            store.saveCdb(null)
+            updateCdbRow(null)
+            Toast.makeText(this, getString(R.string.cdb_removed), Toast.LENGTH_SHORT).show()
+        }
+
         val touchControlsSwitch =
             content.findViewById<com.google.android.material.materialswitch.MaterialSwitch>(R.id.touchControlsSwitch)
         touchControlsSwitch.isChecked = store.loadTouchControlsEnabled()
@@ -430,6 +447,7 @@ class LauncherActivity : AppCompatActivity() {
 
         dialog.setOnDismissListener {
             librarySettingsDialog = null
+            refreshCdbSettingsRow = null
         }
 
         librarySettingsDialog = dialog

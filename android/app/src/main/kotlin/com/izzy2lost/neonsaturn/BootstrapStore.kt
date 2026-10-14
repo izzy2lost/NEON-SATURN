@@ -51,7 +51,6 @@ class BootstrapStore(context: Context) {
     fun clearSetup() {
         preferences.edit()
             .remove(KEY_IPL_PATH)
-            .remove(KEY_CDB_PATH)
             .remove(KEY_GAMES_FOLDER_URI)
             .apply()
     }
