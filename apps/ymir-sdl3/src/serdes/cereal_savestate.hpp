@@ -36,6 +36,43 @@ namespace ymir::savestate {
 //  17 = 0.4.0
 inline constexpr uint32 kVersion = 17;
 
+// NEON SATURN: upstream keeps adding fields to the in-development version (marked "TBD" above) without bumping it, so
+// builds synced at different times write different layouts under the same version number and later builds misread
+// the earlier files. The port tracks those in-version layouts as revisions, recorded in its save state file header
+// (android/app/src/main/cpp/savestate_file.cpp), and the serializers below read fields by revision as well as version.
+// When a sync adds fields under a version that is already kVersion, bump kPortLayoutRevision, gate the new fields on
+// `version > N || (version == N && PortLayoutRevision() >= <new revision>)`, and document it here.
+// Revisions:
+//   0 = files without the port header: Android builds synced up to upstream 7d87a431 (v16 has no CD Block busyDelay)
+//   1 = synced to upstream c688623a (v16 complete, v17 adds SCSP suppressSlotEnd)
+inline constexpr uint32 kPortLayoutRevision = 1;
+
+namespace detail {
+inline thread_local uint32 tl_portLayoutRevision = kPortLayoutRevision;
+} // namespace detail
+
+/// @brief The layout revision being read on this thread. Writers always use the current one.
+inline uint32 PortLayoutRevision() {
+    return detail::tl_portLayoutRevision;
+}
+
+/// @brief Reads save states with an older layout revision on this thread for the guard's lifetime.
+class ScopedPortLayoutRevision {
+public:
+    explicit ScopedPortLayoutRevision(uint32 revision)
+        : m_previous(detail::tl_portLayoutRevision) {
+        detail::tl_portLayoutRevision = revision;
+    }
+    ~ScopedPortLayoutRevision() {
+        detail::tl_portLayoutRevision = m_previous;
+    }
+    ScopedPortLayoutRevision(const ScopedPortLayoutRevision &) = delete;
+    ScopedPortLayoutRevision &operator=(const ScopedPortLayoutRevision &) = delete;
+
+private:
+    uint32 m_previous;
+};
+
 } // namespace ymir::savestate
 
 // -----------------------------------------------------------------------------
@@ -1306,7 +1343,8 @@ void serialize(Archive &ar, CDBlockSaveState &s, SaveState &root, const uint32 v
     }
     ar(s.HIRQ, s.HIRQMASK);
     serialize(ar, s.status, version);
-    if (version >= 16) {
+    // NEON SATURN: busyDelay was added to v16 while v16 was in development; revision 0 v16 files do not have it
+    if (version >= 17 || (version == 16 && PortLayoutRevision() >= 1)) {
         ar(s.busyDelay);
     } else {
         s.busyDelay = 0;

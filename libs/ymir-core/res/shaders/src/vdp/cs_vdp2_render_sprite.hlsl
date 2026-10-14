@@ -482,6 +482,8 @@ SpriteOutput DrawSprite(uint2 pos, uint2 scaledPos, uint index) {
     }
     const uint fbAddr = scaledSpritePos.x + scaledSpritePos.y * fbSize.x * kScale;
 
+    // Windows are tested at the native output position, which differs from pos on interlaced output
+    const uint2 outPos = uint2(pos.x, GetY(pos.y));
     if (InsideWindows(outPos)) {
         return output;
     }

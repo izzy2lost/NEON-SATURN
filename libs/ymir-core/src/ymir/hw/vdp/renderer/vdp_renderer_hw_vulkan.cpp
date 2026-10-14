@@ -1393,6 +1393,16 @@ struct VulkanVDPRenderer::Impl {
         uint32 m_currGen = 1u;
     };
 
+    /// @brief Current action being processed on the VDP1 side.
+    enum class VDP1Action {
+        None,       ///< No action -- just reset or flushed everything
+        Erase,      ///< Erasing frame
+        Swap,       ///< Swapping frame
+        Draw,       ///< Executing drawing commands
+        FBRAMWrite, ///< Writing to FBRAM
+        RegWrite,   ///< Writing to registers
+    };
+
     struct VDP1Resources {
         VDP1Resources() {
             memset(&cpuCommonRenderParams, 0, sizeof(cpuCommonRenderParams));
@@ -1547,7 +1557,56 @@ struct VulkanVDPRenderer::Impl {
         bool transparentMeshDrawn = false;
         // Whether to double vertical coordinates when drawing VDP1 sprites
         bool doubleV = false;
+
+        /// @brief Current action being processed on the VDP1 side.
+        VDP1Action action = VDP1Action::None;
     } vdp1;
+
+    /// @brief Updates the current VDP1 action, flushing any pending work if necessary.
+    /// @param[in] newAction the new action
+    void VDP1UpdateAction(VDP1Action newAction) {
+        if (vdp1.action != newAction) {
+            switch (vdp1.action) {
+            case VDP1Action::None: break;
+            case VDP1Action::Erase: /* nothing to sync */ break;
+            case VDP1Action::Swap: vdp1.cpuCommonRenderParams.displayParams.drawFB = vdpState.fbIndex.draw; break;
+            case VDP1Action::Draw:
+                if (auto result = VDP1SubmitSpans(); !result) {
+                    Report<grp::vk_vdp1>(devlog::level::warn, "Failed to submit VDP1 spans: {}",
+                                         result.Error().message);
+                }
+                break;
+            case VDP1Action::FBRAMWrite:
+                if (auto result = VDP1FlushFBRAM(); !result) {
+                    Report<grp::vk_vdp1>(devlog::level::warn, "Failed to submit VDP1 FBRAM writes: {}",
+                                         result.Error().message);
+                }
+                break;
+            case VDP1Action::RegWrite: VDP1UpdateCommonRenderParams(); break;
+            }
+
+            vdp1.action = newAction;
+        }
+    }
+
+    /// @brief Flushes any pending VDP1 work.
+    void VDP1FlushWork() {
+        VDP1UpdateAction(VDP1Action::None);
+    }
+
+    /// @brief Brings the CPU-side VDP1 render parameters in line with the emulated state, which may have changed with no
+    /// register writes or swaps seen by the renderer (reset, save state loads).
+    void VDP1ResyncRenderParams() {
+        VDP1UpdateCommonRenderParams();
+        vdp1.cpuCommonRenderParams.displayParams.drawFB = vdpState.fbIndex.draw;
+        vdp1.action = VDP1Action::None;
+
+        // Spans batched before the state changed belong to a timeline that no longer exists
+        FrameContext &frameCtx = frames.GetCurrentFrame();
+        frameCtx.cpuSpanCount = 0;
+        frameCtx.cpuCmdCount = 0;
+        vdp1.vramTexUsageTracker.Clear();
+    }
 
     /// @brief Constructs a polygon drawing shader index from its variant options.
     /// @param[in] mode polygon drawing mode
@@ -2705,6 +2764,8 @@ struct VulkanVDPRenderer::Impl {
         if (nextFrame.signaledValue != 0) {
             frames.WaitForValue(vk.device, nextFrame.signaledValue);
         }
+        nextFrame.cpuSpanCount = 0;
+        nextFrame.cpuCmdCount = 0;
         if (auto result = BeginCommands(); !result) {
             Report<grp::vk_base>(devlog::level::warn, "{}", result.Error().message);
         }
@@ -3304,6 +3365,7 @@ struct VulkanVDPRenderer::Impl {
         if (auto result = VDP1UploadFBRAM(); !result) {
             Report<grp::vk_base>(devlog::level::warn, "Failed to upload VDP1 FBRAM: {}", result.Error().message);
         }
+        VDP1ResyncRenderParams();
 
         // VDP2
         vdp2.vramDirty.SetAll();
@@ -3402,13 +3464,11 @@ struct VulkanVDPRenderer::Impl {
     }
 
     void VDP1SyncFB() {
-        // Submit pending spans to ensure we're synced as far as possible
-        VDP1SubmitSpans();
-
-        // Copy FBRAM to the download buffer if modified
+        // NOTE: intentionally not syncing FBRAM writes because these happened before the reads
+        if (vdp1.action != VDP1Action::FBRAMWrite) {
+            VDP1FlushWork();
+        }
         VDP1CopyFBRAMToReadback();
-
-        // Download FBRAM from the download buffer
         VDP1DownloadFBRAM();
     }
 
@@ -3424,18 +3484,14 @@ struct VulkanVDPRenderer::Impl {
         // This normally returns immediately since captures are consumed well within a frame.
         vdp1.fbramCapturePending.wait(true, std::memory_order_acquire);
 
-        VDP1SubmitSpans();
+        // Pending CPU FBRAM writes are flushed too, unlike VDP1SyncFB: the capture must hold everything written so far
+        VDP1FlushWork();
         if (!vdp1.fbramReadbackDirty && !vdp1.fbramReadbackCopyPending) {
             // The GPU has not modified FBRAM since it was last downloaded, so the CPU copy is current
             return false;
         }
         if (deviceLost || cmd == VK_NULL_HANDLE) {
             return false;
-        }
-
-        // Apply pending CPU writes to the GPU copy so they are part of the capture
-        if (auto result = VDP1FlushFBRAM(); !result) {
-            Report<grp::vk_vdp1>(devlog::level::warn, "VDP1 FBRAM flush failed: {}", result.Error().message);
         }
 
         barrierTracker.Flush(cmd);
@@ -3490,9 +3546,14 @@ struct VulkanVDPRenderer::Impl {
     }
 
     void VDP1WriteFB(uint32 address, uint32 size) {
+        VDP1UpdateAction(VDP1Action::FBRAMWrite);
         for (uint32 i = 0; i < size; ++i) {
             vdp1.fbramDirty.Set(address + i);
         }
+    }
+
+    void VDP1WriteReg() {
+        VDP1UpdateAction(VDP1Action::RegWrite);
     }
 
     [[nodiscard]] util::VoidResult<> VDP1FlushVRAM() {
@@ -3596,6 +3657,9 @@ struct VulkanVDPRenderer::Impl {
         // No longer dirty
         vdp1.fbramDirty.ClearAll();
 
+        // Mark GPU-side FBRAM as dirty
+        vdp1.fbramReadbackDirty = true;
+
         return {};
     }
 
@@ -3674,9 +3738,18 @@ struct VulkanVDPRenderer::Impl {
     }
 
     void VDP1EraseFramebuffer(uint64 cycles) {
-        // Vertical scale is doubled in double-interlace mode
+        VDP1UpdateAction(VDP1Action::Erase);
+
         const VDP1Regs &regs1 = vdpState.regs1;
+
+        if (regs1.eraseX1Latch == regs1.eraseX3Latch || regs1.eraseY1Latch == regs1.eraseY3Latch) {
+            // Nothing to erase
+            return;
+        }
+
         const VDP2Regs &regs2 = vdpState.regs2;
+
+        // Vertical scale is doubled in double-interlace mode
         const bool doubleDensity = regs2.TVMD.LSMDn == InterlaceMode::DoubleDensity;
         const uint32 scaleV = doubleDensity ? 1u : 0u;
 
@@ -3698,8 +3771,11 @@ struct VulkanVDPRenderer::Impl {
             // Compute last line and pixel that can be drawn with the given cycle budget
             const uint32 lineWidth = (vdp1.cpuEraseParams.coords.x3 << 3u) - (vdp1.cpuEraseParams.coords.x1 << 3u);
             if (lineWidth > 0) {
-                vdp1.cpuEraseParams.vblank.maxY = cycles / lineWidth;
-                vdp1.cpuEraseParams.vblank.maxX = cycles % lineWidth;
+                // The limits are absolute coordinates, so they start where the erase does. Upstream adds the raw
+                // coordinate fields; the erase shader expands those (X1 is in 8-pixel units, Y1 is doubled in
+                // double-density), and so does this, matching where the software renderer starts counting cycles.
+                vdp1.cpuEraseParams.vblank.maxY = cycles / lineWidth + (vdp1.cpuEraseParams.coords.y1 << scaleV);
+                vdp1.cpuEraseParams.vblank.maxX = cycles % lineWidth + (vdp1.cpuEraseParams.coords.x1 << 3u);
             } else {
                 vdp1.cpuEraseParams.vblank.maxY = 0;
                 vdp1.cpuEraseParams.vblank.maxX = 0;
@@ -3710,9 +3786,6 @@ struct VulkanVDPRenderer::Impl {
         const auto &erase = vdp1.cpuEraseParams;
         const uint32 width = (erase.coords.x3 << 3) - (erase.coords.x1 << 3) + 1;
         const uint32 height = erase.coords.y3 - erase.coords.y1 + 1;
-
-        VDP1UpdateCommonRenderParams();
-        vdp1.cpuCommonRenderParams.displayParams.drawFB = vdpState.fbIndex.display;
 
         // Transition FBRAM to UAV usage
         barrierTracker.Flush(cmd);
@@ -3738,16 +3811,7 @@ struct VulkanVDPRenderer::Impl {
     }
 
     void VDP1SwapFramebuffer() {
-        // Submit any pending spans
-        auto spanResult = VDP1SubmitSpans();
-        if (spanResult) {
-            if (!spanResult.Value()) {
-                // Still have to update the rendering parameters
-                VDP1UpdateCommonRenderParams();
-            }
-        } else {
-            Report<grp::vk_vdp1>(devlog::level::warn, "VDP1 span submission failed: {}", spanResult.Error().message);
-        }
+        VDP1UpdateAction(VDP1Action::Swap);
 
         VDP1CopyFBRAMToReadback();
     }
@@ -3782,6 +3846,8 @@ struct VulkanVDPRenderer::Impl {
     }
 
     void VDP1ExecuteCommand(uint32 cmdAddress, VDP1Command::Control control) {
+        VDP1UpdateAction(VDP1Action::Draw);
+
         switch (control.command) {
         case VDP1Command::CommandType::DrawNormalSprite: VDP1Cmd_DrawNormalSprite(cmdAddress, control); break;
         case VDP1Command::CommandType::DrawScaledSprite: VDP1Cmd_DrawScaledSprite(cmdAddress, control); break;
@@ -3821,12 +3887,12 @@ struct VulkanVDPRenderer::Impl {
         uint32 endCodeIndex;
     };
 
-    util::ValueResult<bool> VDP1SubmitSpans() {
+    util::VoidResult<> VDP1SubmitSpans() {
         FrameContext &frameCtx = frames.GetCurrentFrame();
         if (frameCtx.cpuSpanCount == 0) {
             // No spans to dispatch
             frameCtx.cpuCmdCount = 0;
-            return false;
+            return {};
         }
 
         // Clear counters even if we fail to submit them to avoid crashes on extreme cases.
@@ -3840,14 +3906,10 @@ struct VulkanVDPRenderer::Impl {
         // We should have a shader selected by now
         assert(vdp1.currPolyDrawShaderIndex != -1);
 
-        VDP1UpdateCommonRenderParams();
         vdp1.cpuPolyDrawParams.numSpans = frameCtx.cpuSpanCount;
 
         if (auto result = VDP1FlushVRAM(); !result) {
             Report<grp::vk_vdp1>(devlog::level::warn, "VDP1 VRAM flush failed: {}", result.Error().message);
-        }
-        if (auto result = VDP1FlushFBRAM(); !result) {
-            Report<grp::vk_vdp1>(devlog::level::warn, "VDP1 FBRAM flush failed: {}", result.Error().message);
         }
 
         UploadAllocation alloc{};
@@ -3937,7 +3999,7 @@ struct VulkanVDPRenderer::Impl {
 
         vdp1.fbramReadbackDirty = true;
 
-        return true;
+        return {};
     }
 
     void VDP1UpdateCommonRenderParams() {
@@ -3954,7 +4016,6 @@ struct VulkanVDPRenderer::Impl {
         displayParams.dblInterlaceEnable = regs1.dblInterlaceEnable;
         displayParams.dblInterlaceDrawLine = regs1.dblInterlaceDrawLine;
         displayParams.evenOddCoordSelect = regs1.evenOddCoordSelect;
-        displayParams.drawFB = vdpState.fbIndex.draw;
     }
 
     void VDP1SelectPolyDrawShader(VDP1Command::DrawMode mode) {
@@ -5644,11 +5705,7 @@ struct VulkanVDPRenderer::Impl {
             return;
         }
 
-        // FIXME: this should not be needed
-        VDP1SubmitSpans();
-        if (auto result = VDP1FlushFBRAM(); !result) {
-            Report<grp::vk_vdp1>(devlog::level::warn, "VDP1 FBRAM flush failed: {}", result.Error().message);
-        }
+        VDP1FlushWork();
 
         FrameContext &frameCtx = frames.GetCurrentFrame();
 
@@ -5894,6 +5951,7 @@ void VulkanVDPRenderer::PostLoadStateSync() {
     if (auto result = m_impl->VDP1UploadFBRAM(); !result) {
         Report<grp::vk_base>(devlog::level::warn, "Failed to upload VDP1 FBRAM: {}", result.Error().message);
     }
+    m_impl->VDP1ResyncRenderParams();
 
     m_impl->VDP2CacheAllCRAMColors();
     m_impl->VDP2UpdateEnabledLayers();
@@ -5940,8 +5998,7 @@ void VulkanVDPRenderer::VDP1WriteFB(uint32 address, uint16 value) {
 }
 
 void VulkanVDPRenderer::VDP1WriteReg(uint32 address, uint16 value) {
-    // All important registers are passed as root 32-bit constants.
-    // Nothing needs to be marked dirty as a result of VDP1 register changes.
+    m_impl->VDP1WriteReg();
 }
 
 // -------------------------------------------------------------------------

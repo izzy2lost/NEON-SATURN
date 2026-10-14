@@ -1,5 +1,6 @@
 #include "bootstrap.hpp"
 #include "ipl_select.hpp"
+#include "savestate_file.hpp"
 
 #include "audio_system.hpp"
 #include "rewind_buffer.hpp"
@@ -322,10 +323,8 @@ public:
                 return {.success = false, .message = "Could not prepare save state storage"};
             }
 
-            const bool written = WriteFileAtomically(SaveStatePath(gameStatesPath, slotIndex), [&](std::ostream &out) {
-                cereal::PortableBinaryOutputArchive archive{out};
-                archive(*state);
-            });
+            const bool written = WriteFileAtomically(SaveStatePath(gameStatesPath, slotIndex),
+                                                     [&](std::ostream &out) { WriteSaveStateFile(out, *state); });
             if (!written) {
                 return {.success = false, .message = "Could not write " + slotName};
             }
@@ -358,16 +357,13 @@ public:
 
             const auto discHash = m_saturn.GetDiscHash();
             const auto statePath = SaveStatePath(SaveStatesDirectory(discHash), slotIndex);
-            std::ifstream in{statePath, std::ios::binary};
-            if (!in) {
+            std::error_code existsError{};
+            if (!std::filesystem::is_regular_file(statePath, existsError)) {
                 return {.success = false, .message = slotName + " is empty"};
             }
 
             auto state = std::make_unique<ymir::savestate::SaveState>();
-            {
-                cereal::PortableBinaryInputArchive archive{in};
-                archive(*state);
-            }
+            ReadSaveStateFile(statePath, *state);
 
             if (!state->ValidateDiscHash(discHash)) {
                 SDL_Log("Load state: %s has a different disc hash", statePath.c_str());

@@ -15,6 +15,14 @@ fun readLocalProperties(root: File): Properties {
 }
 
 val localProperties = readLocalProperties(rootProject.projectDir)
+
+// Release signing: storeFile, storePassword, keyAlias and keyPassword from android/key.properties (or
+// keystore.properties). Both are git-ignored. Without one, release builds come out unsigned.
+val signingProperties =
+    listOf("key.properties", "keystore.properties")
+        .map(rootProject.projectDir::resolve)
+        .firstOrNull(File::isFile)
+        ?.let { file -> Properties().apply { file.inputStream().use(::load) } }
 val sdkRoot =
     System.getenv("ANDROID_HOME")
         ?: System.getenv("ANDROID_SDK_ROOT")
@@ -71,11 +79,27 @@ android {
         prefab = true
     }
 
+    signingConfigs {
+        if (signingProperties != null) {
+            create("release") {
+                storeFile = file(signingProperties.getProperty("storeFile").trim())
+                storePassword = signingProperties.getProperty("storePassword").trim()
+                keyAlias = signingProperties.getProperty("keyAlias").trim()
+                keyPassword = signingProperties.getProperty("keyPassword").trim()
+            }
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
         }
         release {
+            if (signingProperties != null) {
+                signingConfig = signingConfigs.getByName("release")
+            } else {
+                logger.warn("No key.properties found; the release APK will be unsigned")
+            }
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(

@@ -93,7 +93,8 @@ void EraseScaled(uint wordIndex) {
         return;
     }
 
-    const uint address = drawFB * kScaledFBSize + scaledAddress;
+    // Erases the display framebuffer, like the native path below
+    const uint address = (drawFB ^ 1) * kScaledFBSize + scaledAddress;
     const uint value = (g_fbramOut.Load(address) & ~eraseMask) | eraseValue;
     g_fbramOut.Store(address, value);
     if (transparentMeshes) {
