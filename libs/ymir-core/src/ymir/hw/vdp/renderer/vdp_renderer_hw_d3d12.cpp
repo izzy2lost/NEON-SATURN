@@ -5689,8 +5689,7 @@ struct Direct3D12VDPRenderer::Impl {
             renderParams.vcellScrollRepeat = bgState.vcellScrollRepeat;
             if (i >= 2 && vdp2.resetNBGScrollY[i - 2]) {
                 renderParams.scrollYIncBase = y;
-            } else {
-                renderParams.scrollYIncBase = 0;
+                vdp2.resetNBGScrollY[i - 2] = false;
             }
         }
 
@@ -6055,6 +6054,9 @@ struct Direct3D12VDPRenderer::Impl {
         VDP2InitNBGs();
 
         VDP2UpdateState(0);
+        for (int i = 0; i < 4; ++i) {
+            vdp2.cpuLayerRenderParams.nbg[i].scrollYIncBase = 0;
+        }
 
         // VDP2 consumes VDP1 FBRAM, so it needs to be synced here
         if (auto result = VDP1FlushFBRAM(); !result) {
