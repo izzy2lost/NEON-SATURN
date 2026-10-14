@@ -28,7 +28,7 @@ RWByteAddressBuffer g_fbramOut : register(u1);
 
 static const bool doubleDensity = BitTest(g_commonParams.displayParams, 3);
 static const uint drawFB = BitExtract(g_commonParams.displayParams, 7, 1);
-static const uint drawFBOffset = drawFB * kVDP1FBSize;
+static const uint drawFBOffset = (drawFB ^ 1) * kVDP1FBSize;
 
 static const bool deinterlace = BitTest(g_commonParams.enhancements, 0);
 static const bool transparentMeshes = BitTest(g_commonParams.enhancements, 1);

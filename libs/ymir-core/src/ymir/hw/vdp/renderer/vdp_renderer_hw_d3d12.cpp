@@ -990,7 +990,9 @@ struct Direct3D12VDPRenderer::Impl {
     /// @brief Current action being processed on the VDP1 side.
     enum class VDP1Action {
         None,       ///< No action -- just reset or flushed everything
-        Drawing,    ///< Executing drawing commands
+        Erase,      ///< Erasing frame
+        Swap,       ///< Swapping frame
+        Draw,       ///< Executing drawing commands
         FBRAMWrite, ///< Writing to FBRAM
         RegWrite,   ///< Writing to registers
     };
@@ -1188,7 +1190,9 @@ struct Direct3D12VDPRenderer::Impl {
         if (vdp1.action != newAction) {
             switch (vdp1.action) {
             case VDP1Action::None: break;
-            case VDP1Action::Drawing:
+            case VDP1Action::Erase: /* nothing to sync */ break;
+            case VDP1Action::Swap: vdp1.cpuCommonRenderParams.displayParams.drawFB = vdpState.fbIndex.draw; break;
+            case VDP1Action::Draw:
                 if (auto result = VDP1SubmitSpans(); !result) {
                     devlog::warn<grp::dx12_vdp1>("Failed to submit VDP1 spans: {}", result.Error().message);
                 }
@@ -4117,6 +4121,8 @@ struct Direct3D12VDPRenderer::Impl {
     }
 
     void VDP1EraseFramebuffer(uint64 cycles) {
+        VDP1UpdateAction(VDP1Action::Erase);
+
         const VDP1Regs &regs1 = vdpState.regs1;
 
         if (regs1.eraseX1Latch == regs1.eraseX3Latch || regs1.eraseY1Latch == regs1.eraseY3Latch) {
@@ -4163,9 +4169,6 @@ struct Direct3D12VDPRenderer::Impl {
 
         FrameContext &frameCtx = frames.GetCurrentFrame();
 
-        VDP1UpdateCommonRenderParams();
-        vdp1.cpuCommonRenderParams.displayParams.drawFB = vdpState.fbIndex.display;
-
         // Transition FBRAM to UAV usage
         barrierTracker.TransitionBuffer(vdp1.fbramBuffer.GetPointer(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                                         D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_ACCESS_UNORDERED_ACCESS);
@@ -4190,16 +4193,7 @@ struct Direct3D12VDPRenderer::Impl {
     }
 
     void VDP1SwapFramebuffer() {
-        // Submit any pending spans
-        auto spanResult = VDP1SubmitSpans();
-        if (spanResult) {
-            if (!spanResult.Value()) {
-                // Still have to update the rendering parameters
-                VDP1UpdateCommonRenderParams();
-            }
-        } else {
-            devlog::warn<grp::dx12_vdp1>("VDP1 span submission failed: {}", spanResult.Error().message);
-        }
+        VDP1UpdateAction(VDP1Action::Swap);
 
         VDP1CopyFBRAMToReadback();
     }
@@ -4228,7 +4222,7 @@ struct Direct3D12VDPRenderer::Impl {
     }
 
     void VDP1ExecuteCommand(uint32 cmdAddress, VDP1Command::Control control) {
-        VDP1UpdateAction(VDP1Action::Drawing);
+        VDP1UpdateAction(VDP1Action::Draw);
 
         switch (control.command) {
         case VDP1Command::CommandType::DrawNormalSprite: VDP1Cmd_DrawNormalSprite(cmdAddress, control); break;
@@ -4269,12 +4263,12 @@ struct Direct3D12VDPRenderer::Impl {
         uint32 endCodeIndex;
     };
 
-    util::ValueResult<bool> VDP1SubmitSpans() {
+    util::VoidResult<> VDP1SubmitSpans() {
         FrameContext &frameCtx = frames.GetCurrentFrame();
         if (frameCtx.cpuSpanCount == 0) {
             // No spans to dispatch
             frameCtx.cpuCmdCount = 0;
-            return false;
+            return {};
         }
 
         // Clear counters even if we fail to submit them to avoid crashes on extreme cases.
@@ -4438,7 +4432,7 @@ struct Direct3D12VDPRenderer::Impl {
 
         vdp1.fbramReadbackDirty = true;
 
-        return true;
+        return {};
     }
 
     void VDP1UpdateCommonRenderParams() {
@@ -4455,7 +4449,6 @@ struct Direct3D12VDPRenderer::Impl {
         displayParams.dblInterlaceEnable = regs1.dblInterlaceEnable;
         displayParams.dblInterlaceDrawLine = regs1.dblInterlaceDrawLine;
         displayParams.evenOddCoordSelect = regs1.evenOddCoordSelect;
-        displayParams.drawFB = vdpState.fbIndex.draw;
     }
 
     void VDP1SelectPolyDrawShader(VDP1Command::DrawMode mode) {
@@ -6418,8 +6411,6 @@ void Direct3D12VDPRenderer::VDP1WriteFB(uint32 address, uint16 value) {
 }
 
 void Direct3D12VDPRenderer::VDP1WriteReg(uint32 address, uint16 value) {
-    // All important registers are passed as root 32-bit constants.
-    // Nothing needs to be marked dirty as a result of VDP1 register changes.
     m_impl->VDP1WriteReg();
 }
 
