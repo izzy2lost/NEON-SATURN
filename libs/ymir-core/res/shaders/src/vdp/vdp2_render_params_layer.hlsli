@@ -48,6 +48,7 @@ struct NBGParams {
     uint vcellScrollOffset;
     uint vcellScrollDelay;
     uint vcellScrollRepeat;
+    uint scrollYIncBase;
 };
 
 struct RBGParams {

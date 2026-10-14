@@ -920,7 +920,7 @@ uint4 DrawNBG(uint2 pos, // pixel coordinates
         baseFracScroll.y += vcellScrollY;
     }
 
-    const uint2 fracScrollPos = baseFracScroll + params.scrollAmount + scrollInc * pos;
+    const uint2 fracScrollPos = baseFracScroll + params.scrollAmount + scrollInc * (pos - uint2(0, params.scrollYIncBase));
     uint2 scrollPos = fracScrollPos >> 8;
     if (mosaicEnable) {
         const uint2 mosaic = uint2(BitExtract(g_commonParams.layerParams, 14, 4) + 1, BitExtract(g_commonParams.layerParams, 18, 4) + 1);

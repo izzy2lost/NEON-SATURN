@@ -2073,6 +2073,10 @@ struct VulkanVDPRenderer::Impl {
         // Only valid for NBG0.
         // Based on CYCA0/A1/B0/B1 parameters.
         HLSLuint vcellScrollRepeat;
+
+        // Base Y coordinate for vertical scroll increment calculations.
+        // Only valid for NBG2 and NBG3.
+        HLSLuint scrollYIncBase;
     };
 
     /// @brief VDP2 RBG layer rendering parameters.
@@ -2277,6 +2281,10 @@ struct VulkanVDPRenderer::Impl {
 
         /// @brief CPU-side layer composition parameters.
         VDP2ComposeParams cpuComposeParams{};
+
+        /// @brief Whether to reset the base offset of NBG2-3 scroll Y increments.
+        /// Set to true when writing to SCYN2-3.
+        std::array<bool, 2> resetNBGScrollY{};
 
         /// @brief Root signature for drawing the sprite layer.
         ComputeLayout drawSpriteRootSig;
@@ -4970,6 +4978,15 @@ struct VulkanVDPRenderer::Impl {
                 ++vdp2.cramGeneration;
                 VDP2CacheAllCRAMColors();
             }
+
+            switch (address) {
+            case 0x092: // SCYN2
+                vdp2.resetNBGScrollY[0] = true;
+                break;
+            case 0x096: // SCYN3
+                vdp2.resetNBGScrollY[1] = true;
+                break;
+            }
         }
     }
 
@@ -5177,7 +5194,7 @@ struct VulkanVDPRenderer::Impl {
         // No uploads or barriers are needed here.
     }
 
-    util::VoidResult<> VDP2UpdateLayerRenderParams() {
+    util::VoidResult<> VDP2UpdateLayerRenderParams(uint32 y) {
         FrameContext &frameCtx = frames.GetCurrentFrame();
         if (shared.layerRenderParamsGeneration == vdp2.layerRenderParamsGeneration) {
             return {};
@@ -5252,6 +5269,11 @@ struct VulkanVDPRenderer::Impl {
             renderParams.vcellScrollOffset = bgState.vcellScrollOffset;
             renderParams.vcellScrollDelay = bgState.vcellScrollDelay;
             renderParams.vcellScrollRepeat = bgState.vcellScrollRepeat;
+            if (i >= 2 && vdp2.resetNBGScrollY[i - 2]) {
+                renderParams.scrollYIncBase = y;
+            } else {
+                renderParams.scrollYIncBase = 0;
+            }
         }
 
         // RBG0-1 / RotParam A-B
@@ -5583,7 +5605,7 @@ struct VulkanVDPRenderer::Impl {
         return {};
     }
 
-    void VDP2UpdateState() {
+    void VDP2UpdateState(uint32 y) {
         if (auto result = VDP2FlushVRAM(); !result) {
             Report<grp::vk_vdp2>(devlog::level::warn, "VDP2 VRAM flush failed: {}", result.Error().message);
         }
@@ -5591,7 +5613,7 @@ struct VulkanVDPRenderer::Impl {
             Report<grp::vk_vdp2>(devlog::level::warn, "VDP2 CRAM flush failed: {}", result.Error().message);
         }
         VDP2UpdateCommonRenderParams();
-        VDP2UpdateLayerRenderParams();
+        VDP2UpdateLayerRenderParams(y);
         VDP2UpdateComposeParams();
     }
 
@@ -5602,7 +5624,7 @@ struct VulkanVDPRenderer::Impl {
         VDP2CalcAccessPatterns();
         VDP2InitNBGs();
 
-        VDP2UpdateState();
+        VDP2UpdateState(0);
 
         // VDP2 consumes VDP1 FBRAM, so it needs to be synced here
         if (auto result = VDP1FlushFBRAM(); !result) {
@@ -5740,7 +5762,7 @@ struct VulkanVDPRenderer::Impl {
             }
         }
 
-        VDP2UpdateState();
+        VDP2UpdateState(y);
     }
 
     void VDP2EndFrame() {
