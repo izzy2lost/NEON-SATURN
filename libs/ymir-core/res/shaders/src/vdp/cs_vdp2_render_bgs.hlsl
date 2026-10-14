@@ -1111,15 +1111,15 @@ uint4 DrawRBG(uint2 pos, // pixel coordinates
         return kTransparentPixel;
     }
 
+    if (InsideWindows(params.base.windowParams, uint2(pos.x, GetY(pos.y, false)))) {
+        return kTransparentPixel;
+    }
+
     if (hiResH) {
         pos.x >>= 1;
     }
     if (deinterlace && interlaceMode >= kInterlaceModeSingleDensity) {
         pos.y >>= 1;
-    }
-
-    if (InsideWindows(params.base.windowParams, uint2(pos.x, GetY(pos.y, false)))) {
-        return kTransparentPixel;
     }
 
     const uint rotSel = index == 0 ? SelectRotationParameter(params, pos) : kRotParamB;
