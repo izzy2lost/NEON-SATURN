@@ -90,10 +90,10 @@ struct VDP1RegTVMR {
 
 struct VDP1Regs {
     VDP1Regs() {
-        Reset();
+        Reset(true);
     }
 
-    void Reset() {
+    void Reset(bool hard) {
         tvmr.Reset();
 
         fbSwapTrigger = false;
@@ -107,8 +107,10 @@ struct VDP1Regs {
         currFrameEnded = false;
         prevFrameEnded = false;
 
-        currCommandAddress = 0;
-        prevCommandAddress = 0;
+        if (hard) {
+            currCommandAddress = 0;
+            prevCommandAddress = 0;
+        }
 
         returnAddress = kVDP1NoReturn;
 

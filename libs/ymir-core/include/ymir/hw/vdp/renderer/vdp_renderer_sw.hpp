@@ -222,6 +222,10 @@ private:
         Type type;
         union {
             struct {
+                bool hard;
+            } reset;
+
+            struct {
                 uint64 cycles;
             } erase;
 
@@ -236,8 +240,8 @@ private:
             } write;
         };
 
-        static VDP1RenderEvent Reset() {
-            return {Type::Reset};
+        static VDP1RenderEvent Reset(bool hard) {
+            return {Type::Reset, {.reset = {.hard = hard}}};
         }
 
         static VDP1RenderEvent EraseFramebuffer(uint64 cycles) {
@@ -329,9 +333,11 @@ private:
             VDP1Memory mem;
         } vdp1;
 
-        void Reset() {
-            vdp1.regs.Reset();
-            vdp1.mem.Reset();
+        void Reset(bool hard) {
+            vdp1.regs.Reset(true);
+            if (hard) {
+                vdp1.mem.Reset();
+            }
         }
 
         void EnqueueEvent(VDP1RenderEvent &&event) {

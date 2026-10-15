@@ -103,6 +103,9 @@ void SoftwareVDPRenderer::Reset(bool hard) {
         m_CRAMCache.fill({});
     }
 
+    if (m_threadedVDP1Rendering) {
+        m_vdp1RenderingContext.EnqueueEvent(VDP1RenderEvent::Reset(hard));
+    }
     if (m_threadedVDP2Rendering) {
         m_vdp2RenderingContext.EnqueueEvent(VDP2RenderEvent::Reset());
     } else {
@@ -616,7 +619,7 @@ void SoftwareVDPRenderer::VDP1RenderThread() {
             const auto &event = events[i];
             using EvtType = VDP1RenderEvent::Type;
             switch (event.type) {
-            case EvtType::Reset: rctx.Reset(); break;
+            case EvtType::Reset: rctx.Reset(event.reset.hard); break;
 
             case EvtType::EraseFramebuffer: {
                 if (event.erase.cycles == 0) {

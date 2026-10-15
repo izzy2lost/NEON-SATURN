@@ -880,9 +880,11 @@ struct VDPState {
             fbIndex.Reset();
         }
 
-        regs1.Reset();
+        regs1.Reset(hard);
         regs2.Reset();
-        state1.Reset();
+        if (hard) {
+            state1.Reset();
+        }
 
         HPhase = HorizontalPhase::Active;
         VPhase = VerticalPhase::Active;
