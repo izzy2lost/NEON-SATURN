@@ -20,6 +20,11 @@ class TouchControlsEditorActivity : AppCompatActivity() {
         editorView.interactionMode = TouchControlsView.InteractionMode.EDIT
         // No point positioning a button that gameplay will not show.
         editorView.rewindAvailable = store.loadRewindEnabled()
+        editorView.gameAspect = when (store.loadAspectRatio()) {
+            BootstrapStore.ASPECT_16_9 -> 16f / 9f
+            BootstrapStore.ASPECT_STRETCH -> null
+            else -> 4f / 3f
+        }
         editorView.touchControlsLayout = if (isPortrait) {
             store.loadTouchControlsLayoutPortrait()
         } else {

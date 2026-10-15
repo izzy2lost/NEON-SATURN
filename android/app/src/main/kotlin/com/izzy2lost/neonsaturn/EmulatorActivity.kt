@@ -324,6 +324,9 @@ class EmulatorActivity : SDLActivity() {
             view.onMenuPressed = {
                 showQuickActionsDialog()
             }
+            view.onGameBandChanged = { top, bottom ->
+                runCatching { nativeSetGameBand(top, bottom) }
+            }
             addContentView(
                 view,
                 ViewGroup.LayoutParams(
@@ -346,6 +349,8 @@ class EmulatorActivity : SDLActivity() {
     }
 
     private fun removeTouchControlsOverlay() {
+        // Nothing to keep clear of any more
+        runCatching { nativeSetGameBand(-1f, -1f) }
         touchControlsView?.resetRuntimeState()
         (touchControlsView?.parent as? ViewGroup)?.removeView(touchControlsView)
         touchControlsView = null
@@ -381,6 +386,7 @@ class EmulatorActivity : SDLActivity() {
 
     private external fun nativeSetPaused(paused: Boolean)
     private external fun nativeSetSpeedControls(rewind: Boolean, fastForward: Boolean)
+    private external fun nativeSetGameBand(top: Float, bottom: Float)
     private external fun nativeSaveState(slotIndex: Int): String
     private external fun nativeLoadState(slotIndex: Int): String
     private external fun nativeGetSaveStatesDirectory(): String

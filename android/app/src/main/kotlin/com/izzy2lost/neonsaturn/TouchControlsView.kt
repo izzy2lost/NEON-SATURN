@@ -53,12 +53,26 @@ class TouchControlsView @JvmOverloads constructor(
     var touchControlsLayout: TouchControlsLayout = TouchControlsLayout.DEFAULT
         set(value) {
             field = value
+            notifyGameBandChanged()
             invalidate()
         }
 
     var onStateChanged: ((TouchControlsState) -> Unit)? = null
     var onLayoutChanged: ((TouchControlsLayout) -> Unit)? = null
     var onMenuPressed: (() -> Unit)? = null
+
+    /**
+     * Portrait only: the free band between the top row of controls and the rest, as fractions of the view height,
+     * or null in landscape. The game image is placed in it so it does not sit under the buttons.
+     */
+    var onGameBandChanged: ((top: Float, bottom: Float) -> Unit)? = null
+
+    /** Width over height of the game image, for the editor's guide; null when stretched to fill the screen. */
+    var gameAspect: Float? = 4f / 3f
+        set(value) {
+            field = value
+            invalidate()
+        }
 
     var inputSuspended: Boolean = false
         set(value) {
@@ -84,6 +98,7 @@ class TouchControlsView @JvmOverloads constructor(
                 pointerInteractions.entries.removeAll { it.value.controlId == TouchControlId.REWIND }
                 rebuildStateFromPointers()
             }
+            notifyGameBandChanged()
             invalidate()
         }
 
@@ -138,6 +153,47 @@ class TouchControlsView @JvmOverloads constructor(
         TouchControlId.DPAD,
         TouchControlId.ANALOG,
     )
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        notifyGameBandChanged()
+    }
+
+    private fun notifyGameBandChanged() {
+        val callback = onGameBandChanged ?: return
+        val band = portraitGameBand()
+        if (band == null) {
+            callback(-1f, -1f)
+        } else {
+            callback(band.first / height, band.second / height)
+        }
+    }
+
+    /**
+     * The free band in pixels: from below the controls in the top half (shoulders, menu, rewind/fast forward) to above
+     * the ones in the bottom half. Null in landscape, where the image fills the height between the side controls.
+     */
+    private fun portraitGameBand(): Pair<Float, Float>? {
+        if (width == 0 || height == 0 || width > height) {
+            return null
+        }
+        val margin = 8f * density
+        var top = 0f
+        var bottom = height.toFloat()
+        for (controlId in TouchControlId.entries) {
+            if (!isControlAvailable(controlId)) {
+                continue
+            }
+            val centerY = height * touchControlsLayout.placementFor(controlId).y
+            val extentY = controlExtents(controlId).second
+            if (centerY < height / 2f) {
+                top = maxOf(top, centerY + extentY + margin)
+            } else {
+                bottom = minOf(bottom, centerY - extentY - margin)
+            }
+        }
+        return if (bottom > top) top to bottom else null
+    }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -375,9 +431,20 @@ class TouchControlsView @JvmOverloads constructor(
             val right = (left + gameWidth).coerceAtMost(width.toFloat())
             tempRect.set(left, 0f, right, height.toFloat())
         } else {
-            // Portrait: game fills full width at 4:3, anchored at the top
-            val gameHeight = width * (3f / 4f)
-            tempRect.set(0f, 0f, width.toFloat(), gameHeight)
+            // Portrait: game fills the width, placed in the band between the controls like the emulator does
+            val aspect = gameAspect
+            if (aspect == null) {
+                tempRect.set(0f, 0f, width.toFloat(), height.toFloat())
+            } else {
+                val gameHeight = minOf(width / aspect, height.toFloat())
+                val band = portraitGameBand()
+                val top = if (band != null) {
+                    placeGameInBand(height.toFloat(), gameHeight, band.first, band.second)
+                } else {
+                    (height - gameHeight) / 2f
+                }
+                tempRect.set(0f, top, width.toFloat(), top + gameHeight)
+            }
         }
         canvas.drawRoundRect(tempRect, 24f * density, 24f * density, guideFillPaint)
         canvas.drawRoundRect(tempRect, 24f * density, 24f * density, guidePaint)
@@ -386,6 +453,17 @@ class TouchControlsView @JvmOverloads constructor(
         textPaint.color = Color.argb(180, 255, 255, 255)
         val textY = tempRect.centerY() - ((textPaint.descent() + textPaint.ascent()) / 2f)
         canvas.drawText("Game image area", tempRect.centerX(), textY, textPaint)
+    }
+
+    companion object {
+        /**
+         * Top of the game image: right under the top row of controls, or right above the lower controls when the
+         * image does not fit between them. Mirrors ComputeDestRect in emulator_main.cpp.
+         */
+        fun placeGameInBand(viewHeight: Float, gameHeight: Float, bandTop: Float, bandBottom: Float): Float {
+            val top = if (bandTop + gameHeight <= bandBottom) bandTop else bandBottom - gameHeight
+            return top.coerceIn(0f, maxOf(viewHeight - gameHeight, 0f))
+        }
     }
 
     private fun drawEditorInstruction(canvas: Canvas) {

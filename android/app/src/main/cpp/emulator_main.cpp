@@ -70,6 +70,11 @@ constexpr std::uint32_t kTouchButtonStart = 1u << 8u;
 std::mutex g_activeAppMutex;
 EmulatorApp *g_activeApp = nullptr;
 
+// Portrait: the free band between the touch controls' top row and the rest, as fractions of the surface height. The
+// touch overlay reports it, possibly before the emulator exists; negative means no band (center the image).
+std::atomic<float> g_gameBandTop{-1.0f};
+std::atomic<float> g_gameBandBottom{-1.0f};
+
 // Persistent SMPC data file format, matching apps/ymir-sdl3 PersistenceService.
 // ymir-core no longer does this I/O itself; frontends own the file.
 constexpr std::uint8_t kPersistentSMPCDataVersion = 0x01;
@@ -1466,6 +1471,17 @@ private:
             dest.h = dest.w / targetAspect;
             dest.x = 0.0f;
             dest.y = (outH - dest.h) / 2.0f;
+
+            // Keep the image clear of the touch controls: right under the top row, or right above the lower controls
+            // when it does not fit between them. TouchControlsView.placeGameInBand draws the editor guide the same way.
+            const float bandTop = g_gameBandTop.load(std::memory_order_relaxed);
+            const float bandBottom = g_gameBandBottom.load(std::memory_order_relaxed);
+            if (bandTop >= 0.0f && bandBottom > bandTop) {
+                const float top = bandTop * outH;
+                const float bottom = bandBottom * outH;
+                dest.y = top + dest.h <= bottom ? top : bottom - dest.h;
+                dest.y = std::clamp(dest.y, 0.0f, std::max(outH - dest.h, 0.0f));
+            }
         }
         return dest;
     }
@@ -1596,6 +1612,12 @@ Java_com_izzy2lost_neonsaturn_EmulatorActivity_nativeSetSpeedControls(
     if (auto *app = GetActiveApp(); app != nullptr) {
         app->SetSpeedControls(rewind == JNI_TRUE, fastForward == JNI_TRUE);
     }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_izzy2lost_neonsaturn_EmulatorActivity_nativeSetGameBand(JNIEnv *, jobject, jfloat top, jfloat bottom) {
+    g_gameBandTop.store(top, std::memory_order_relaxed);
+    g_gameBandBottom.store(bottom, std::memory_order_relaxed);
 }
 
 extern "C" JNIEXPORT void JNICALL
