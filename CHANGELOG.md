@@ -9,6 +9,7 @@ Introduces save state file version 14.
 ### New features and improvements
 
 - App: Added Discord Rich Presence support. (#260, #917; @SternXD)
+- App: Added option to File menu to open the screenshots directory.
 - App: Added option to unpause emulator when loading discs. Enabled by default, which changes established behavior.
 - App: Clarified IPL ROM meaning in the Welcome window and IPL settings tab -- it refers to the BIOS.
 - App: Display volume indicator on the top-right corner of the window for a few seconds after adjustments.
@@ -19,16 +20,15 @@ Introduces save state file version 14.
     - `smpc-other.bin`: Other (invalid) SMPC area codes
     - The old `smpc.bin` will be automatically migrated to these files as you use IPL ROMs for each region.
 - App: Shrink embedded M PLUS U font files by removing unused glyphs, reducing binary size. (#915; @4re)
-- Debugger: Added RBG0 and RBG1 line color single stack views to the VDP2 debug overlay.
-- Debugger: Added basic VDP2 registers view.
+- Build: Lower macOS version requirement to 12.0 Monterey. (#954)
 - Debugger (SH2): Break when PC is unaligned or in an illegal area while debug tracing is enabled.
 - Debugger (VDP2): Added RBG0 and RBG1 line color single stack views to the VDP2 debug overlay.
 - Debugger (VDP2): Added basic VDP2 registers view.
 - Graphics: New graphics backend, adding support for native graphics APIs:
-    - Direct3D 11 and 12 on Windows (@StrikerX3)
-    - Vulkan on Windows and Linux (TBD)
+    - Direct3D 12 on Windows (@StrikerX3)
     - Metal on macOS (#929; @SternXD)
     - SDL Renderer wherever it's supported (@StrikerX3)
+    - Vulkan and Direct3D 11 didn't make it in time for this release
 - Input: Added option to constrain mouse cursor to window in system cursor mode.
 - Input: Convert 3D Control Pad analog stick to D-Pad inputs when in digital mode.
 - Input: Graduate Virtua Gun to stable feature.
@@ -42,14 +42,13 @@ Introduces save state file version 14.
         - Determine double density mode
         - Get references to VDP1 registers
         - Shift/mask color bank values
-- VDP1/VDP2: Hardware-accelerated rendering is now available. Supported graphics backends:
-    - Direct3D 12 on Windows (@StrikerX3)
+- VDP1/VDP2: Hardware-accelerated rendering with Direct3D 12 is now available.
 
 ### Fixes
 
 - App: Don't persist window geometry in full screen mode.
 - App: Initialize MIDI subsystem asynchronously. Fixes some cases where the application takes a long time to start up.
-- App: Reset window geometry if it matches the bounds of a display.
+- App: Reset window geometry if it matches the bounds of a display to prevent "remember window geometry" from loading full screen coordinates.
 - Backup RAM: Fix crash when attempting to load a backup RAM cartridge with the default path.
 - Backup RAM: Remove strict language check when importing files. Fixes importing save files from Kronos's backup RAM cartridges. (#942)
 - CD Block (HLE): Adjust calculated sector sizes to requested get length.
@@ -77,9 +76,11 @@ Introduces save state file version 14.
     - Mega Man X3 / Rockman X3: sprites are not glitched anymore. (#244)
     - Metal Fighter Miku: goes in-game, no longer stuck after start menu. (#466)
     - Soviet Strike: VDP1 graphics no longer flicker.
-- GameDB: Force-enable SH-2 cache emulation for Dino Island to fix palette glitches. (#764)
-- GameDB: Force-enable SH-2 cache emulation for Dragon Force II to fix black screen when entering 100 vs 100 battles. (#945)
-- GameDB: Force-enable SH-2 cache emulation for Hissatsu! to fix crash at startup. (#943)
+- GameDB: Force-enable SH-2 cache emulation for multiple games:
+    - Dino Island: fix palette glitches. (#764)
+    - Dragon Force II: fix black screen when entering 100 vs 100 battles. (#945)
+    - Hissatsu!: fix crash at startup. (#943)
+    - No-appointment Gals Olympos: fix crash during animations.
 - GameDB: Force fast bus timings on Resident Evil to fix start menu crashes. (#907)
 - GameDB: Slow down VDP1 execution speed in 3D Baseball to fix team name plates and announcer voice line glitches. (#593)
 - GUI: Reinitialize style from scratch when rescaling GUI elements. Fixes Settings windows (and probably others) from growing extremely large when constantly switching display scales.
@@ -88,6 +89,11 @@ Introduces save state file version 14.
     - Bug Too! (#622)
     - Black/Matrix (#861)
 - Media: Don't read the Path Table past the size specified in the Volume Descriptor. Fixes CD Block HLE not able to read disc images made with some lazy patches that don't properly clean up the Path Table. (#912)
+- Media (CHD): Fix several CHD read errors. (#806, #957; @warmenhoven)
+    - Arcade Gears Vol. 2 - Gun Frontier: now boots with CD Block LLE and plays sounds in the logo screen.
+    - Elevator Action^2 - Returns: now plays music in-game with CD Block LLE.
+    - Time Bokan Series - Bokan to Ippatsu! Doronbow Kanpekiban: now plays music in-game with CD Block LLE.
+    - Sega Ages - OutRun: now properly resumes music after pausing in-game with CD Block LLE.
 - Media (CUE): Concatenate reads from composite readers. Fixes Cold Case (Homebrew) crashing when starting the game. (#626)
 - Media (CUE): Don't accumulate pre/postgaps multiple times per track. Fixes some audio track offset issues for single-BIN dumps. (#146)
 - Media (CUE): Properly compute track count on discs with sparse track numbers. Fixes audio playback on some homebrew discs that omit tracks (e.g. The Rockin'-B All Stars version 06/03/23 skips track 2).
@@ -97,7 +103,14 @@ Introduces save state file version 14.
 - SCU: Allow 8-bit writes to DSP registers.
 - SCU: Ignore DMA writes to VDP1 registers. Fixes GunBlaze-S not booting. (#410)
 - Settings: Apply CD Block LLE configuration at startup. Fixes Ymir always launching with CD Block HLE mode when LLE was enabled in the settings file.
-- SMPC: Ignore SSHON command when the Slave SH2 is already enabled. Fixes black screens on level transitions in Guardian Heroes. (#951)
+- SMPC: Ignore SSHON command when the Slave SH2 is already enabled. Fixes multiple issues:
+    - Guardian Heroes no longer gets stuck on level transitions. (#951)
+    - Gekitotsu Koushien no longer crashes when going in-game. (#576)
+    - Madden NFL 97 (Europe) now goes in-game. (#522)
+    - No-appointment Gals Olympos now goes in-game.
+    - Ten Pin Alley now goes in-game.
+    - UEFA Euro 96 - England now goes in-game. (#486)
+- SMPC: Reserved SR bits in INTBACK status reports are all set. (thanks to @celeriyacon)
 - SMPC: Tweak response delay for most commands to allow more games to boot:
     - Destruction Derby (Europe)
     - Fighting Vipers (Japan) (Rev A)
@@ -239,7 +252,7 @@ Uses save state file version 12.
 - Debugger: Add Priority Stack to VDP2 debug overlay.
 - VDP2: Various performance optimizations to the software renderer, improving performance in graphics-bound games (especially in high resolution modes). Technical details:
     - RBG1 was being unnecessarily rendered when NBG0 was enabled and RBG1 was disabled
-    - Remove redundant transparency bit since priority zero acts as transparency
+    - Remove redundant transparency bit since priority zero acts as transparency 
     - Remove various unused function arguments, reducing CPU register and stack pressure
     - Pass down VDP2 register references as arguments rather than fetching them from scratch everywhere
     - Reuse line data (i.e. skip recomputing lines) when rendering vertical mosaic

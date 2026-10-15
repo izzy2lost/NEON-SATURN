@@ -807,8 +807,8 @@ void SMPC::WriteINTBACKStatusReport() {
     SR.PDL = 1;                   // fixed 1 for status report
     SR.NPE = m_getPeripheralData; // 0=no peripheral data, 1=has peripheral data
     SR.RESB = m_resetState;       // reset button state (0=off, 1=on)
-    SR.P1MDn = m_port1mode;
-    SR.P2MDn = m_port2mode;
+    SR.P1MDn = 0b11;              // unused, but hardware returns 11
+    SR.P2MDn = 0b11;              // unused, but hardware returns 11
 
     OREG[0] = (m_STE << 7) | (m_resetDisable << 6);
 
