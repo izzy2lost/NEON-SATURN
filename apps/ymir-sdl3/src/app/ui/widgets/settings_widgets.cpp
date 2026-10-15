@@ -347,10 +347,9 @@ namespace settings::audio {
                     "often as sample-level processing), significantly lowering performance in exchange for a higher "
                     "level of accuracy that doesn't benefit the vast majority of commercial games.\n"
                     "\n"
-                    "Very few games require this setting to be tweaked. It is recommended to leave it at 0 in most "
-                    "cases.\n"
-                    "\n"
-                    "This option might be of interest to homebrew developers who need extra accuracy in some way.");
+                    "No games are known to require this setting to be tweaked. It is recommended to leave it at 0 "
+                    "unless you are a homebrew developer looking to exploit the extra accuracy provided by this "
+                    "option.");
             }
             if (ImGui::TableNextColumn()) {
                 ImGui::SetNextItemWidth(-1.0f);
@@ -419,7 +418,10 @@ namespace settings::audio {
         }
         widgets::ExplanationTooltip("Runs the SCSP and MC68EC000 in a dedicated thread.\n"
                                     "Improves performance at the cost of accuracy.\n"
-                                    "A few select games may break when this option is enabled.");
+                                    "A few select games may break when this option is enabled.\n"
+                                    "\n"
+                                    "NOTE: Due to threading overhead, this option may result in lower performance with "
+                                    "higher emulation step granularities depending on the game.");
     }
 
 } // namespace settings::audio
