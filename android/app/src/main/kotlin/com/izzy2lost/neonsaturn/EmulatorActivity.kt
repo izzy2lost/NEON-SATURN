@@ -305,7 +305,7 @@ class EmulatorActivity : SDLActivity() {
         if (!store.loadTouchControlsEnabled()) {
             removeTouchControlsOverlay()
             pushTouchControlsState(0, 0, 0, 0f, 0f)
-            pushSpeedControls(rewind = false, fastForward = false)
+            pushRewind(false)
             return
         }
 
@@ -319,7 +319,7 @@ class EmulatorActivity : SDLActivity() {
                     state.analogX,
                     state.analogY,
                 )
-                pushSpeedControls(state.rewind, state.fastForward)
+                pushRewind(state.rewind)
             }
             view.onMenuPressed = {
                 showQuickActionsDialog()
@@ -359,7 +359,7 @@ class EmulatorActivity : SDLActivity() {
     private fun suspendTouchControls() {
         touchControlsView?.inputSuspended = true
         pushTouchControlsState(0, 0, 0, 0f, 0f)
-        pushSpeedControls(rewind = false, fastForward = false)
+        pushRewind(false)
     }
 
     private fun resumeTouchControls() {
@@ -378,14 +378,14 @@ class EmulatorActivity : SDLActivity() {
         }
     }
 
-    private fun pushSpeedControls(rewind: Boolean, fastForward: Boolean) {
+    private fun pushRewind(rewind: Boolean) {
         runCatching {
-            nativeSetSpeedControls(rewind, fastForward)
+            nativeSetRewind(rewind)
         }
     }
 
     private external fun nativeSetPaused(paused: Boolean)
-    private external fun nativeSetSpeedControls(rewind: Boolean, fastForward: Boolean)
+    private external fun nativeSetRewind(rewind: Boolean)
     private external fun nativeSetGameBand(top: Float, bottom: Float)
     private external fun nativeSaveState(slotIndex: Int): String
     private external fun nativeLoadState(slotIndex: Int): String

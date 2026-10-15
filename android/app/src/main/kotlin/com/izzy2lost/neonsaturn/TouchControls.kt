@@ -17,10 +17,9 @@ enum class TouchControlId(
     L("L", "l"),
     R("R", "r"),
 
-    // Emulator actions rather than Saturn buttons - they drive the rewind buffer and the
-    // speed limiter, not the pad report.
+    // Emulator action rather than a Saturn button - it drives the rewind buffer, not the
+    // pad report.
     REWIND("Rewind", "rewind"),
-    FAST_FORWARD("FFwd", "fast_forward"),
 }
 
 data class TouchControlPlacement(
@@ -52,9 +51,8 @@ data class TouchControlsLayout(
                 TouchControlId.Z to TouchControlPlacement(0.91f, 0.63f),
                 TouchControlId.L to TouchControlPlacement(0.17f, 0.06f),
                 TouchControlId.R to TouchControlPlacement(0.83f, 0.06f),
-                // Portrait keeps the shoulder row at the top, so these tuck in just below it.
+                // Portrait keeps the shoulder row at the top, so this tucks in just below it.
                 TouchControlId.REWIND to TouchControlPlacement(0.17f, 0.14f),
-                TouchControlId.FAST_FORWARD to TouchControlPlacement(0.83f, 0.14f),
             )
         )
 
@@ -72,12 +70,11 @@ data class TouchControlsLayout(
                 TouchControlId.Z to TouchControlPlacement(0.94f, 0.62f),
                 TouchControlId.L to TouchControlPlacement(0.13f, 0.15f),
                 TouchControlId.R to TouchControlPlacement(0.87f, 0.15f),
-                // A 16:9 landscape leaves only ~28dp beside L, so the top corners cannot
-                // hold these at any usable size. They sit further down the outer edge
-                // instead: clear of the shoulder row above and the dpad/face buttons
-                // below, and inside the 4:3 letterbox so they never cover the game.
+                // A 16:9 landscape leaves only ~28dp beside L, so the top corner cannot
+                // hold this at any usable size. It sits further down the outer edge
+                // instead: clear of the shoulder row above and the dpad below, and
+                // inside the 4:3 letterbox so it never covers the game.
                 TouchControlId.REWIND to TouchControlPlacement(0.05f, 0.34f),
-                TouchControlId.FAST_FORWARD to TouchControlPlacement(0.95f, 0.34f),
             )
         )
     }
@@ -90,7 +87,6 @@ data class TouchControlsState(
     val analogX: Float = 0f,
     val analogY: Float = 0f,
     val rewind: Boolean = false,
-    val fastForward: Boolean = false,
 )
 
 object TouchButtonMask {

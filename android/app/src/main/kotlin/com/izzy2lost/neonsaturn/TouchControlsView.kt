@@ -130,10 +130,9 @@ class TouchControlsView @JvmOverloads constructor(
     private val pointerInteractions = mutableMapOf<Int, PointerInteraction>()
     private var currentState = TouchControlsState()
 
-    // The vectors ship with a theme-resolved tint; force white so they read against the
+    // The vector ships with a theme-resolved tint; force white so they read against the
     // button fill regardless of which theme the host activity is using.
     private val rewindIcon: Drawable? = loadIcon(R.drawable.fast_rewind_24px)
-    private val fastForwardIcon: Drawable? = loadIcon(R.drawable.fast_forward_24px)
 
     private val controlHitOrder = listOf(
         TouchControlId.MENU,
@@ -143,7 +142,6 @@ class TouchControlsView @JvmOverloads constructor(
         // After L/R deliberately: if a custom layout overlaps them, a misplaced shoulder
         // press costs less than an accidental rewind mid-game.
         TouchControlId.REWIND,
-        TouchControlId.FAST_FORWARD,
         TouchControlId.Z,
         TouchControlId.Y,
         TouchControlId.X,
@@ -170,7 +168,7 @@ class TouchControlsView @JvmOverloads constructor(
     }
 
     /**
-     * The free band in pixels: from below the controls in the top half (shoulders, menu, rewind/fast forward) to above
+     * The free band in pixels: from below the controls in the top half (shoulders, menu, rewind) to above
      * the ones in the bottom half. Null in landscape, where the image fills the height between the side controls.
      */
     private fun portraitGameBand(): Pair<Float, Float>? {
@@ -220,11 +218,10 @@ class TouchControlsView @JvmOverloads constructor(
         drawCapsuleButton(canvas, TouchControlId.START, Color.parseColor("#CC0F6A"))
         drawCapsuleButton(canvas, TouchControlId.MENU, Color.parseColor("#394550"))
 
-        // Slate like MENU, grouping the emulator actions apart from the Saturn buttons.
+        // Slate like MENU, setting the emulator action apart from the Saturn buttons.
         if (rewindAvailable) {
             drawIconButton(canvas, TouchControlId.REWIND, rewindIcon, Color.parseColor("#394550"))
         }
-        drawIconButton(canvas, TouchControlId.FAST_FORWARD, fastForwardIcon, Color.parseColor("#394550"))
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean =
@@ -648,7 +645,6 @@ class TouchControlsView @JvmOverloads constructor(
     private fun rebuildStateFromPointers() {
         var buttonMask = 0
         var rewind = false
-        var fastForward = false
         pointerInteractions.values
             .filter { interaction ->
                 (interaction.pointerType == PointerType.BUTTON || interaction.pointerType == PointerType.MENU) &&
@@ -657,7 +653,6 @@ class TouchControlsView @JvmOverloads constructor(
             .forEach { interaction ->
                 when (interaction.controlId) {
                     TouchControlId.REWIND -> rewind = true
-                    TouchControlId.FAST_FORWARD -> fastForward = true
                     else -> buttonMask = buttonMask or buttonMaskFor(interaction.controlId)
                 }
             }
@@ -665,7 +660,6 @@ class TouchControlsView @JvmOverloads constructor(
             currentState.copy(
                 buttonMask = buttonMask,
                 rewind = rewind,
-                fastForward = fastForward,
             )
         )
     }
@@ -701,7 +695,6 @@ class TouchControlsView @JvmOverloads constructor(
             }
 
             TouchControlId.REWIND -> currentState.rewind
-            TouchControlId.FAST_FORWARD -> currentState.fastForward
 
             else -> (currentState.buttonMask and buttonMaskFor(controlId)) != 0
         }
@@ -730,8 +723,7 @@ class TouchControlsView @JvmOverloads constructor(
                 tempRect.contains(x, y)
             }
 
-            TouchControlId.REWIND,
-            TouchControlId.FAST_FORWARD ->
+            TouchControlId.REWIND ->
                 hypot(x - center.x, y - center.y) <= actionButtonRadius() * hitExpansion
 
             TouchControlId.START,
@@ -775,8 +767,7 @@ class TouchControlsView @JvmOverloads constructor(
             TouchControlId.R -> (56f * density) to (20f * density)
             TouchControlId.START -> (44f * density) to (20f * density)
             TouchControlId.MENU -> (48f * density) to (20f * density)
-            TouchControlId.REWIND,
-            TouchControlId.FAST_FORWARD -> actionButtonRadius() to actionButtonRadius()
+            TouchControlId.REWIND -> actionButtonRadius() to actionButtonRadius()
             else -> faceButtonRadius() to faceButtonRadius()
         }
 

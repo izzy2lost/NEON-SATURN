@@ -280,7 +280,7 @@ public:
         }
 
         ResetInputs();
-        SetSpeedControls(false, false);
+        SetRewind(false);
 
         // The emulator thread paces itself by blocking in the audio callback until the device
         // drains the buffer, and it does so while holding m_coreMutex mid-frame. A stopped device
@@ -432,16 +432,10 @@ public:
         RebuildTouchDirections();
     }
 
-    // Rewind and fast-forward are emulator actions rather than Saturn buttons, so they are
-    // pushed separately from the pad state and read directly by the run loop.
-    void SetSpeedControls(bool rewind, bool fastForward) {
+    // Rewind is an emulator action rather than a Saturn button, so it is pushed separately
+    // from the pad state and read directly by the run loop.
+    void SetRewind(bool rewind) {
         m_rewindRequested.store(rewind);
-
-        if (m_fastForward.exchange(fastForward) != fastForward) {
-            // The audio ring buffer is what paces the emulator at 1x; unblocking the
-            // producer is what actually lets frames run ahead.
-            m_audioSystem.SetSync(!fastForward);
-        }
     }
 
     int Run() {
@@ -491,13 +485,10 @@ public:
                 break;
             }
 
-            // Presentation is vsync-locked, so fast-forward has to emulate several frames
-            // per presented frame rather than simply looping faster.
-            const int frameCount = m_fastForward.load() ? kFastForwardFrames : 1;
-            for (int frame = 0; frame < frameCount; ++frame) {
+            {
                 std::scoped_lock lock{m_coreMutex};
                 if (!m_running.load() || m_paused.load()) {
-                    break;
+                    continue;
                 }
                 StepEmulatedFrame();
             }
@@ -513,11 +504,6 @@ private:
     static constexpr SDL_AudioFormat kAudioFormat = SDL_AUDIO_S16;
     static constexpr int kAudioChannels = 2;
     static constexpr std::uint32_t kAudioBufferFrames = 512;
-
-    // Emulated frames per presented frame while fast-forwarding. Presentation stays
-    // vsync-locked, so this is the speed multiplier the device is asked for; slower
-    // hardware simply falls short of it.
-    static constexpr int kFastForwardFrames = 3;
 
     // 5 seconds of rewind at 60 fps. Every retained frame is an LZ4-compressed XOR delta
     // of a multi-megabyte save state, so the desktop's 60 second ring would risk hundreds
@@ -570,7 +556,6 @@ private:
     std::atomic_bool m_running = true;
     std::atomic_bool m_paused = false;
     std::atomic_bool m_rewindRequested = false;
-    std::atomic_bool m_fastForward = false;
     bool m_audioStarted = false;
     bool m_coreInitialized = false; // guarded by m_coreMutex
 
@@ -1604,13 +1589,9 @@ Java_com_izzy2lost_neonsaturn_EmulatorActivity_nativeExitEmulator(JNIEnv *, jobj
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_izzy2lost_neonsaturn_EmulatorActivity_nativeSetSpeedControls(
-    JNIEnv *,
-    jobject,
-    jboolean rewind,
-    jboolean fastForward) {
+Java_com_izzy2lost_neonsaturn_EmulatorActivity_nativeSetRewind(JNIEnv *, jobject, jboolean rewind) {
     if (auto *app = GetActiveApp(); app != nullptr) {
-        app->SetSpeedControls(rewind == JNI_TRUE, fastForward == JNI_TRUE);
+        app->SetRewind(rewind == JNI_TRUE);
     }
 }
 
