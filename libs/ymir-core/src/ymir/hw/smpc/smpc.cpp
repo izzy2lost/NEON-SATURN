@@ -505,6 +505,8 @@ FORCE_INLINE void SMPC::WriteCOMREG(uint8 value) {
             // TODO: these should take ~100ms (about 2.8 million SH-2 cycles) to complete
             // Doing a shorter delay here to make it snappier
             m_scheduler.ScheduleFromNow(m_commandEvent, 200000);
+        } else if (COMREG == Command::INTBACK) {
+            m_scheduler.ScheduleFromNow(m_commandEvent, 1000);
         } else {
             // TODO: CDON and CDOFF execute in 40 microseconds; all other commands take 30 microseconds to complete
             // These games don't like long delays (240 is too long):
