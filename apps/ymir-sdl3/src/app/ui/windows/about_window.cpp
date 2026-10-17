@@ -53,9 +53,9 @@ CMRC_DECLARE(Ymir_sdl3_rc);
 #define CXXOPTS_VERSION _SEMVER_STR(CXXOPTS__VERSION_MAJOR, CXXOPTS__VERSION_MINOR, CXXOPTS__VERSION_PATCH)
 #define DATE_VERSION "3.0.4" // Not exported
 #define IMGUI_VERSION_FULL IMGUI_VERSION " (" _STR(IMGUI_VERSION_NUM) ")"
-#define LZMA_VERSION "25.01"    // Private dependency of libchdr
-#define LIBCHDR_VERSION "0.3.0" // Not exported
-#define MIO_VERSION "1.1.0"     // Not exported
+#define LZMA_VERSION "26.02"        // Private dependency of libchdr
+#define LIBCHDR_VERSION "0.3.0-dev" // Not exported
+#define MIO_VERSION "1.1.0"         // Not exported
 // #define MZ_VERSION "3.1.1"      // Private dependency of libchdr
 #define NLOHMANN_JSON_VERSION \
     _SEMVER_STR(NLOHMANN_JSON_VERSION_MAJOR, NLOHMANN_JSON_VERSION_MINOR, NLOHMANN_JSON_VERSION_PATCH)

@@ -6,7 +6,7 @@ else ()
     find_package(ZLIB REQUIRED)
     find_package(zstd REQUIRED)
 endif ()
-add_subdirectory(libchdr/deps/lzma-25.01 EXCLUDE_FROM_ALL)
+add_subdirectory(libchdr/deps/lzma-26.02 EXCLUDE_FROM_ALL)
 
 list(APPEND CHDR_INCLUDES ${CMAKE_CURRENT_BINARY_DIR}/include)
 
@@ -14,6 +14,7 @@ add_library(chdr-static STATIC
     libchdr/src/libchdr_bitstream.c
     libchdr/src/libchdr_cdrom.c
     libchdr/src/libchdr_chd.c
+    libchdr/src/libchdr_codec_avhuff.c
     libchdr/src/libchdr_codec_cdfl.c
     libchdr/src/libchdr_codec_cdlz.c
     libchdr/src/libchdr_codec_cdzl.c

@@ -50,7 +50,7 @@ void UpdateCheckerService::ThreadLoop(SharedContext &context, Settings &settings
     static const auto currVersion = [] {
         // static_assert(semver::valid(Ymir_VERSION), "Ymir_VERSION is not a valid semver string");
         semver::version version;
-        semver::parse(Ymir_VERSION, version);
+        void(semver::parse(Ymir_VERSION, version));
         return version;
     }();
 
@@ -133,15 +133,13 @@ void UpdateCheckerService::ThreadLoop(SharedContext &context, Settings &settings
                 // Stable release couldn't be retrieved or isn't newer than the current version.
                 // Check if nightly is an update.
                 if (!context.targetUpdate) {
-                    if (semver::detail::compare_parsed(nightlyResult.updateInfo.version, currVersion,
-                                                       semver::version_compare_option::exclude_prerelease) > 0) {
+                    if (semver::detail::compare_parsed(nightlyResult.updateInfo.version, currVersion) > 0) {
                         return true;
                     }
 
                     if constexpr (ymir::version::is_nightly_build) {
                         // Current version is a nightly build
-                        if (semver::detail::compare_parsed(nightlyResult.updateInfo.version, currVersion,
-                                                           semver::version_compare_option::exclude_prerelease) < 0) {
+                        if (semver::detail::compare_parsed(nightlyResult.updateInfo.version, currVersion) < 0) {
                             return false;
                         }
 
