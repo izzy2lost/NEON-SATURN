@@ -2,9 +2,9 @@
 
 ## Version 0.4.0
 
-In development.
+Released 2026-10-17.
 
-Introduces save state file version 14.
+Introduced save state file version 16.
 
 ### New features and improvements
 
