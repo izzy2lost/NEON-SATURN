@@ -61,7 +61,11 @@
     <binary>ymir-sdl3</binary>
   </provides>
   <releases>
-    <release version="0.4.0" date="202X-XX-XX">
+    <release version="0.4.1" date="202X-XX-XX">
+      <description/>
+      <url>https://github.com/ymir-emu/Ymir/releases/tag/v0.4.1</url>
+    </release>
+    <release version="0.4.0" date="2026-10-17">
       <description/>
       <url>https://github.com/ymir-emu/Ymir/releases/tag/v0.4.0</url>
     </release>
