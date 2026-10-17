@@ -4,7 +4,7 @@
 
 Released 2026-10-17.
 
-Introduced save state file version 16.
+Introduced save state file version 17.
 
 ### New features and improvements
 
