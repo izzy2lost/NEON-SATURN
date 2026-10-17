@@ -1,5 +1,16 @@
 # Ymir changelog
 
+## Version 0.4.1
+
+In development.
+
+Uses save state file version 17.
+
+### New features and improvements
+
+### Fixes
+
+
 ## Version 0.4.0
 
 Released 2026-10-17.
@@ -22,7 +33,7 @@ Introduced save state file version 17.
 - App: Shrink embedded M PLUS U font files by removing unused glyphs, reducing binary size. (#915; @4re)
 - Build: Lower macOS version requirement to 12.0 Monterey. (#954)
 - Debugger (SH2): Break when PC is unaligned or in an illegal area while debug tracing is enabled.
-- Debugger (VDP2): Added RBG0 and RBG1 line color single stack views to the VDP2 debug overlay.
+- Debugger (VDP2): Added RBG0 and RBG1 line color single layer views to the VDP2 debug overlay.
 - Debugger (VDP2): Added basic VDP2 registers view.
 - Graphics: New graphics backend, adding support for native graphics APIs:
     - Direct3D 12 on Windows (@StrikerX3)
@@ -118,12 +129,12 @@ Introduced save state file version 17.
     - Fist (Japan)
     - Idol Mahjong - Final Romance R (Japan) and its Kisekae Discs
 - SMPC: Update peripheral PDR1/2 registers when reading and when updating EXLE. Fixes many cases of games not recognizing Virtua Gun inputs or missing shots. (#787)
-- VDP1: Don't clear COPR when beginning a new VDP1 frame. Fixes lockups in Alone in the Dark - Alone in the Dark - One-Eyed Jack's Revenge. (#938)
+- VDP1: Don't clear COPR when beginning a new VDP1 frame. Fixes lockups in Alone in the Dark - One-Eyed Jack's Revenge. (#938)
 - VDP1: Don't sync VDP1 FBRAM on debug reads. Fixes deadlock when viewing the framebuffer area in a memory viewer window.
 - VDP1: Force-align MSB write to 16-bit addresses when writing pixels with MSB enabled. Fixes deselected menu options being fully painted in black in Derby Analyst. (#587)
 - VDP1: Textured sprites with CMDSIZE.H=0 never fetch additional texels. Fixes glitched graphics in the scorecard of the shooting range in Policenauts.
 - VDP1: Various VDP1 reset fixes. (thanks to @celeriyacon)
-- VDP1-SW: Write back FBRAM writes from VDP1 renderer thread. Fixes glitched title screen in Waialae no Kiseki - Extra 36 Holes when using threaded VDP1 rendering. (#898)
+- VDP1-SW: Write back FBRAM writes from VDP1 renderer thread. Fixes glitched title screen in Waialae no Kiseki - Extra 36 Holes and other golf games sharing the same engine when using threaded VDP1 rendering. (#898)
 - VDP2: Allow 8-bit register reads and writes. Fixes crash after defeating second boss of DoDonPachi. (#640)
 - VDP2: Avoid unintentional side effects on VDP2 EXTEN register when saving states. Fixes camera angles in Digital Dance Mix Vol. 1 - Namie Amuro.
 - VDP2: Disable color gradation if color RAM mode is not 0. Fixes the fog effect in The River of Dreams level in Astal. (#927)

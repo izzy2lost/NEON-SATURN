@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(Ymir VERSION 0.4.0)
+project(Ymir VERSION 0.4.1)
 
 # Check for Vulkan support before including CompileShaders as it depends on knowing if Vulkan
 # is available to determine whether to make SPIR-V compilation required or optional.
