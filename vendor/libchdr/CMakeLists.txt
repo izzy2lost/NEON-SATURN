@@ -1,5 +1,5 @@
 if (Ymir_LIBRARY_ONLY)
-    add_subdirectory(libchdr/deps/miniz-3.1.1 EXCLUDE_FROM_ALL)
+    add_subdirectory(libchdr/deps/miniz-3.1.2 EXCLUDE_FROM_ALL)
     add_subdirectory(libchdr/deps/zstd-1.5.7 EXCLUDE_FROM_ALL)
 else ()
     find_package(miniz CONFIG REQUIRED)
