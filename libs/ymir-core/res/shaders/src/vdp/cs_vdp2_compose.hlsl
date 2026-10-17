@@ -66,6 +66,7 @@ static const bool exclusiveMonitor = BitTest(g_commonParams.displayParams, 5);
 static const uint cramMode = BitExtract(g_commonParams.displayParams, 6, 2);
 static const bool hiResH = BitExtract(g_commonParams.displayParams, 10, 3) & 2;
 static const bool normalTVMode = BitExtract(g_commonParams.displayParams, 10, 3) < 2;
+static const bool firstInterlacedFrame = BitTest(g_commonParams.displayParams, 17);
 
 static const bool colorGradEnable = BitTest(g_commonParams.layerParams, 28);
 
@@ -75,6 +76,10 @@ static const bool transparentMeshes = BitTest(g_commonParams.enhancements, 1);
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Utilities
+
+bool IsInterlaced() {
+    return interlaceMode >= kInterlaceModeSingleDensity && !exclusiveMonitor;
+}
 
 uint GetLoResInputX(uint x) {
     if (hiResH) {
@@ -96,7 +101,7 @@ uint GetLoResInputY(uint y) {
 }
 
 uint GetOutputY(uint y) {
-    if (!deinterlace && interlaceMode >= kInterlaceModeSingleDensity && !exclusiveMonitor) {
+    if (!deinterlace && IsInterlaced()) {
         return (y << 1u) | oddField;
     } else {
         return y;
@@ -503,7 +508,12 @@ void CSMain(uint3 id : SV_DispatchThreadID) {
     // Threads map to scaled pixels; startY is a native (compose) line
     const uint2 drawCoord = uint2(id.x, id.y + g_commonParams.startY * kScale);
     const uint drawY = drawCoord.y / kScale;
-    const uint2 outCoord = uint2(drawCoord.x, GetOutputY(drawY) * kScale + (drawCoord.y - drawY * kScale));
+    const uint subY = drawCoord.y - drawY * kScale;
+    const uint2 outCoord = uint2(drawCoord.x, GetOutputY(drawY) * kScale + subY);
     const uint3 outColor = Compose(drawCoord);
     g_compositeOut[outCoord] = float4(outColor / 255.0, 1.0f);
+    if (firstInterlacedFrame && !deinterlace && IsInterlaced()) {
+        // The other field's line is a whole scaled line away, at the same sub-row
+        g_compositeOut[uint2(outCoord.x, (GetOutputY(drawY) ^ 1u) * kScale + subY)] = float4(outColor / 255.0, 1.0f);
+    }
 }

@@ -1771,6 +1771,7 @@ struct VulkanVDPRenderer::Impl {
             HLSLuint vresMode : 2;             // 13-14  Vertical resolution mode   (VDP2 TVMD.VRESO1-0)
             HLSLuint dblInterlaceEnable : 1;   //    15  VDP1 double interlace enable flag (VDP1 FBCR.DIE)
             HLSLuint dblInterlaceDrawLine : 1; //    16  VDP1 double interlace draw line   (VDP1 FBCR.DIL)
+            HLSLuint firstInterlacedFrame : 1; //    17  VDP2 resolution changed to interlaced this frame?
         } displayParams;
         static_assert(sizeof(DisplayParams) == sizeof(HLSLuint));
 
@@ -4869,6 +4870,7 @@ struct VulkanVDPRenderer::Impl {
     // -----------------------------------------------------------------------------------------------------------------
     // VDP2 rendering
 
+    bool resChangedToInterlaced = false;
     uint32 HRes = kDefaultResH;
     uint32 VRes = kDefaultResV;
     bool exclusiveMonitor = false;
@@ -5332,8 +5334,7 @@ struct VulkanVDPRenderer::Impl {
             renderParams.vcellScrollRepeat = bgState.vcellScrollRepeat;
             if (i >= 2 && vdp2.resetNBGScrollY[i - 2]) {
                 renderParams.scrollYIncBase = y;
-            } else {
-                renderParams.scrollYIncBase = 0;
+                vdp2.resetNBGScrollY[i - 2] = false;
             }
         }
 
@@ -5678,6 +5679,13 @@ struct VulkanVDPRenderer::Impl {
         VDP2UpdateComposeParams();
     }
 
+    void VDP2SetResolution(uint32 h, uint32 v, bool exclusive) {
+        resChangedToInterlaced = !exclusive && v > vdp::kMaxNormalResV && v != VRes;
+        HRes = h;
+        VRes = v;
+        exclusiveMonitor = exclusive;
+    }
+
     void VDP2BeginFrame() {
         vdp2.nextLayerRenderLine = 0;
         vdp2.nextComposeLine = 0;
@@ -5685,7 +5693,15 @@ struct VulkanVDPRenderer::Impl {
         VDP2CalcAccessPatterns();
         VDP2InitNBGs();
 
+        vdp2.cpuCommonRenderParams.displayParams.firstInterlacedFrame = resChangedToInterlaced ? 1u : 0u;
+        if (resChangedToInterlaced) {
+            resChangedToInterlaced = false;
+        }
+
         VDP2UpdateState(0);
+        for (int i = 0; i < 4; ++i) {
+            vdp2.cpuLayerRenderParams.nbg[i].scrollYIncBase = 0;
+        }
 
         // VDP2 consumes VDP1 FBRAM, so it needs to be synced here
         if (auto result = VDP1FlushFBRAM(); !result) {
@@ -6065,9 +6081,7 @@ void VulkanVDPRenderer::VDP1EndFrame() {
 }
 
 void VulkanVDPRenderer::VDP2SetResolution(uint32 h, uint32 v, bool exclusive) {
-    m_impl->HRes = h;
-    m_impl->VRes = v;
-    m_impl->exclusiveMonitor = exclusive;
+    m_impl->VDP2SetResolution(h, v, exclusive);
 }
 
 void VulkanVDPRenderer::VDP2SetField(bool odd) {
