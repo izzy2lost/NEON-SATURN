@@ -2,13 +2,13 @@
 
 ## Version 0.4.1
 
-In development.
+Released 2026-10-18.
 
 Uses save state file version 17.
 
-### New features and improvements
-
 ### Fixes
+
+- Build: Updated DXC included with Windows builds to fix error on launch on Windows ARM systems. (#960)
 
 
 ## Version 0.4.0
