@@ -555,6 +555,13 @@ class LauncherActivity : AppCompatActivity() {
 
                 result.onSuccess { entries ->
                     currentLibraryEntries = entries
+                    // Name games by their disc's hash in the background; covers rebind as names come in
+                    DiscIdentifier.identifyAll(this, paths, entries) {
+                        coverFlowAdapter?.notifyDataSetChanged()
+                        libraryRecyclerView.post {
+                            coverFlowTransformer.applyTransforms(libraryRecyclerView)
+                        }
+                    }
                     if (currentViewMode == BootstrapStore.VIEW_MODE_LIST) {
                         libraryAdapter.submitList(entries)
                     } else {

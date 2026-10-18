@@ -91,7 +91,7 @@ class CoverFlowAdapter(
         ) {
             titleText.text = entry.title
             // A saved cover file, or a URL that is saved for offline once it loads
-            val model = CoverArtManager.coverModel(paths, entry.title, coverMode)
+            val model = CoverArtManager.coverModel(paths, entry, coverMode)
             val placeholderRes = if (coverMode == BootstrapStore.VIEW_MODE_NA_COVERS)
                 R.drawable.ic_cover_placeholder_na
             else
@@ -102,7 +102,7 @@ class CoverFlowAdapter(
                     crossfade(true)
                     if (model is String) {
                         listener(onSuccess = { _, _ ->
-                            CoverArtManager.saveForOffline(paths, entry.title, coverMode)
+                            CoverArtManager.saveForOffline(paths, entry, coverMode)
                         })
                     }
                     memoryCachePolicy(CachePolicy.ENABLED)

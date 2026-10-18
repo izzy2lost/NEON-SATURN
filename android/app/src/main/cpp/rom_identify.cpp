@@ -1,9 +1,14 @@
-// Small library the launcher loads to label imported BIOS files, without pulling in SDL or the emulator.
+// Small library the launcher loads to label imported BIOS files and identify discs, without pulling in SDL or the
+// emulator.
 
+#include "disc_hash.hpp"
 #include "ipl_select.hpp"
 
 #include <jni.h>
+#include <unistd.h>
 
+#include <cinttypes>
+#include <cstdio>
 #include <string>
 
 namespace {
@@ -45,4 +50,27 @@ Java_com_izzy2lost_neonsaturn_BiosIdentifier_nativeIdentify(JNIEnv *env, jclass,
     const std::string result = std::string{info->version} + '|' + RegionName(info->region) + '|' +
                                (info->regionFree ? "1" : "0") + '|' + VariantName(info->variant);
     return env->NewStringUTF(result.c_str());
+}
+
+/// "crc32|size" of a CHD's first track as Redump dumps it, or null. Reads from a dup of fd and leaves fd open.
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_izzy2lost_neonsaturn_DiscIdentifier_nativeHashChdTrack1(JNIEnv *env, jclass, jint fd) {
+    const int ownFd = dup(fd);
+    if (ownFd < 0) {
+        return nullptr;
+    }
+    FILE *file = fdopen(ownFd, "rb");
+    if (file == nullptr) {
+        close(ownFd);
+        return nullptr;
+    }
+    const auto hash = neonsaturn::android::HashChdTrack1(file);
+    std::fclose(file);
+    if (!hash) {
+        return nullptr;
+    }
+
+    char result[32];
+    std::snprintf(result, sizeof(result), "%08" PRIx32 "|%" PRIu64, hash->crc32, hash->size);
+    return env->NewStringUTF(result);
 }

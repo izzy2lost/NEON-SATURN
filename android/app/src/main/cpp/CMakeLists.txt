@@ -34,8 +34,9 @@ target_link_libraries(neonsaturn-main PRIVATE
     log
 )
 
-# Identifies BIOS files for the launcher, which should not have to load SDL and the emulator to do it
+# Identifies BIOS files and discs for the launcher, which should not have to load SDL and the emulator to do it
 add_library(neonsaturn-romid SHARED
+    disc_hash.cpp
     ipl_select.cpp
     rom_identify.cpp
 )
@@ -45,5 +46,7 @@ set_target_properties(neonsaturn-romid PROPERTIES OUTPUT_NAME romid)
 target_compile_features(neonsaturn-romid PRIVATE cxx_std_20)
 
 target_link_libraries(neonsaturn-romid PRIVATE
+    chdr-static
     ymir-core
+    z
 )
