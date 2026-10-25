@@ -53,6 +53,7 @@ static const uint spriteDisplayFB = BitExtract(g_commonParams.spriteParams, 23, 
 
 static const bool deinterlace = BitTest(g_commonParams.enhancements, 0);
 static const uint kScale = ((g_commonParams.enhancements >> 2u) & 7u) + 1u;
+static const bool sharpBGs = BitTest(g_commonParams.enhancements, 5) && kScale > 1;
 
 static const uint colorRAMMode = BitExtract(g_commonParams.displayParams, 6, 2);
 static const uint kCRAMAddressMask = colorRAMMode == 1 ? 0x7FF : 0x3FF;
@@ -207,7 +208,8 @@ bool InsideWindows(uint2 pos) {
 // ---------------------------------------------------------------------------------------------------------------------
 // Rotation parameter calculation
 
-uint2 CalcRotationSpriteCoordinates(uint2 pos) {
+// Returns the sprite coordinates in 13.10 fixed point. subFrac advances pos by a fraction of a dot and line in 1/256ths.
+int2 CalcRotationSpriteCoordinates(uint2 pos, uint2 subFrac) {
     const RotParamBase base = g_rotParamBases[pos.y];
 
     const int Xst = SignExtend(ReadVRAM32(base.tableAddress + 0x00) >> 6, 23);
@@ -222,9 +224,9 @@ uint2 CalcRotationSpriteCoordinates(uint2 pos) {
     // Current sprite coordinates (13.10)
     // 10 + 0*10 + 0*10 = 10 + 10 + 10 = 10 frac bits
     // 23 + 10*13 + 9*13 = 23 + 23 + 22 = 23 total bits
-    return uint2(
-        (Xst + pos.y * deltaXst + pos.x * deltaX) >> 10,
-        (Yst + pos.y * deltaYst + pos.x * deltaY) >> 10
+    return int2(
+        Xst + pos.y * deltaXst + pos.x * deltaX + ((deltaXst * int(subFrac.y) + deltaX * int(subFrac.x)) >> 8),
+        Yst + pos.y * deltaYst + pos.x * deltaY + ((deltaYst * int(subFrac.y) + deltaY * int(subFrac.x)) >> 8)
     );
 }
 
@@ -448,10 +450,27 @@ SpriteOutput DrawSprite(uint2 pos, uint2 scaledPos, uint index) {
 
     SpriteOutput output = { kTransparentPixel, 0, false, false, false };
 
+    const uint2 subPos = scaledPos - pos * kScale;
+
     uint2 spritePos;
+    uint2 scaledRotPos;
     uint field = 0;
     if (rotate) {
-        spritePos = CalcRotationSpriteCoordinates(pos);
+        // With sharp backgrounds, sample at each scaled pixel's own position. Interlaced field lines span two output
+        // rows.
+        uint2 subFrac = uint2(0, 0);
+        if (sharpBGs) {
+            subFrac.x = subPos.x * 256 / kScale;
+            if (!deinterlace && interlaceMode >= kInterlaceModeSingleDensity && !exclusiveMonitor) {
+                const uint row = interlaceMode == kInterlaceModeSingleDensity ? oddField : 0;
+                subFrac.y = (row * kScale + subPos.y) * 128 / kScale;
+            } else {
+                subFrac.y = subPos.y * 256 / kScale;
+            }
+        }
+        const int2 rotPos = CalcRotationSpriteCoordinates(pos, subFrac);
+        spritePos = uint2(rotPos >> 10);
+        scaledRotPos = uint2((rotPos * int(kScale)) >> 10);
         if (any(spritePos >= fbSize)) {
             return output;
         }
@@ -470,12 +489,12 @@ SpriteOutput DrawSprite(uint2 pos, uint2 scaledPos, uint index) {
         }
     }
 
-    // Locate the pixel in the scaled framebuffer. Rotated sprites use the native mapping; the others map the scaled
-    // screen position directly so that every scaled pixel reads its own framebuffer pixel.
-    const uint2 subPos = scaledPos - pos * kScale;
+    // Locate the pixel in the scaled framebuffer. Rotated sprites use the native mapping, or the scaled rotated
+    // position with sharp backgrounds; the others map the scaled screen position directly so that every scaled pixel
+    // reads its own framebuffer pixel.
     uint2 scaledSpritePos;
     if (rotate) {
-        scaledSpritePos = spritePos * kScale + subPos;
+        scaledSpritePos = sharpBGs ? scaledRotPos : spritePos * kScale + subPos;
     } else {
         scaledSpritePos.x = inHalfResH ? (scaledPos.x << 1) : outHalfResH ? (scaledPos.x >> 1) : scaledPos.x;
         scaledSpritePos.y = spritePos.y * kScale + subPos.y;

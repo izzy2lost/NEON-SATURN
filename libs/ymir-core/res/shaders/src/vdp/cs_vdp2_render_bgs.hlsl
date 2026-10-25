@@ -51,6 +51,15 @@ static const bool coeffDataPerDot = BitTest(g_commonParams.rotParams, 5);
 
 static const bool deinterlace = BitTest(g_commonParams.enhancements, 0);
 static const uint kScale = ((g_commonParams.enhancements >> 2u) & 7u) + 1u;
+static const bool sharpBGs = BitTest(g_commonParams.enhancements, 5) && kScale > 1;
+
+// Position of the current pixel within its native pixel when rendering at a higher internal resolution, in scaled
+// pixels (0 to kScale-1). Set by the entrypoint.
+static uint2 s_subPos;
+
+// Sub-pixel position of the current RBG pixel within its rotation dot and line, in 1/256ths of a step.
+// Zero unless sharp backgrounds are enabled. Set by DrawRBG.
+static uint2 s_rotSubFrac;
 
 // Position of the current pixel in the sprite attributes texture, which matches the layer output position.
 // Set by the entrypoint.
@@ -443,8 +452,8 @@ uint2 CalcRotationScreenCoords(uint2 pos, uint index) {
     // expand to 10 frac bits
     // 10 - 10 = 10 frac bits
     // 23 - 24 = 24 total bits
-    const int Xst = base.Xst;
-    const int Yst = base.Yst;
+    const int Xst = base.Xst + ((t.deltaXst * int(s_rotSubFrac.y)) >> 8);
+    const int Yst = base.Yst + ((t.deltaYst * int(s_rotSubFrac.y)) >> 8);
     const int Zst = t.Zst;
     Tx = Xst - (t.Px << 10);
     Ty = Yst - (t.Py << 10);
@@ -478,8 +487,8 @@ uint2 CalcRotationScreenCoords(uint2 pos, uint index) {
 
     if (coeffTableEnable) {
         // Current coefficient address (16.10)
-        const uint KAxofs = coeffDataPerDot ? pos.x * t.dKAx : 0;
-        const uint KA = base.KA + KAxofs;
+        const uint KAxofs = coeffDataPerDot ? pos.x * t.dKAx + ((t.dKAx * int(s_rotSubFrac.x)) >> 8) : 0;
+        const uint KA = base.KA + ((t.dKAst * int(s_rotSubFrac.y)) >> 8) + KAxofs;
 
         // Read and apply rotation coefficient
         const RotCoefficient coeff = ReadRotCoefficient(coeffDataSize, coeffDataMode, KA);
@@ -501,8 +510,8 @@ uint2 CalcRotationScreenCoords(uint2 pos, uint index) {
     }
 
     // Current screen coordinates (18.10)
-    const int scrX = Xsp + pos.x * scrXIncH;
-    const int scrY = Ysp + pos.x * scrYIncH;
+    const int scrX = Xsp + pos.x * scrXIncH + ((scrXIncH * int(s_rotSubFrac.x)) >> 8);
+    const int scrY = Ysp + pos.x * scrYIncH + ((scrYIncH * int(s_rotSubFrac.x)) >> 8);
 
     // Resulting screen coordinates (26.0)
     // (16*10) + 10 = 26 + 10 frac bits
@@ -525,9 +534,10 @@ RotCoefficient CalcRotationCoefficient(uint2 pos, uint index) {
     RotCoefficient coeff;
     if (coeffTableEnable) {
         // Current coefficient address (16.10)
+        const int dKAst = SignExtend(ReadVRAM32(base.tableAddress + 0x58) >> 6, 20);
         const int dKAx = SignExtend(ReadVRAM32(base.tableAddress + 0x5C) >> 6, 20);
-        const uint KAxofs = coeffDataPerDot ? pos.x * dKAx : 0;
-        const uint KA = base.KA + KAxofs;
+        const uint KAxofs = coeffDataPerDot ? pos.x * dKAx + ((dKAx * int(s_rotSubFrac.x)) >> 8) : 0;
+        const uint KA = base.KA + ((dKAst * int(s_rotSubFrac.y)) >> 8) + KAxofs;
 
         // Read and apply rotation coefficient
         const uint coeffDataSize = BitExtract(g_commonParams.rotParams, coeffParamsOffset + 1, 1);
@@ -837,6 +847,7 @@ uint4 DrawNBG(uint2 pos, // pixel coordinates
         return kTransparentPixel;
     }
 
+    const uint outY = pos.y;
     pos.y = GetY(pos.y, true);
     if (deinterlace && interlaceMode == kInterlaceModeSingleDensity) {
         pos.y >>= 1;
@@ -920,7 +931,19 @@ uint4 DrawNBG(uint2 pos, // pixel coordinates
         baseFracScroll.y += vcellScrollY;
     }
 
-    const uint2 fracScrollPos = baseFracScroll + params.scrollAmount + scrollInc * (pos - uint2(0, params.scrollYIncBase));
+    uint2 fracScrollPos = baseFracScroll + params.scrollAmount + scrollInc * (pos - uint2(0, params.scrollYIncBase));
+    if (sharpBGs && !mosaicEnable) {
+        // Advance by the sub-pixel position. Single-density interlaced lines span two output rows.
+        uint2 subFrac;
+        subFrac.x = s_subPos.x * 256 / kScale;
+        if (interlaceMode == kInterlaceModeSingleDensity && !exclusiveMonitor) {
+            const uint row = deinterlace ? (outY & 1) : oddField;
+            subFrac.y = (row * kScale + s_subPos.y) * 128 / kScale;
+        } else {
+            subFrac.y = s_subPos.y * 256 / kScale;
+        }
+        fracScrollPos += (scrollInc * subFrac) >> 8;
+    }
     uint2 scrollPos = fracScrollPos >> 8;
     if (mosaicEnable) {
         const uint2 mosaic = uint2(BitExtract(g_commonParams.layerParams, 14, 4) + 1, BitExtract(g_commonParams.layerParams, 18, 4) + 1);
@@ -1115,6 +1138,21 @@ uint4 DrawRBG(uint2 pos, // pixel coordinates
         return kTransparentPixel;
     }
 
+    s_rotSubFrac = uint2(0, 0);
+    if (sharpBGs && !params.base.mosaicEnable) {
+        // Advance by the sub-pixel position. Halved coordinates and field lines span two output pixels or rows.
+        const bool interlaced = interlaceMode >= kInterlaceModeSingleDensity && !exclusiveMonitor;
+        s_rotSubFrac.x = hiResH ? ((pos.x & 1) * kScale + s_subPos.x) * 128 / kScale : s_subPos.x * 256 / kScale;
+        if (interlaced && deinterlace) {
+            s_rotSubFrac.y = ((pos.y & 1) * kScale + s_subPos.y) * 128 / kScale;
+        } else if (interlaced) {
+            const uint row = interlaceMode == kInterlaceModeSingleDensity ? oddField : 0;
+            s_rotSubFrac.y = (row * kScale + s_subPos.y) * 128 / kScale;
+        } else {
+            s_rotSubFrac.y = s_subPos.y * 256 / kScale;
+        }
+    }
+
     if (hiResH) {
         pos.x >>= 1;
     }
@@ -1159,12 +1197,14 @@ bool InsideColorCalcWindow(uint2 pos) {
 
 [numthreads(32, 1, 7)]
 void CSMain(uint3 id : SV_DispatchThreadID) {
-    // Threads map to scaled pixels; startY is a native line. Layers are drawn at native resolution and replicated.
+    // Threads map to scaled pixels; startY is a native line. Layers are drawn at native resolution and replicated,
+    // or sampled at each scaled pixel's sub-pixel position with sharp backgrounds.
     const uint2 scaledDrawCoord = uint2(id.x, id.y + g_commonParams.startY * kScale);
     const uint2 drawCoord = scaledDrawCoord / kScale;
     const uint subY = scaledDrawCoord.y - drawCoord.y * kScale;
     const uint3 outCoord = uint3(scaledDrawCoord.x, GetY(drawCoord.y, false) * kScale + subY, id.z);
     s_spriteAttrsPos = outCoord.xy;
+    s_subPos = uint2(scaledDrawCoord.x - drawCoord.x * kScale, subY);
     if (id.z <= 3) {
         g_layerOut[outCoord] = DrawNBG(drawCoord, id.z);
     } else if (id.z <= 5) {

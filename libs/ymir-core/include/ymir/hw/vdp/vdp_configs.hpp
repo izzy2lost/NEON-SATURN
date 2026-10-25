@@ -25,6 +25,11 @@ struct Enhancements {
     /// with half-transparency on top of other graphics.
     bool transparentMeshes = false;
 
+    /// @brief Enable or disable sharp VDP2 backgrounds at internal resolutions above 1x (GPU renderer only).
+    /// When enabled, scroll and rotation backgrounds are sampled at each scaled pixel's own position, so zoomed and
+    /// rotated planes gain detail. When disabled, backgrounds are rendered at native resolution and replicated.
+    bool sharpBackgrounds = true;
+
     /// @brief Determines if any enhancement is enabled:
     /// - `deinterlace` is set to `true`
     /// - `transparentMeshes` is set to `true`

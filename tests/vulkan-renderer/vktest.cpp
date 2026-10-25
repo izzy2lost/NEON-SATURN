@@ -10,6 +10,11 @@
 //                      renderer's output upscaled with nearest neighbor filtering
 //   LAYER_MASK=<mask>  enable only the given VDP2 layers (debug render option bits)
 //   SAVE=1             dump mismatching frames as PPM images
+//   SHARP=0            disable the sharp backgrounds enhancement (on by default)
+//   SHARP_CHECK=1      with SCALE>1, render each scene with sharp backgrounds off and on instead of comparing against
+//                      the software renderer: the top-left pixel of every block (the native sample position) must
+//                      match, and the number of other pixels that changed is reported. SHARP_CHECK=control renders
+//                      both with sharp backgrounds off
 //   SAVESTATE=1        also check deferred save states: every Vulkan frame is snapshotted with a deferred VDP1 FBRAM
 //                      sync completed on another thread one frame later (like rewind), and compared against a regular
 //                      save state from an identical Saturn running in lockstep. SAVESTATE=control takes regular
@@ -133,6 +138,9 @@ static std::vector<Frame> Run(Kind kind, const Scene &scene, int numFrames, vdp:
         sat->VDP.SetVulkanFrameReadyCallback({&ctx, trampoline});
     } else {
         sat->VDP.SetSoftwareRenderCallback({&ctx, trampoline});
+    }
+    if (const char *sharp = std::getenv("SHARP"); sharp && kind == Kind::VK) {
+        enh.sharpBackgrounds = std::atoi(sharp) != 0;
     }
     sat->VDP.SetEnhancements(enh);
     if (const char *lm = std::getenv("LAYER_MASK")) {
@@ -651,7 +659,7 @@ static std::vector<Test> MakeTests() {
     }
 
     // RBG0 rotation: characters in bank A0, pattern names in A1, parameter table in B1
-    tests.push_back({"rbg0", [](Bus &b, int f) {
+    const Scene rbg0 = [](Bus &b, int f) {
                          if (f == 0) {
                              SetupVDP2Basic(b);
                              FillCharsAndPalettes(b, 0x00000, 256, 55);
@@ -705,7 +713,32 @@ static std::vector<Test> MakeTests() {
                          w32(0x54, 0);
                          w32(0x58, 0);
                          w32(0x5C, 0);
-                     }});
+                     };
+    tests.push_back({"rbg0", rbg0});
+
+    // Rotated VDP1 framebuffer over RBG0: parameter table A turns the sprite layer around the screen center
+    {
+        auto vdp1 = MakeVDP1Scene(500, true, -1, -1, false);
+        tests.push_back({"sprite_rot", [vdp1, rbg0](Bus &b, int f) {
+                             vdp1(b, f);
+                             rbg0(b, f);
+                             b.Reg2(0x0FC, 0x0001); // RBG0 below the sprites
+                             b.Reg1(0x00, 0x0002); // framebuffer rotation, 16bpp
+                             const double ang = 0.2 + f * 0.15;
+                             const double cs = std::cos(ang), sn = std::sin(ang);
+                             auto fx = [](double v) { return (uint32)(sint32)(v * 65536.0) & ~0x3Fu; };
+                             auto w32 = [&](uint32 off, uint32 v) {
+                                 b.VRAM2(0x60000 + off, v >> 16);
+                                 b.VRAM2(0x60000 + off + 2, v & 0xFFFF);
+                             };
+                             w32(0x00, fx(160 - 160 * cs + 112 * sn));
+                             w32(0x04, fx(112 - 160 * sn - 112 * cs));
+                             w32(0x0C, fx(-sn));
+                             w32(0x10, fx(cs));
+                             w32(0x14, fx(cs));
+                             w32(0x18, fx(sn));
+                         }});
+    }
 
     // Random VDP2 registers, VRAM and CRAM plus random VDP1 content. "fuzz" rewrites the registers every frame
     // (exercising register change timing); "steady" sets them once and compares frames after they settle.
@@ -753,6 +786,7 @@ int main(int argc, char **argv) {
     const char *only = argc > 1 ? argv[1] : nullptr;
     const char *scaleEnv = std::getenv("SCALE");
     const uint32 scale = scaleEnv ? std::atoi(scaleEnv) : 1;
+    const bool sharpCheck = scale > 1 && std::getenv("SHARP_CHECK") != nullptr;
 
     int ran = 0;
     for (Test &t : MakeTests()) {
@@ -761,6 +795,47 @@ int main(int argc, char **argv) {
         }
         ++ran;
         bool ok1 = false, ok2 = false;
+        if (sharpCheck) {
+            vdp::config::Enhancements off = t.enh, on = t.enh;
+            off.sharpBackgrounds = false;
+            on.sharpBackgrounds = true;
+            setenv("SHARP", "0", 1);
+            auto a = Run(Kind::VK, t.scene, t.frames + 1, off, ok1);
+            // SHARP_CHECK=control renders both with sharp backgrounds off to measure run-to-run nondeterminism
+            setenv("SHARP", std::strcmp(std::getenv("SHARP_CHECK"), "control") == 0 ? "0" : "1", 1);
+            auto b = Run(Kind::VK, t.scene, t.frames + 1, on, ok2);
+            if (!ok1 || !ok2) {
+                return 2;
+            }
+            size_t samples = 0, sampleDiffs = 0, changed = 0, total = 0;
+            for (size_t i = t.firstFrame; i < std::min(a.size(), b.size()); ++i) {
+                if (a[i].w != b[i].w || a[i].h != b[i].h) {
+                    ++sampleDiffs;
+                    continue;
+                }
+                for (uint32 y = 0; y < a[i].h; ++y) {
+                    for (uint32 x = 0; x < a[i].w; ++x) {
+                        const bool diff = (a[i].px[y * a[i].w + x] ^ b[i].px[y * b[i].w + x]) & 0xFFFFFF;
+                        if (y % scale == 0 && x % scale == 0) {
+                            ++samples;
+                            sampleDiffs += diff;
+                        } else {
+                            ++total;
+                            changed += diff;
+                        }
+                    }
+                }
+                if (std::getenv("SAVE") != nullptr) {
+                    SavePPM(t.name + "_off" + std::to_string(i) + ".ppm", a[i]);
+                    SavePPM(t.name + "_on" + std::to_string(i) + ".ppm", b[i]);
+                }
+            }
+            std::printf("[%s] %s: %zu/%zu native samples differ, %zu/%zu sub-pixels changed (%.2f%%)\n",
+                        t.name.c_str(), sampleDiffs ? "MISMATCH" : "OK", sampleDiffs, samples, changed, total,
+                        total ? 100.0 * changed / total : 0.0);
+            g_failures += sampleDiffs != 0;
+            continue;
+        }
         auto sw = Run(Kind::SW, t.scene, t.frames, t.enh, ok1);
         // The Vulkan renderer delivers frames one frame late
         auto vk = Run(Kind::VK, t.scene, t.frames + 1, t.enh, ok2);

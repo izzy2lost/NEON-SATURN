@@ -1204,6 +1204,7 @@ struct VulkanVDPRenderer::Impl {
         HLSLuint deinterlace : 1;       //     0  Deinterlace
         HLSLuint transparentMeshes : 1; //     1  Render mesh sprites as transparent
         HLSLuint resolutionScale : 3;   //   2-4  Internal resolution scale minus one
+        HLSLuint sharpBackgrounds : 1;  //     5  Sample VDP2 backgrounds at scaled pixel positions
     };
     static_assert(sizeof(EnhancementsParams) == sizeof(HLSLuint));
 
@@ -3419,6 +3420,7 @@ struct VulkanVDPRenderer::Impl {
         params1.enhancements.deinterlace = enhancements.deinterlace;
         params1.enhancements.transparentMeshes = enhancements.transparentMeshes;
         params1.enhancements.resolutionScale = resolutionScale - 1;
+        params1.enhancements.sharpBackgrounds = enhancements.sharpBackgrounds && resolutionScale > 1;
 
         vdp2.cpuCommonRenderParams.enhancements = params1.enhancements;
     }
