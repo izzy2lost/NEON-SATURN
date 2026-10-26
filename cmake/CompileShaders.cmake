@@ -372,6 +372,9 @@ function(_shader_make_compile_dxil_command)
                 ${_compile_flags}
                 ${_include_paths_args}
                 ${_macro_args}
+                -D"VK_BINDING(b,s)="
+                -D"VK_LOCATION(l)="
+                -D"VK_PUSH_CONSTANT="
                 -Fo "${ARG_DESTINATION}"
                 "${ARG_SOURCE}"
             PARENT_SCOPE
@@ -470,6 +473,9 @@ function(_shader_make_compile_spirv_command)
                 ${_compile_flags}
                 ${_include_paths_args}
                 ${_macro_args}
+                -D"VK_BINDING(b,s)=vk::binding(b,s)"
+                -D"VK_LOCATION(l)=vk::location(l)"
+                -D"VK_PUSH_CONSTANT=vk::push_constant"
                 -Fo "${ARG_DESTINATION}"
                 "${ARG_SOURCE}"
             PARENT_SCOPE
