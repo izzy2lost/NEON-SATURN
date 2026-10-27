@@ -356,7 +356,7 @@ util::VoidResult<> VulkanSwapchain::RecreateSwapchain(uint8 swapchainCount, std:
         }
     }
 
-    AcquireNextImage(nextSwapIndex, nextSwapSignalFence);
+    void(AcquireNextImage(nextSwapIndex, nextSwapSignalFence));
 
     return {};
 }

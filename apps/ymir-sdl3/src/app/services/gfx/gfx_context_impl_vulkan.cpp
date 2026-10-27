@@ -236,7 +236,8 @@ struct VulkanGraphicsContext::Impl {
                 }
             }
         } else {
-            if (const auto enumerateResult = instance->enumeratePhysicalDevices(); enumerateResult.has_value()) {
+            if (const auto enumerateResult = instance->enumeratePhysicalDevices();
+                enumerateResult.result == vk::Result::eSuccess) {
                 // No device specified, select the first device
                 physicalDevice = enumerateResult.value[0];
             }
@@ -346,9 +347,9 @@ struct VulkanGraphicsContext::Impl {
                 .offset = 0,
                 .size = sizeof(DrawTextureConstants),
             };
-            graphicsPipelineLayoutInfo.setPushConstantRanges({pushConstantInfo});
+            graphicsPipelineLayoutInfo.setPushConstantRanges(pushConstantInfo);
 
-            graphicsPipelineLayoutInfo.setSetLayouts({descriptorHeapTexture->GetDescriptorSetLayout()});
+            graphicsPipelineLayoutInfo.setSetLayouts(descriptorHeapTexture->GetDescriptorSetLayout());
 
             if (auto [result, newPipelineLayout] = device->createPipelineLayoutUnique(graphicsPipelineLayoutInfo);
                 result == vk::Result::eSuccess) {

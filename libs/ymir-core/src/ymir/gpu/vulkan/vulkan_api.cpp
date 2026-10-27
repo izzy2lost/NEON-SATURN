@@ -4,9 +4,15 @@
 
 VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE;
 
+#if VK_HEADER_VERSION >= 301
+using VkDynamicLoader = vk::detail::DynamicLoader;
+#else
+using VkDynamicLoader = vk::DynamicLoader;
+#endif
+
 // Initialize vulkan's function-pointers as early as possible
 static const bool vulkan_loader = []() -> bool {
-    static vk::detail::DynamicLoader DynamicLoader;
+    static VkDynamicLoader DynamicLoader;
 
     VULKAN_HPP_DEFAULT_DISPATCHER.init(
         DynamicLoader.getProcAddress<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr"));
@@ -16,7 +22,7 @@ static const bool vulkan_loader = []() -> bool {
 namespace ymir::gpu::vulkan {
 
 vk::UniqueInstance CreateInstance(std::span<const char *const> instanceExtensions,
-                                  const vk::detail::DispatchLoaderDynamic &dispatcher) {
+                                  const VkDispatchLoaderDynamic &dispatcher) {
     vk::UniqueInstance result;
     // Create a minimal instance to enumerate physical devices
     static const vk::ApplicationInfo applicationInfo = {

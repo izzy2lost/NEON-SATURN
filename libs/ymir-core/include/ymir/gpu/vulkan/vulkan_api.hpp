@@ -23,9 +23,15 @@
 
 #include <span>
 
+#if VK_HEADER_VERSION >= 301
+using VkDispatchLoaderDynamic = vk::detail::DispatchLoaderDynamic;
+#else
+using VkDispatchLoaderDynamic = vk::DispatchLoaderDynamic;
+#endif
+
 namespace ymir::gpu::vulkan {
 
 vk::UniqueInstance CreateInstance(std::span<const char *const> instanceExtensions,
-                                  const vk::detail::DispatchLoaderDynamic &dispatcher = VULKAN_HPP_DEFAULT_DISPATCHER);
+                                  const VkDispatchLoaderDynamic &dispatcher = VULKAN_HPP_DEFAULT_DISPATCHER);
 
-}
+} // namespace ymir::gpu::vulkan

@@ -9,7 +9,7 @@ static bool s_adaptersEnumerated = false;
 
 void EnumerateVulkanGraphicsAdapters() {
     // Don't use VULKAN_HPP_DEFAULT_DISPATCHER.init here, use a local one to avoid overwriting global function pointers.
-    vk::detail::DispatchLoaderDynamic dispatcher(VULKAN_HPP_DEFAULT_DISPATCHER);
+    VkDispatchLoaderDynamic dispatcher(VULKAN_HPP_DEFAULT_DISPATCHER);
 
     const vk::UniqueInstance instance = ymir::gpu::vulkan::CreateInstance({}, dispatcher);
 
@@ -22,7 +22,8 @@ void EnumerateVulkanGraphicsAdapters() {
 
     g_VulkanAdapters.clear();
 
-    if (const auto enumerate_result = instance->enumeratePhysicalDevices(dispatcher); enumerate_result.has_value()) {
+    if (const auto enumerate_result = instance->enumeratePhysicalDevices(dispatcher);
+        enumerate_result.result == vk::Result::eSuccess) {
         for (uint8 device_index = 0; const vk::PhysicalDevice &physical_device : enumerate_result.value) {
             const auto physical_device_propertychain =
                 physical_device.getProperties2<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceIDProperties>(
