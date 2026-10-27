@@ -385,7 +385,7 @@ struct VulkanGraphicsContext::Impl {
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
         };
-        scissorRect.offset = {};
+        scissorRect.offset = vk::Offset2D{};
         scissorRect.extent = swapExtents;
 
         // Create frame resources
@@ -711,7 +711,7 @@ struct VulkanGraphicsContext::Impl {
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
         };
-        scissorRect.offset = {};
+        scissorRect.offset = vk::Offset2D{};
         scissorRect.extent = swapExtents;
 
         if (auto result = BeginFrame(); !result) {
@@ -958,7 +958,7 @@ struct VulkanGraphicsContext::Impl {
 
         // Update the frame index
         if (swapchain->IsValid()) {
-            swapchain->AcquireNextImage(&frameIndex);
+            void(swapchain->AcquireNextImage(&frameIndex));
         } else {
             // Swapchain invalid, skip drawing.
             return {};
