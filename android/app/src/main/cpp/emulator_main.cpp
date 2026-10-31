@@ -1,4 +1,5 @@
 #include "bootstrap.hpp"
+#include "cheevos_session.hpp"
 #include "ipl_select.hpp"
 #include "savestate_file.hpp"
 
@@ -207,6 +208,10 @@ BootstrapConfig BootstrapConfigFromArgs(int argc, char **argv) {
             config.transparentMeshes = ParseBoolArg(value);
         } else if (const auto value = ArgValue(argument, "--rewind="); !value.empty()) {
             config.rewindEnabled = ParseBoolArg(value);
+        } else if (const auto value = ArgValue(argument, "--cheevos-user="); !value.empty()) {
+            config.cheevosUser.assign(value);
+        } else if (const auto value = ArgValue(argument, "--cheevos-token="); !value.empty()) {
+            config.cheevosToken.assign(value);
         }
     }
     return config;
@@ -328,11 +333,13 @@ public:
                 return {.success = false, .message = "Could not prepare save state storage"};
             }
 
-            const bool written = WriteFileAtomically(SaveStatePath(gameStatesPath, slotIndex),
-                                                     [&](std::ostream &out) { WriteSaveStateFile(out, *state); });
+            const auto statePath = SaveStatePath(gameStatesPath, slotIndex);
+            const bool written =
+                WriteFileAtomically(statePath, [&](std::ostream &out) { WriteSaveStateFile(out, *state); });
             if (!written) {
                 return {.success = false, .message = "Could not write " + slotName};
             }
+            cheevos::AfterSaveState(statePath.string());
 
             // The thumbnail is cosmetic; a failure must not fail the save, but a stale one
             // from an older state would be misleading, so drop it.
@@ -380,6 +387,7 @@ public:
                 return {.success = false, .message = "Could not load " + slotName};
             }
 
+            cheevos::AfterLoadState(statePath.string());
             ResetInputs();
             // The recorded timeline no longer connects to the state we just jumped to.
             m_rewindBuffer.Reset();
@@ -1081,12 +1089,21 @@ private:
             return false;
         }
 
+        const std::string cheevosHash = cheevos::HashDisc(disc);
+
         {
             std::scoped_lock lock{m_coreMutex};
             // Sets the SMPC area code from the disc header
             m_saturn.LoadDisc(std::move(disc));
             UseIPLForRegion();
             m_coreInitialized = true;
+        }
+
+        if (!m_config.cheevosUser.empty() && !m_config.cheevosToken.empty()) {
+            if (cheevosHash.empty()) {
+                SDL_Log("RetroAchievements: no Saturn header on the disc, achievements stay off");
+            }
+            cheevos::BeginSession(m_saturn.mem, cheevosHash, m_config.cheevosUser, m_config.cheevosToken);
         }
 
         if (m_config.rewindEnabled) {
@@ -1145,6 +1162,10 @@ private:
 
         if (runFrame) [[likely]] {
             m_saturn.RunFrame();
+            // Walking back through rewind replays the past; only forward play earns achievements.
+            if (!rewinding) {
+                cheevos::OnFrame();
+            }
         }
 
         // Capture only while running forwards, otherwise rewinding would immediately
@@ -1514,6 +1535,7 @@ private:
     void Shutdown() {
         SetActiveApp(nullptr);
         m_rewindBuffer.Stop();
+        cheevos::EndSession();
 
         // Drop the callback first so ~SMPC() cannot call back into a half-torn-down app
         m_saturn.SMPC.ClearPersistDataCallback();

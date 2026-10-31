@@ -195,7 +195,7 @@ object AboutDialogs {
         setTextAppearance(com.google.android.material.R.style.TextAppearance_Material3_BodySmall)
     }
 
-    private fun openUrl(activity: Activity, url: String) {
+    fun openUrl(activity: Activity, url: String) {
         try {
             activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
         } catch (_: ActivityNotFoundException) {

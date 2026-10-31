@@ -5,6 +5,7 @@ import android.content.res.Configuration
 import android.net.Uri
 import android.os.Bundle
 import android.view.LayoutInflater
+import android.view.View
 import android.widget.ImageButton
 import android.widget.TextView
 import android.widget.Toast
@@ -25,6 +26,7 @@ import androidx.recyclerview.widget.PagerSnapHelper
 import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.SnapHelper
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.progressindicator.LinearProgressIndicator
 import java.io.File
@@ -404,6 +406,43 @@ class LauncherActivity : AppCompatActivity() {
             store.saveRewindEnabled(isChecked)
         }
 
+        // RetroAchievements
+        val cheevosAccountText = content.findViewById<TextView>(R.id.cheevosAccountText)
+        val cheevosAccountButton = content.findViewById<MaterialButton>(R.id.cheevosAccountButton)
+        val updateCheevosRow = {
+            val signedIn = Achievements.isSignedIn(this)
+            cheevosAccountText.text = if (signedIn) {
+                getString(R.string.settings_cheevos_signed_in, Achievements.displayName(this))
+            } else {
+                getString(R.string.settings_cheevos_signed_out)
+            }
+            cheevosAccountButton.setText(if (signedIn) R.string.cheevos_sign_out else R.string.cheevos_sign_in)
+        }
+        updateCheevosRow()
+        cheevosAccountButton.setOnClickListener {
+            if (Achievements.isSignedIn(this)) {
+                confirmCheevosSignOut(updateCheevosRow)
+            } else {
+                showCheevosSignIn(updateCheevosRow)
+            }
+        }
+        content.findViewById<MaterialButton>(R.id.cheevosSignUpButton).setOnClickListener {
+            AboutDialogs.openUrl(this, Achievements.SIGN_UP_URL)
+        }
+        val cheevosSwitch =
+            content.findViewById<com.google.android.material.materialswitch.MaterialSwitch>(R.id.cheevosSwitch)
+        cheevosSwitch.isChecked = Achievements.isEnabled(this)
+        cheevosSwitch.setOnCheckedChangeListener { _, isChecked ->
+            Achievements.setEnabled(this, isChecked)
+        }
+        val cheevosNotificationsSwitch = content.findViewById<com.google.android.material.materialswitch.MaterialSwitch>(
+            R.id.cheevosNotificationsSwitch
+        )
+        cheevosNotificationsSwitch.isChecked = Achievements.notificationsEnabled(this)
+        cheevosNotificationsSwitch.setOnCheckedChangeListener { _, isChecked ->
+            Achievements.setNotificationsEnabled(this, isChecked)
+        }
+
         // BIOS files: every one imported is a candidate for the disc's region
         val biosListText = content.findViewById<TextView>(R.id.biosListText)
         val updateBiosRow = {
@@ -505,6 +544,69 @@ class LauncherActivity : AppCompatActivity() {
 
         librarySettingsDialog = dialog
         dialog.show()
+    }
+
+    private fun showCheevosSignIn(onSignedIn: () -> Unit) {
+        val content = LayoutInflater.from(this).inflate(R.layout.dialog_cheevos_login, null, false)
+        val user = content.findViewById<TextView>(R.id.cheevosLoginUser)
+        val password = content.findViewById<TextView>(R.id.cheevosLoginPassword)
+        val status = content.findViewById<TextView>(R.id.cheevosLoginStatus)
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.cheevos_sign_in_title)
+            .setIcon(R.drawable.ic_trophy)
+            .setView(content)
+            .setPositiveButton(R.string.cheevos_sign_in, null)
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+        dialog.setOnShowListener {
+            val go = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+            go.setOnClickListener {
+                val u = user.text.toString().trim()
+                val p = password.text.toString()
+                if (u.isEmpty() || p.isEmpty()) return@setOnClickListener
+                go.isEnabled = false
+                status.setTextColor(
+                    MaterialColors.getColor(status, com.google.android.material.R.attr.colorOnSurfaceVariant)
+                )
+                status.setText(R.string.cheevos_signing_in)
+                status.visibility = View.VISIBLE
+                // Blocking network call: the native client signs in and hands back a token.
+                thread(name = "CheevosLogin") {
+                    val result = runCatching { CheevosNative.login(u, p) }
+                        .getOrElse { arrayOf("", it.message.orEmpty()) }
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        if (result.getOrNull(0).isNullOrEmpty()) {
+                            go.isEnabled = true
+                            status.setTextColor(MaterialColors.getColor(status, androidx.appcompat.R.attr.colorError))
+                            status.text = getString(R.string.cheevos_sign_in_error, result.getOrNull(1).orEmpty())
+                        } else {
+                            Achievements.signIn(this, result[0], result[1], result.getOrNull(2).orEmpty())
+                            Toast.makeText(
+                                this,
+                                getString(R.string.cheevos_signed_in_toast, Achievements.displayName(this)),
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            onSignedIn()
+                            dialog.dismiss()
+                        }
+                    }
+                }
+            }
+        }
+        dialog.show()
+    }
+
+    private fun confirmCheevosSignOut(onSignedOut: () -> Unit) {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.cheevos_sign_out)
+            .setMessage(R.string.cheevos_sign_out_confirm)
+            .setPositiveButton(R.string.cheevos_sign_out) { _, _ ->
+                Achievements.signOut(this)
+                onSignedOut()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun showRemoveBiosDialog(onRemoved: () -> Unit) {

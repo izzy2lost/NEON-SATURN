@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
@@ -39,21 +40,40 @@
         android:layout_marginTop="16dp"
         android:text="@string/quick_actions_resume" />
 
-    <com.google.android.material.button.MaterialButton
-        android:id="@+id/saveStateButton"
-        style="@style/Widget.Material3.Button.TonalButton"
+    <!-- Side by side so the whole menu fits a landscape screen without scrolling -->
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:text="@string/quick_actions_save_state" />
+        android:orientation="horizontal">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/saveStateButton"
+            style="@style/Widget.Material3.Button.TonalButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="4dp"
+            android:layout_weight="1"
+            android:text="@string/quick_actions_save_state" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/loadStateButton"
+            style="@style/Widget.Material3.Button.TonalButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="4dp"
+            android:layout_weight="1"
+            android:text="@string/quick_actions_load_state" />
+    </LinearLayout>
 
     <com.google.android.material.button.MaterialButton
-        android:id="@+id/loadStateButton"
+        android:id="@+id/achievementsButton"
         style="@style/Widget.Material3.Button.TonalButton"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:text="@string/quick_actions_load_state" />
+        android:text="@string/quick_actions_achievements"
+        app:icon="@drawable/ic_trophy" />
 
     <com.google.android.material.button.MaterialButton
         android:id="@+id/exitGameButton"

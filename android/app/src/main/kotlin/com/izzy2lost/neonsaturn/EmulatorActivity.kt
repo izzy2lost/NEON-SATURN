@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.text.format.DateUtils
 import android.view.ContextThemeWrapper
 import android.view.KeyEvent
@@ -24,20 +26,37 @@ class EmulatorActivity : SDLActivity() {
     private lateinit var store: BootstrapStore
     private var quickActionsDialog: AlertDialog? = null
     private var saveStateSlotsDialog: AlertDialog? = null
+    private var achievementsDialog: AlertDialog? = null
     private var saveStateOperationRunning = false
     private var touchControlsView: TouchControlsView? = null
+    private var cheevosPopups: Achievements.Popups? = null
+    private val cheevosHandler = Handler(Looper.getMainLooper())
+    private val cheevosPoll = object : Runnable {
+        override fun run() {
+            cheevosPopups?.poll()
+            cheevosHandler.postDelayed(this, CHEEVOS_POLL_MS)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = BootstrapStore(this)
         updateCurrentInstance(this)
         refreshTouchControlsOverlay()
+        if (Achievements.launchArguments(this).isNotEmpty()) {
+            cheevosPopups = Achievements.Popups(
+                this,
+                ContextThemeWrapper(this, R.style.ThemeOverlay_NeonSaturn_LibrarySurface),
+            )
+        }
     }
 
     override fun onResume() {
         super.onResume()
         updateCurrentInstance(this)
         refreshTouchControlsOverlay()
+        cheevosHandler.removeCallbacks(cheevosPoll)
+        cheevosHandler.post(cheevosPoll)
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -46,12 +65,16 @@ class EmulatorActivity : SDLActivity() {
     }
 
     override fun onPause() {
+        cheevosHandler.removeCallbacks(cheevosPoll)
         suspendTouchControls()
         if (quickActionsDialog?.isShowing == true) {
             quickActionsDialog?.dismiss()
         }
         if (saveStateSlotsDialog?.isShowing == true) {
             saveStateSlotsDialog?.dismiss()
+        }
+        if (achievementsDialog?.isShowing == true) {
+            achievementsDialog?.dismiss()
         }
         super.onPause()
     }
@@ -63,6 +86,12 @@ class EmulatorActivity : SDLActivity() {
         if (saveStateSlotsDialog?.isShowing == true) {
             saveStateSlotsDialog?.dismiss()
         }
+        if (achievementsDialog?.isShowing == true) {
+            achievementsDialog?.dismiss()
+        }
+        cheevosHandler.removeCallbacks(cheevosPoll)
+        cheevosPopups?.clear()
+        cheevosPopups = null
         removeTouchControlsOverlay()
         if (currentInstance === this) {
             updateCurrentInstance(null)
@@ -108,12 +137,15 @@ class EmulatorActivity : SDLActivity() {
         arguments += "--deinterlace=${intent.getBooleanExtra(EXTRA_DEINTERLACE, false)}"
         arguments += "--transparent-meshes=${intent.getBooleanExtra(EXTRA_TRANSPARENT_MESHES, false)}"
         arguments += "--rewind=${intent.getBooleanExtra(EXTRA_REWIND_ENABLED, false)}"
+        // Read here rather than passed as extras, so the token never sits in the launch intent.
+        arguments += Achievements.launchArguments(this)
         return arguments.toTypedArray()
     }
 
     private fun isMenuOpen(): Boolean =
         quickActionsDialog?.isShowing == true ||
             saveStateSlotsDialog?.isShowing == true ||
+            achievementsDialog?.isShowing == true ||
             saveStateOperationRunning
 
     private fun showQuickActionsDialog() {
@@ -156,6 +188,11 @@ class EmulatorActivity : SDLActivity() {
             dialog.dismiss()
             showSaveStateSlotsDialog(save = false)
         }
+        content.findViewById<MaterialButton>(R.id.achievementsButton).setOnClickListener {
+            resumeOnDismiss = false
+            dialog.dismiss()
+            showAchievementsDialog()
+        }
         content.findViewById<MaterialButton>(R.id.exitGameButton).setOnClickListener {
             resumeOnDismiss = false
             nativeExitEmulator()
@@ -172,6 +209,22 @@ class EmulatorActivity : SDLActivity() {
         }
 
         quickActionsDialog = dialog
+        dialog.show()
+    }
+
+    /** The game's achievements; stays paused until it is closed. */
+    private fun showAchievementsDialog() {
+        if (isFinishing || isDestroyed) {
+            resumeEmulation()
+            return
+        }
+        val dialogContext = ContextThemeWrapper(this, R.style.ThemeOverlay_NeonSaturn_LibrarySurface)
+        val dialog = Achievements.buildListDialog(dialogContext, R.style.ThemeOverlay_NeonSaturn_QuickActionsDialog)
+        dialog.setOnDismissListener {
+            achievementsDialog = null
+            resumeEmulation()
+        }
+        achievementsDialog = dialog
         dialog.show()
     }
 
@@ -402,6 +455,8 @@ class EmulatorActivity : SDLActivity() {
     companion object {
         @Volatile
         private var currentInstance: EmulatorActivity? = null
+
+        private const val CHEEVOS_POLL_MS = 250L
 
         private const val EXTRA_IPL_PATH = "com.izzy2lost.neonsaturn.extra.IPL_PATH"
         private const val EXTRA_IPL_DIR = "com.izzy2lost.neonsaturn.extra.IPL_DIR"

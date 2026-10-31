@@ -264,6 +264,59 @@
             android:text="@string/settings_rewind_note"
             android:textAppearance="?attr/textAppearanceBodySmall" />
 
+        <!-- RetroAchievements -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_cheevos_section"
+            android:textAppearance="?attr/textAppearanceLabelLarge" />
+
+        <TextView
+            android:id="@+id/cheevosAccountText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/settings_cheevos_signed_out"
+            android:textAppearance="?attr/textAppearanceBodyMedium" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/cheevosAccountButton"
+            style="@style/Widget.Material3.Button.TonalButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/cheevos_sign_in"
+            app:icon="@drawable/ic_trophy" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/cheevosSignUpButton"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/settings_cheevos_sign_up" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/cheevosSwitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/settings_cheevos_enabled" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/cheevosNotificationsSwitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/settings_cheevos_notifications" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/settings_cheevos_note"
+            android:textAppearance="?attr/textAppearanceBodySmall" />
+
         <!-- BIOS -->
         <TextView
             android:layout_width="match_parent"

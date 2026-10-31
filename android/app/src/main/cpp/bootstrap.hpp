@@ -21,6 +21,9 @@ struct BootstrapConfig {
     bool deinterlace = false;
     bool transparentMeshes = false;
     bool rewindEnabled = false;
+    /// RetroAchievements account; both empty when achievements are off or the player is signed out.
+    std::string cheevosUser;
+    std::string cheevosToken;
 };
 
 void SetBootstrapConfig(BootstrapConfig config);

@@ -69,7 +69,9 @@ android {
                     "-DYmir_ENABLE_SANDBOX=OFF",
                     "-DYmir_ENABLE_TESTS=OFF",
                     "-DYmir_ENABLE_UPDATE_CHECKS=OFF",
-                    "-DYmir_ENABLE_YMDASM=OFF"
+                    "-DYmir_ENABLE_YMDASM=OFF",
+                    // RetroAchievements' User-Agent carries the app version
+                    "-DNEONSATURN_VERSION=$versionName"
                 )
             }
         }

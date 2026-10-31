@@ -18,3 +18,9 @@
 -keepclassmembers class com.izzy2lost.neonsaturn.EmulatorActivity {
     public static void requestQuickActionsFromNative();
 }
+
+# RetroAchievements' HTTP transport, resolved from C++ by name in JNI_OnLoad.
+# See app/src/main/cpp/cheevos_session.cpp.
+-keep class com.izzy2lost.neonsaturn.CheevosHttp {
+    public static byte[] perform(java.lang.String, java.lang.String, java.lang.String, java.lang.String);
+}
