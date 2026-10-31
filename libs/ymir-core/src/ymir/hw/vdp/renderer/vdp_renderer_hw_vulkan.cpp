@@ -369,7 +369,6 @@ struct VulkanDevice {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
             .pNext = &scalarBlockLayoutFeatures,
         };
-        features.features.shaderInt64 = VK_TRUE;
         features.features.shaderStorageImageExtendedFormats = VK_TRUE;
         // Direct3D 12 bounds-checks buffer accesses in shaders (out-of-bounds reads return zero and writes are
         // discarded), and the shaders were written with that in mind. robustBufferAccess is supported by every Vulkan
@@ -436,9 +435,6 @@ struct VulkanDevice {
             .pNext = &scalarBlockLayoutFeatures,
         };
         vkGetPhysicalDeviceFeatures2(candidate, &features);
-        if (!features.features.shaderInt64) {
-            return util::ErrorMessage{"shaderInt64 is not supported"};
-        }
         if (!features.features.shaderStorageImageExtendedFormats) {
             return util::ErrorMessage{"shaderStorageImageExtendedFormats is not supported"};
         }

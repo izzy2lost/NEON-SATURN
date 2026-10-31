@@ -435,6 +435,50 @@ RotCoefficient ReadRotCoefficient(const uint coeffDataSize, const uint coeffData
 // ---------------------------------------------------------------------------------------------------------------------
 // Rotation parameter calculation
 
+// 64-bit signed integers as (low, high) 32-bit words, for GPUs without shaderInt64 (e.g. Adreno 6xx). Every result
+// matches the int64_t arithmetic it replaces bit for bit.
+struct Int64 {
+    uint lo;
+    uint hi;
+};
+
+Int64 MulS32x32(int a, int b) {
+    // Unsigned 32x32 -> 64 from 16-bit halves, then the signed correction of the high word
+    const uint ua = uint(a);
+    const uint ub = uint(b);
+    const uint a0 = ua & 0xFFFF, a1 = ua >> 16;
+    const uint b0 = ub & 0xFFFF, b1 = ub >> 16;
+    const uint p00 = a0 * b0, p01 = a0 * b1, p10 = a1 * b0, p11 = a1 * b1;
+    const uint mid = (p00 >> 16) + (p01 & 0xFFFF) + (p10 & 0xFFFF);
+    Int64 r;
+    r.lo = (p00 & 0xFFFF) | (mid << 16);
+    r.hi = p11 + (p01 >> 16) + (p10 >> 16) + (mid >> 16);
+    r.hi -= (a < 0 ? ub : 0u) + (b < 0 ? ua : 0u);
+    return r;
+}
+
+Int64 Add64(Int64 a, Int64 b) {
+    Int64 r;
+    r.lo = a.lo + b.lo;
+    r.hi = a.hi + b.hi + (r.lo < a.lo ? 1u : 0u);
+    return r;
+}
+
+Int64 FromS32(int v) {
+    Int64 r;
+    r.lo = uint(v);
+    r.hi = v < 0 ? 0xFFFFFFFFu : 0u;
+    return r;
+}
+
+// Arithmetic shift right by 1-31 bits
+Int64 Sar64(Int64 v, uint n) {
+    Int64 r;
+    r.lo = (v.lo >> n) | (v.hi << (32 - n));
+    r.hi = uint(int(v.hi) >> n);
+    return r;
+}
+
 uint2 CalcRotationScreenCoords(uint2 pos, uint index) {
     const RotParamBase base = g_rotParamBases[index * kMaxNormalResV + pos.y];
     const uint coeffParamsOffset = 6 + index * 5;
@@ -463,8 +507,8 @@ uint2 CalcRotationScreenCoords(uint2 pos, uint index) {
     // 10*(10-10) + 10*(10-10) + 10*(10-10) = 20 frac bits
     // 14*(23-24) + 14*(23-24) + 14*(23-24) = 38 total bits
     // reduce to 10 frac bits
-    const int Xsp = int((int64_t(t.A) * int64_t(Tx) + int64_t(t.B) * int64_t(Ty) + int64_t(t.C) * int64_t(Tz)) >> 10);
-    const int Ysp = int((int64_t(t.D) * int64_t(Tx) + int64_t(t.E) * int64_t(Ty) + int64_t(t.F) * int64_t(Tz)) >> 10);
+    const int Xsp = int(Sar64(Add64(Add64(MulS32x32(t.A, Tx), MulS32x32(t.B, Ty)), MulS32x32(t.C, Tz)), 10).lo);
+    const int Ysp = int(Sar64(Add64(Add64(MulS32x32(t.D, Tx), MulS32x32(t.E, Ty)), MulS32x32(t.F, Tz)), 10).lo);
 
     // Transformed view coordinates (18.10)
     // 10*(0-0) + 10*(0-0) + 10*(0-0) + 10 + 10 = 10+10+10 + 10+10 = 10 frac bits
@@ -521,8 +565,8 @@ uint2 CalcRotationScreenCoords(uint2 pos, uint index) {
     // = 36 + 28 = 36 total bits
     // remove frac bits from result = 26 total bits
     return uint2(
-        (((int64_t(kx) * scrX) >> 16) + Xp) >> 10,
-        (((int64_t(ky) * scrY) >> 16) + Yp) >> 10
+        Sar64(Add64(Sar64(MulS32x32(kx, scrX), 16), FromS32(Xp)), 10).lo,
+        Sar64(Add64(Sar64(MulS32x32(ky, scrY), 16), FromS32(Yp)), 10).lo
     );
 }
 
