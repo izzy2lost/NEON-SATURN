@@ -2322,7 +2322,26 @@ struct VulkanVDPRenderer::Impl {
         std::array<std::array<ColorR8G8B8A8, kMaxResV>, 2> cpuLnclBack{};
 
         /// @brief CPU-side VDP2 rotation parameter base values.
-        std::array<VDP2RotParamBase, kMaxNormalResV * 2> cpuRotParamBases{};
+        /// Per-line rotation parameter bases for params A and B, followed by two blocks of per-line NBG state carried
+        /// over from the previous line (see VDP2TrackNBGLines): the last vertical cell scroll value read by NBG0 and
+        /// NBG1 (tableAddress and KA), and the address of the last character fetched by NBG0-3 (tableAddress, Xst, Yst,
+        /// KA; 0xFFFFFFFF = none yet).
+        std::array<VDP2RotParamBase, kMaxNormalResV * 4> cpuRotParamBases{};
+
+        /// @brief Software renderer state needed to know what each NBG fetched last on every line.
+        struct NBGLineTracker {
+            uint32 fracScrollX = 0;
+            uint32 fracScrollY = 0;
+            uint32 scrollIncH = 0x100;
+            uint32 lineScrollTableAddress = 0;
+            uint32 mosaicCounterY = 0;
+            uint32 lastVCellValue = 0xFFFFFFFF; ///< Same reset value as the software renderer's VRAM fetchers
+            uint32 lastCharAddress = 0xFFFFFFFF;
+        };
+        std::array<NBGLineTracker, 4> vcellTrackers{};
+        /// Set when a line used vertical cell scroll since the last upload of cpuRotParamBases. Lines are drawn in
+        /// batches, possibly after the registers changed again, so the upload can't just check the current ones.
+        bool vcellTrackersUsed = false;
 
         /// @brief 2D texture for the composited VDP2 output.
         /// This cannot be instantiated per frame because interlaced graphics are weaved into the same output frame.
@@ -3377,6 +3396,7 @@ struct VulkanVDPRenderer::Impl {
 
         vdp2.nextLayerRenderLine = 0;
         vdp2.nextComposeLine = 0;
+        vdp2.vcellTrackers = {};
 
         VDP2CacheAllCRAMColors();
         VDP2UpdateEnabledLayers();
@@ -5616,7 +5636,6 @@ struct VulkanVDPRenderer::Impl {
         if (snapshot(0) != before0 || snapshot(1) != before1 || vdpState.regs2.vcellScrollInc != incBefore) {
             ++vdp2.layerRenderParamsGeneration;
         }
-        vdpState.state2.CalcVCellScrollDelay(vdpState.regs2);
     }
 
     void VDP2DrawLineColorBackScreens(uint32 y) {
@@ -5761,6 +5780,23 @@ struct VulkanVDPRenderer::Impl {
         VDP2CalcAccessPatterns();
         VDP2InitNBGs();
 
+        for (uint32 i = 0; i < 4; ++i) {
+            const VDP2Regs &regs2 = vdpState.regs2;
+            if (i == 0 && regs2.bgEnabled[5]) {
+                continue; // NBG0 isn't initialized when RBG1 takes its place, as in the software renderer
+            }
+            auto &tracker = vdp2.vcellTrackers[i];
+            tracker.fracScrollX = 0;
+            tracker.fracScrollY = 0;
+            if (!enhancements.deinterlace && regs2.TVMD.LSMDn == InterlaceMode::DoubleDensity && regs2.TVSTAT.ODD) {
+                tracker.fracScrollY += regs2.bgParams[i + 1].scrollIncV;
+            }
+            if (i < 2) {
+                tracker.lineScrollTableAddress = regs2.bgParams[i + 1].lineScrollTableAddress;
+            }
+            tracker.mosaicCounterY = 0;
+        }
+
         vdp2.cpuCommonRenderParams.displayParams.firstInterlacedFrame = resChangedToInterlaced ? 1u : 0u;
         if (resChangedToInterlaced) {
             resChangedToInterlaced = false;
@@ -5809,9 +5845,11 @@ struct VulkanVDPRenderer::Impl {
 
         // Transition resources for rendering layers
 
-        // Compute rotation parameters if any RBGs are enabled
-        if (vdpState.regs2.bgEnabled[4] || vdpState.regs2.bgEnabled[5]) {
+        // Compute rotation parameters if any RBGs are enabled; the buffer also carries vertical cell scroll state
+        if (vdpState.regs2.bgEnabled[4] || vdpState.regs2.bgEnabled[5] || vdp2.vcellTrackersUsed) {
             VDP2UploadRotationParameterBases();
+            vdp2.vcellTrackersUsed = vdpState.regs2.bgParams[1].vcellScrollEnable ||
+                                     vdpState.regs2.bgParams[2].vcellScrollEnable || AnyNBGCharPatDelay();
         }
 
         // ---------------------------------------------------------------------
@@ -5876,9 +5914,170 @@ struct VulkanVDPRenderer::Impl {
                  1);
     }
 
+    // Two things carry over from one line to the next in the software renderer: with the vertical cell scroll delay,
+    // the first cell of a line uses the last value read on the previous line (or frame), and with the character
+    // pattern delay, the first character drawn is the last one fetched on the previous line. The shader can't know
+    // either, so this follows the software renderer's NBG state line by line: line scroll and zoom, vertical scroll,
+    // which lines draw the layer, and how many cells each line crosses. The values in effect before line y are stored
+    // for the shader in the blocks after the rotation parameter bases.
+    bool AnyNBGCharPatDelay() const {
+        for (uint32 i = 1; i <= 4; ++i) {
+            for (bool delay : vdpState.regs2.bgParams[i].charPatDelay) {
+                if (delay) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    void VDP2TrackNBGLines(uint32 y) {
+        if (y >= kMaxNormalResV) {
+            return;
+        }
+        const VDP2Regs &regs2 = vdpState.regs2;
+        const bool doubleDensity = regs2.TVMD.LSMDn == InterlaceMode::DoubleDensity;
+        VDP2RotParamBase &vcellOut = vdp2.cpuRotParamBases[2 * kMaxNormalResV + y];
+        VDP2RotParamBase &charOut = vdp2.cpuRotParamBases[3 * kMaxNormalResV + y];
+
+        for (uint32 i = 0; i < 4; ++i) {
+            const BGParams &bgParams = regs2.bgParams[i + 1];
+            const NBGLayerState &bgState = vdpState.state2.nbgLayerStates[i];
+            auto &tracker = vdp2.vcellTrackers[i];
+
+            // Line scroll table (VDP2UpdateLineScreenScroll, which only runs while the display is enabled)
+            if (regs2.displayEnabledLatch && i < 2) {
+                tracker.scrollIncH = bgParams.scrollIncH;
+                if ((y & ((1u << bgParams.lineScrollInterval) - 1u)) == 0) {
+                    uint32 address = tracker.lineScrollTableAddress;
+                    const uint32 count =
+                        doubleDensity && (y > 0 || (!enhancements.deinterlace && regs2.TVSTAT.ODD)) ? 2 : 1;
+                    for (uint32 n = 0; n < count; ++n) {
+                        if (bgParams.lineScrollXEnable) {
+                            tracker.fracScrollX = bit::extract<8, 26>(vdpState.mem2.ReadVRAM<uint32>(address));
+                            address += sizeof(uint32);
+                        }
+                        if (bgParams.lineScrollYEnable) {
+                            tracker.fracScrollY = bit::extract<8, 26>(vdpState.mem2.ReadVRAM<uint32>(address));
+                            address += sizeof(uint32);
+                        }
+                        if (bgParams.lineZoomEnable) {
+                            tracker.scrollIncH = bit::extract<8, 18>(vdpState.mem2.ReadVRAM<uint32>(address));
+                            address += sizeof(uint32);
+                        }
+                    }
+                    tracker.lineScrollTableAddress = address;
+                }
+            } else if (regs2.displayEnabledLatch) {
+                tracker.scrollIncH = bgParams.scrollIncH;
+            }
+
+            const uint32 prevVCellValue = tracker.lastVCellValue;
+            if (i < 2) {
+                (i == 0 ? vcellOut.tableAddress : vcellOut.KA) = prevVCellValue;
+            }
+            switch (i) {
+            case 0: charOut.tableAddress = tracker.lastCharAddress; break;
+            case 1: charOut.Xst = static_cast<sint32>(tracker.lastCharAddress); break;
+            case 2: charOut.Yst = static_cast<sint32>(tracker.lastCharAddress); break;
+            case 3: charOut.KA = tracker.lastCharAddress; break;
+            }
+
+            // Fetches made while drawing the line (VDP2DrawNormalBG)
+            const bool vcellScroll = i < 2 && bgParams.vcellScrollEnable;
+            if (vcellScroll || std::find(bgParams.charPatDelay.begin(), bgParams.charPatDelay.end(), true) !=
+                                   bgParams.charPatDelay.end()) {
+                vdp2.vcellTrackersUsed = true;
+            }
+            const bool drawn = vdpState.state2.layerEnabled[i + 2] && !(i == 0 && regs2.bgEnabled[5]) &&
+                               !(bgParams.mosaicEnable && tracker.mosaicCounterY > 0);
+            if (drawn) {
+                // Each cell boundary crossed reads the next vertical cell scroll entry, including one past the end of
+                // the line; the increment is below 8.0, so a pixel never crosses more than one. Mosaic only reads the
+                // first.
+                const uint32 start = tracker.fracScrollX + bgParams.scrollAmountH;
+                const uint32 end = start + tracker.scrollIncH * HRes;
+                const uint32 cells = bgParams.mosaicEnable ? 0 : (end >> 11u) - (start >> 11u);
+                const uint32 inc = regs2.vcellScrollInc;
+                const uint32 tableAddress = regs2.vcellScrollTableAddress + bgState.vcellScrollOffset;
+
+                uint32 endVCellValue = 0;
+                if (vcellScroll) {
+                    uint32 address = tableAddress;
+                    bool read = false;
+                    uint32 lastAddress = address;
+                    if (!(bgState.vcellScrollRepeat && bgState.vcellScrollDelay)) {
+                        read = true;
+                        if (!bgState.vcellScrollRepeat) {
+                            address += inc;
+                        }
+                    }
+                    if (cells > 0) {
+                        lastAddress = address + (cells - 1) * inc;
+                        read = true;
+                    }
+                    if (read) {
+                        tracker.lastVCellValue = bit::extract<8, 26>(vdpState.mem2.ReadVRAM<uint32>(lastAddress));
+                    }
+
+                    // Value applied at the end of the line, where the last character is fetched (see the shader)
+                    sint32 offset = static_cast<sint32>(cells);
+                    if (bgState.vcellScrollRepeat && offset > 0) {
+                        --offset;
+                    }
+                    if (bgState.vcellScrollDelay) {
+                        --offset;
+                    }
+                    endVCellValue =
+                        offset < 0 ? prevVCellValue
+                                   : bit::extract<8, 26>(vdpState.mem2.ReadVRAM<uint32>(tableAddress + offset * inc));
+                }
+
+                // The last character fetched on the line is the one under the extra fetch past its end
+                if (!bgParams.bitmap) {
+                    const uint32 fracY = tracker.fracScrollY + bgParams.scrollAmountV + endVCellValue;
+                    tracker.lastCharAddress = NBGCharacterAddress(bgParams, end >> 8u, fracY >> 8u);
+                }
+            }
+
+            // VDP2FinishLine
+            tracker.fracScrollY += bgParams.scrollIncV;
+            if (doubleDensity) {
+                tracker.fracScrollY += bgParams.scrollIncV;
+            }
+            if (bgParams.mosaicEnable) {
+                if (++tracker.mosaicCounterY >= regs2.mosaicV) {
+                    tracker.mosaicCounterY = 0;
+                }
+            }
+        }
+    }
+
+    /// @brief Address of the pattern name data for the NBG character at the given scroll coordinates, located like the
+    /// software renderer's VDP2FetchScrollBGPixel (and LocateNBGCharacter in the shader).
+    static uint32 NBGCharacterAddress(const BGParams &bgParams, uint32 scrollX, uint32 scrollY) {
+        const uint32 planeX = (scrollX >> (9u + bgParams.pageShiftH)) & 1u;
+        const uint32 planeY = (scrollY >> (9u + bgParams.pageShiftV)) & 1u;
+        const uint32 pageBaseAddress = bgParams.pageBaseAddresses[planeX | (planeY << 1u)];
+        const uint32 bank = (pageBaseAddress >> 17u) & 3u;
+        scrollX += bgParams.vramDataOffset[bank];
+
+        const uint32 fcc = bgParams.cellSizeShift;
+        const uint32 pageX = bit::extract<9>(scrollX) & bgParams.pageShiftH;
+        const uint32 pageY = bit::extract<9>(scrollY) & bgParams.pageShiftV;
+        const uint32 page = pageX + (pageY << 1u);
+        const uint32 pageAddress = pageBaseAddress + (page << kPageSizes[fcc][bgParams.twoWordChar]);
+
+        const uint32 charPatX = bit::extract<3, 8>(scrollX) >> fcc;
+        const uint32 charPatY = bit::extract<3, 8>(scrollY) >> fcc;
+        const uint32 charIndex = charPatX + (charPatY << (6u - fcc));
+        return pageAddress + charIndex * (bgParams.twoWordChar ? 4u : 2u);
+    }
+
     void VDP2RenderLine(uint32 y) {
         VDP2CalcAccessPatterns();
         VDP2CalcVCellScrollDelay();
+        VDP2TrackNBGLines(y);
         VDP2DrawLineColorBackScreens(y);
         VDP2UpdateRotationParameterBases(y);
         vdpState.state2.UpdateRotationPageBaseAddresses(vdpState.regs2);

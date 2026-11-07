@@ -927,6 +927,199 @@ uint4 FetchScrollRBGPixel(const BaseBGParams params, uint2 scrollPos, uint2 page
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// NBG state carried between pixels and lines
+
+// Vertical cell scroll value for a cell column of an NBG nbgLine, counted in scroll space from the column the line starts
+// in. Columns delayed past the start of the line use the last value read on the previous line (or frame), tracked on
+// the CPU per line in the block after the rotation parameter bases.
+uint NBGVCellScrollY(const NBGParams params, uint index, int column, uint fieldY) {
+    int offset = column;
+    if (params.vcellScrollRepeat && offset > 0) {
+        --offset;
+    }
+    if (params.vcellScrollDelay) {
+        --offset;
+    }
+    if (offset < 0) {
+        const RotParamBase prev = g_rotParamBases[2 * kMaxNormalResV + min(fieldY, kMaxNormalResV - 1)];
+        return index == 0 ? prev.tableAddress : prev.KA;
+    }
+    const uint tableAddress = BitExtract(g_commonParams.vcellScroll, 0, 19);
+    const uint inc = BitExtract(g_commonParams.vcellScroll, 19, 3) << 2u;
+    return BitExtract(ReadVRAM32(tableAddress + offset * inc + params.vcellScrollOffset), 8, 19);
+}
+
+struct NBGCharLocation {
+    uint address;   // Pattern name data address
+    uint charIndex; // Character index within the page, which decides when the software renderer fetches
+    uint2 pos;      // Scroll coordinates after the data access shift
+};
+
+// Locates the character at the given scroll coordinates like FetchScrollBGPixel (and NBGCharacterAddress on the CPU)
+NBGCharLocation LocateNBGCharacter(const BaseBGParams params, uint2 scrollPos, uint pageBaseAddresses[4]) {
+    const uint2 planePos = (scrollPos >> (params.pageShift + 9)) & 1u;
+    const uint pageBaseAddress = pageBaseAddresses[planePos.x | (planePos.y << 1u)];
+    const uint bank = BitExtract(pageBaseAddress, 17, 2);
+    if (BitTest(params.vramDataOffset, bank)) {
+        scrollPos.x += 8;
+    }
+
+    const uint cellSizeShift = params.cellSizeShift;
+    const uint pageSize = kPageSizes[cellSizeShift][params.twoWordChar ? 1 : 0];
+    const uint2 pagePos = (scrollPos >> 9) & params.pageShift;
+    const uint pageAddress = pageBaseAddress + ((pagePos.x + (pagePos.y << 1)) << pageSize);
+
+    const uint2 baseCharPatPos = (scrollPos >> 3) & 0x3F;
+    const uint2 charPatPos = cellSizeShift != 0 ? (baseCharPatPos >> 1) : baseCharPatPos;
+
+    NBGCharLocation loc;
+    loc.charIndex = charPatPos.x + (charPatPos.y << (6 - cellSizeShift));
+    loc.address = pageAddress + loc.charIndex * (params.twoWordChar ? 4 : 2);
+    loc.pos = scrollPos;
+    return loc;
+}
+
+Character FetchNBGCharacterAt(const BaseBGParams params, uint address) {
+    if (address == 0xFFFFFFFF) {
+        // Nothing fetched yet: the software renderer's reset character
+        Character ch = (Character)0;
+        return ch;
+    }
+    if (params.twoWordChar) {
+        return FetchTwoWordCharacter(params, address, 0);
+    }
+    return FetchOneWordCharacter(params, address, 0);
+}
+
+// Line geometry for following the software renderer's character fetches along an NBG line
+struct NBGLine {
+    uint startFracX; // Horizontal scroll coordinate of the first pixel (11.8)
+    uint incX;       // Horizontal increment per pixel (below 8.0)
+    uint fracY;      // Vertical scroll coordinate before vertical cell scroll (11.8)
+    uint fieldY;     // Line index for the per-line CPU state
+    bool vcellScroll;
+};
+
+uint NBGColumnFirstPixel(const NBGLine nbgLine, uint column) {
+    if (column == 0) {
+        return 0;
+    }
+    const uint boundary = ((nbgLine.startFracX >> 11u) + column) << 11u;
+    return (boundary - nbgLine.startFracX + nbgLine.incX - 1u) / nbgLine.incX;
+}
+
+uint2 NBGColumnScrollPos(const NBGParams params, uint index, const NBGLine nbgLine, uint column, uint pixel) {
+    const uint vcellY = nbgLine.vcellScroll ? NBGVCellScrollY(params, index, int(column), nbgLine.fieldY) : 0;
+    return uint2((nbgLine.startFracX + nbgLine.incX * pixel) >> 8u, (nbgLine.fracY + vcellY) >> 8u);
+}
+
+// The character the software renderer draws at pixel x with the character pattern delay: characters are fetched
+// whenever the character index changes along the nbgLine, and each is drawn starting with the next fetch. With 2x2
+// characters, the next character is also brought in for the right half of the current one.
+// Fetches only happen where the scroll coordinate enters another 8-dot column (vertical cell scroll only changes there
+// too), so this steps back over columns instead of pixels. The first fetch of a line draws the last character fetched
+// on the previous nbgLine, tracked on the CPU.
+// Not covered: windows (the software renderer doesn't fetch under them) and mosaic.
+// Finds the column where the software renderer last fetched a character before pixel x of the line: the latest one
+// starting with a different character index than the column before. The index ignores the plane and page, so the
+// character fetched there can come from another plane than the pixel's own position (vertical cell scroll changes Y
+// between columns).
+uint FindNBGFetchColumn(const NBGParams params, uint index, const NBGLine nbgLine, uint x, out NBGCharLocation fetchLoc) {
+    const uint startCol = nbgLine.startFracX >> 11u;
+    const uint column = nbgLine.incX == 0 ? 0 : ((nbgLine.startFracX + nbgLine.incX * x) >> 11u) - startCol;
+
+    uint fetchCol = column;
+    fetchLoc = LocateNBGCharacter(
+        params.base, NBGColumnScrollPos(params, index, nbgLine, column, NBGColumnFirstPixel(nbgLine, column)),
+        params.pageBaseAddresses);
+    for (uint i = 0; i < 8 && fetchCol > 0; ++i) {
+        const uint prevCol = fetchCol - 1;
+        const NBGCharLocation prevLoc = LocateNBGCharacter(
+            params.base, NBGColumnScrollPos(params, index, nbgLine, prevCol, NBGColumnFirstPixel(nbgLine, prevCol)),
+            params.pageBaseAddresses);
+        if (prevLoc.charIndex != fetchLoc.charIndex) {
+            break;
+        }
+        fetchCol = prevCol;
+        fetchLoc = prevLoc;
+    }
+    return fetchCol;
+}
+
+Character DelayedNBGCharacter(const NBGParams params, uint index, const NBGLine nbgLine, uint x, NBGCharLocation current) {
+    const uint startCol = nbgLine.startFracX >> 11u;
+
+    // Column of the latest fetch
+    NBGCharLocation fetchLoc;
+    const uint fetchCol = FindNBGFetchColumn(params, index, nbgLine, x, fetchLoc);
+
+    // 2x2 characters bring in the fetched character for their right half. The software renderer does it on a pixel
+    // that doesn't fetch and whose cell column differs from the last such pixel's (none at the start of a line). So a
+    // right-half pixel past the fetch switches unless the pixel after the fetch is already in the right half and so
+    // was the last non-fetching pixel before the fetch.
+    if (params.base.cellSizeShift != 0 && BitTest(current.pos.x, 3)) {
+        const uint fetchPixel = NBGColumnFirstPixel(nbgLine, fetchCol);
+        if (x > fetchPixel) {
+            const uint nextColumn = ((nbgLine.startFracX + nbgLine.incX * (fetchPixel + 1)) >> 11u) - startCol;
+            const NBGCharLocation afterFetch = LocateNBGCharacter(
+                params.base, NBGColumnScrollPos(params, index, nbgLine, nextColumn, fetchPixel + 1),
+                params.pageBaseAddresses);
+            bool switches = !BitTest(afterFetch.pos.x, 3);
+            if (!switches) {
+                // Latest pixel before the fetch that didn't fetch; a pixel fetches when it starts a column whose
+                // character index differs from the previous column's
+                uint lastCellX = 2; // none
+                for (uint k = fetchPixel, i = 0; k > 0 && i < 8; ++i) {
+                    --k;
+                    const uint col = ((nbgLine.startFracX + nbgLine.incX * k) >> 11u) - startCol;
+                    const NBGCharLocation loc = LocateNBGCharacter(
+                        params.base, NBGColumnScrollPos(params, index, nbgLine, col, k), params.pageBaseAddresses);
+                    bool fetches = k == 0;
+                    if (!fetches && k == NBGColumnFirstPixel(nbgLine, col)) {
+                        const NBGCharLocation prevLoc = LocateNBGCharacter(
+                            params.base,
+                            NBGColumnScrollPos(params, index, nbgLine, col - 1, NBGColumnFirstPixel(nbgLine, col - 1)),
+                            params.pageBaseAddresses);
+                        fetches = prevLoc.charIndex != loc.charIndex;
+                    }
+                    if (!fetches) {
+                        lastCellX = BitExtract(loc.pos.x, 3, 1);
+                        break;
+                    }
+                }
+                switches = lastCellX != 1;
+            }
+            if (switches) {
+                return FetchNBGCharacterAt(params.base, fetchLoc.address);
+            }
+        }
+    }
+
+    // Otherwise the previous fetch
+    if (fetchCol == 0) {
+        const RotParamBase prev = g_rotParamBases[3 * kMaxNormalResV + min(nbgLine.fieldY, kMaxNormalResV - 1)];
+        const uint prevAddress = index == 0 ? prev.tableAddress : index == 1 ? uint(prev.Xst)
+                                 : index == 2 ? uint(prev.Yst) : prev.KA;
+        return FetchNBGCharacterAt(params.base, prevAddress);
+    }
+    uint prevCol = fetchCol - 1;
+    NBGCharLocation prevLoc = LocateNBGCharacter(
+        params.base, NBGColumnScrollPos(params, index, nbgLine, prevCol, NBGColumnFirstPixel(nbgLine, prevCol)),
+        params.pageBaseAddresses);
+    for (uint i = 0; i < 8 && prevCol > 0; ++i) {
+        const NBGCharLocation earlier = LocateNBGCharacter(
+            params.base, NBGColumnScrollPos(params, index, nbgLine, prevCol - 1, NBGColumnFirstPixel(nbgLine, prevCol - 1)),
+            params.pageBaseAddresses);
+        if (earlier.charIndex != prevLoc.charIndex) {
+            break;
+        }
+        --prevCol;
+        prevLoc = earlier;
+    }
+    return FetchNBGCharacterAt(params.base, prevLoc.address);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // NBG drawing
 
 uint4 DrawNBG(uint2 pos, // pixel coordinates
@@ -962,6 +1155,9 @@ uint4 DrawNBG(uint2 pos, // pixel coordinates
     if (InsideWindows(params.base.windowParams, pos)) {
         return kTransparentPixel;
     }
+
+    // Line index for the per-line state tracked on the CPU, taken before line scroll resets pos.y within its interval
+    const uint fieldY = interlaceMode == kInterlaceModeDoubleDensity && !exclusiveMonitor ? pos.y >> 1 : pos.y;
 
     const uint2 pageShift = params.base.pageShift;
     const uint twoWordChar = params.base.twoWordChar;
@@ -1017,30 +1213,19 @@ uint4 DrawNBG(uint2 pos, // pixel coordinates
         }
     }
 
-    if (vcellScrollEnable && !mosaicEnable) {
-        const uint vcellScrollOffset = params.vcellScrollOffset;
-        const bool vcellScrollDelay = params.vcellScrollDelay;
-        const bool vcellScrollRepeat = params.vcellScrollRepeat;
-
+    const uint baseFracScrollYLine = baseFracScroll.y;
+    if (vcellScrollEnable) {
         // The software renderer reads the next entry whenever the horizontal scroll coordinate enters another cell,
         // so cells are counted in scroll space: zoom and the scroll register count, not just screen pixels. The
-        // increment is below 8.0, so each pixel crosses at most one cell boundary.
-        const uint startFracX = baseFracScroll.x + params.scrollAmount.x;
-        const uint fracX = startFracX + scrollInc.x * pos.x;
-        int offset = int((fracX >> 11u) - (startFracX >> 11u));
-        if (vcellScrollRepeat && offset > 0) {
-            --offset;
+        // increment is below 8.0, so each pixel crosses at most one cell boundary. With mosaic, the whole line keeps
+        // the first entry.
+        int column = 0;
+        if (!mosaicEnable) {
+            const uint startFracX = baseFracScroll.x + params.scrollAmount.x;
+            const uint fracX = startFracX + scrollInc.x * pos.x;
+            column = int((fracX >> 11u) - (startFracX >> 11u));
         }
-        if (vcellScrollDelay) {
-            --offset;
-        }
-
-        // TODO: if offset == -1, read from the end of the previous line (or end of frame if at topmost row of cells)
-        const uint vcellScrollTableAddress = BitExtract(g_commonParams.vcellScroll, 0, 19);
-        const uint vcellScrollInc = BitExtract(g_commonParams.vcellScroll, 19, 3) << 2u;
-        const uint vcellAddress = vcellScrollTableAddress + offset * vcellScrollInc + vcellScrollOffset;
-        const uint vcellScrollY = BitExtract(ReadVRAM32(vcellAddress), 8, 19);
-        baseFracScroll.y += vcellScrollY;
+        baseFracScroll.y += NBGVCellScrollY(params, index, column, fieldY);
     }
 
     uint2 fracScrollPos = baseFracScroll + params.scrollAmount + scrollInc * (pos - uint2(0, params.scrollYIncBase));
@@ -1066,25 +1251,26 @@ uint4 DrawNBG(uint2 pos, // pixel coordinates
         const uint pageBaseAddress = params.pageBaseAddresses[plane.x | (plane.y << 1u)];
         const uint bank = BitExtract(pageBaseAddress, 17, 2);
         const bool charPatDelay = BitTest(params.base.charPatDelay, bank);
-        if (charPatDelay) {
-            // Read previous character.
-            // If we're at the start of the line, read last character from previous line.
-            // If at the start of the screen, read last character in the screen.
-            if (pos.x >= 8 - (((baseFracScroll.x + params.scrollAmount.x) >> 8) & 7)) {
-                // Not at left edge of the screen - read character to the left
-                scrollPos.x -= 8;
+        if ((charPatDelay || vcellScrollEnable) && !mosaicEnable) {
+            NBGLine nbgLine;
+            nbgLine.startFracX = baseFracScroll.x + params.scrollAmount.x;
+            nbgLine.incX = scrollInc.x;
+            nbgLine.fracY = baseFracScrollYLine + params.scrollAmount.y + scrollInc.y * (pos.y - params.scrollYIncBase);
+            nbgLine.fieldY = fieldY;
+            nbgLine.vcellScroll = vcellScrollEnable;
+
+            const NBGCharLocation current = LocateNBGCharacter(params.base, scrollPos, params.pageBaseAddresses);
+            Character ch;
+            if (charPatDelay) {
+                ch = DelayedNBGCharacter(params, index, nbgLine, pos.x, current);
             } else {
-                // Left edge of the screen - read rightmost character from previous row
-                scrollPos.x += displayResH;
-                if (pos.y >= 8) {
-                    // Not at top edge of the screen - read previous row
-                    scrollPos.y -= 8;
-                } else {
-                    // At top edge of the screen - read last character read the previous screen
-                    // TODO: read character from the previous screen (store on CPU side)
-                    scrollPos.y += displayResV;
-                }
+                // The character fetched last, which may come from another plane than the pixel's position
+                NBGCharLocation fetchLoc;
+                FindNBGFetchColumn(params, index, nbgLine, pos.x, fetchLoc);
+                ch = FetchNBGCharacterAt(params.base, fetchLoc.address);
             }
+            const uint2 cellPos = (current.pos >> 3) & cellSizeShift;
+            return FetchCharacterPixel(params.base, ch, current.pos & 7, cellPos.x + (cellPos.y << 1));
         }
         return FetchScrollNBGPixel(params.base, scrollPos, params.pageBaseAddresses);
     }
