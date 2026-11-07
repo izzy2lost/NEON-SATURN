@@ -61,6 +61,12 @@
     <string name="settings_theme_dark">Dark</string>
     <string name="settings_emulation">Emulation</string>
     <string name="settings_rewind_enabled">Enable rewind</string>
+    <string name="settings_cartridge">Expansion Cartridge</string>
+    <string name="settings_cartridge_auto">Auto</string>
+    <string name="settings_cartridge_none">None</string>
+    <string name="settings_cartridge_dram8">1 MB RAM</string>
+    <string name="settings_cartridge_dram32">4 MB RAM</string>
+    <string name="settings_cartridge_note">Auto inserts the RAM cartridge a game needs, such as the 1 MB cart for The King of Fighters \'96/\'97, Metal Slug, Real Bout and Samurai Spirits, or the 4 MB cart for Vampire Savior. Pick a size to force it for every game. Takes effect the next time a game starts.</string>
     <string name="settings_rewind_note">Adds a rewind button to the on-screen controls and records the last few seconds so it can step back through them. Costs CPU and memory every frame, so it is off by default.</string>
     <string name="settings_touch_controls">Touch Controls</string>
     <string name="settings_touch_controls_enabled">Show Saturn-style on-screen controls during gameplay</string>

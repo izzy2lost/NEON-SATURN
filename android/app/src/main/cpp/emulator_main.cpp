@@ -11,6 +11,8 @@
 #include <GLES3/gl31.h>
 
 #include <ymir/core/hash.hpp>
+#include <ymir/db/game_db.hpp>
+#include <ymir/hw/cart/cart.hpp>
 #include <ymir/hw/scsp/scsp.hpp>
 #include <ymir/hw/smpc/peripheral/peripheral_report.hpp>
 #include <ymir/hw/vdp/renderer/vdp_renderer_base.hpp>
@@ -208,6 +210,8 @@ BootstrapConfig BootstrapConfigFromArgs(int argc, char **argv) {
             config.transparentMeshes = ParseBoolArg(value);
         } else if (const auto value = ArgValue(argument, "--rewind="); !value.empty()) {
             config.rewindEnabled = ParseBoolArg(value);
+        } else if (const auto value = ArgValue(argument, "--cartridge="); !value.empty()) {
+            config.cartridge.assign(value);
         } else if (const auto value = ArgValue(argument, "--cheevos-user="); !value.empty()) {
             config.cheevosUser.assign(value);
         } else if (const auto value = ArgValue(argument, "--cheevos-token="); !value.empty()) {
@@ -1096,6 +1100,7 @@ private:
             // Sets the SMPC area code from the disc header
             m_saturn.LoadDisc(std::move(disc));
             UseIPLForRegion();
+            InsertExpansionCartridge();
             m_coreInitialized = true;
         }
 
@@ -1115,6 +1120,44 @@ private:
             m_rewindBuffer.Start();
         }
         return true;
+    }
+
+    // Fills the cartridge slot from the setting. "auto" follows the game database, which is what the SNK fighters
+    // (KOF '96/'97, Real Bout, Samurai Spirits, Metal Slug...) need: they refuse to boot without the 1 MiB RAM cart.
+    // Must run before the first frame; save states carry the cart type and contents, so loading one swaps it as needed.
+    void InsertExpansionCartridge() {
+        using Cart = ymir::db::Cartridge;
+        Cart cart = Cart::None;
+        const std::string &setting = m_config.cartridge;
+        if (setting == "dram8") {
+            cart = Cart::DRAM8Mbit;
+        } else if (setting == "dram32") {
+            cart = Cart::DRAM32Mbit;
+        } else if (setting != "none") {
+            const auto &header = m_saturn.GetCDInterface().GetDiscHeader();
+            if (const auto *info = ymir::db::GetGameInfo(header.productNumber, m_saturn.GetDiscHash())) {
+                cart = info->GetCartridge();
+            }
+        }
+
+        switch (cart) {
+        case Cart::DRAM8Mbit: m_saturn.InsertCartridge<ymir::cart::DRAM8MbitCartridge>(); break;
+        case Cart::DRAM32Mbit: m_saturn.InsertCartridge<ymir::cart::DRAM32MbitCartridge>(); break;
+        case Cart::DRAM48Mbit: m_saturn.InsertCartridge<ymir::cart::DRAM48MbitCartridge>(); break;
+        case Cart::ROM_KOF95:
+        case Cart::ROM_Ultraman:
+            // These need a dump of the game's ROM cart, which the app has no way to import yet.
+            SDL_Log("Game needs a ROM cartridge, which is not supported; leaving the slot empty");
+            m_saturn.RemoveCartridge();
+            return;
+        case Cart::BackupRAM:
+            // Only extra save space; the internal backup RAM is enough to play.
+        case Cart::None: m_saturn.RemoveCartridge(); return;
+        }
+        SDL_Log("Expansion cartridge (%s): %s", setting.c_str(),
+                cart == Cart::DRAM8Mbit    ? "8 Mbit DRAM"
+                : cart == Cart::DRAM32Mbit ? "32 Mbit DRAM"
+                                           : "48 Mbit DRAM");
     }
 
     // Swaps in the imported IPL ROM made for the disc's region, if one is better than the one loaded.

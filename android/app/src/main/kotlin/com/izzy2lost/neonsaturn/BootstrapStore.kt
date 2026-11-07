@@ -120,6 +120,20 @@ class BootstrapStore(context: Context) {
     fun loadRewindEnabled(): Boolean =
         preferences.getBoolean(KEY_REWIND_ENABLED, false)
 
+    fun saveCartridge(cartridge: String) {
+        preferences.edit().putString(KEY_CARTRIDGE, cartridge).apply()
+    }
+
+    /**
+     * Expansion cartridge slot. [CARTRIDGE_AUTO] inserts whatever the game database says a game needs (the SNK
+     * fighters need the 1 MB RAM cart to boot); the others force one cart for every game.
+     */
+    fun loadCartridge(): String =
+        when (val value = preferences.getString(KEY_CARTRIDGE, CARTRIDGE_AUTO)) {
+            CARTRIDGE_NONE, CARTRIDGE_DRAM_8MBIT, CARTRIDGE_DRAM_32MBIT -> value
+            else -> CARTRIDGE_AUTO
+        }
+
     fun saveThemeMode(mode: Int) {
         preferences.edit().putInt(KEY_THEME_MODE, mode).apply()
     }
@@ -261,6 +275,12 @@ class BootstrapStore(context: Context) {
         private const val KEY_DEINTERLACE_ENABLED = "deinterlace_enabled"
         private const val KEY_TRANSPARENT_MESHES_ENABLED = "transparent_meshes_enabled"
         private const val KEY_REWIND_ENABLED = "rewind_enabled"
+        private const val KEY_CARTRIDGE = "expansion_cartridge"
+
+        const val CARTRIDGE_AUTO = "auto"
+        const val CARTRIDGE_NONE = "none"
+        const val CARTRIDGE_DRAM_8MBIT = "dram8"
+        const val CARTRIDGE_DRAM_32MBIT = "dram32"
         private const val KEY_THEME_MODE = "theme_mode"
         const val VIEW_MODE_LIST = 0
         const val VIEW_MODE_NA_COVERS = 1

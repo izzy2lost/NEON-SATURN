@@ -21,6 +21,8 @@ struct BootstrapConfig {
     bool deinterlace = false;
     bool transparentMeshes = false;
     bool rewindEnabled = false;
+    /// Expansion cartridge: "auto" (whatever the game database recommends), "none", "dram8" (1 MiB) or "dram32" (4 MiB).
+    std::string cartridge = "auto";
     /// RetroAchievements account; both empty when achievements are off or the player is signed out.
     std::string cheevosUser;
     std::string cheevosToken;

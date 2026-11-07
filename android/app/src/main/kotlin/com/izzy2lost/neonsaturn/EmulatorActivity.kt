@@ -137,6 +137,7 @@ class EmulatorActivity : SDLActivity() {
         arguments += "--deinterlace=${intent.getBooleanExtra(EXTRA_DEINTERLACE, false)}"
         arguments += "--transparent-meshes=${intent.getBooleanExtra(EXTRA_TRANSPARENT_MESHES, false)}"
         arguments += "--rewind=${intent.getBooleanExtra(EXTRA_REWIND_ENABLED, false)}"
+        intent.getStringExtra(EXTRA_CARTRIDGE)?.let { arguments += "--cartridge=$it" }
         // Read here rather than passed as extras, so the token never sits in the launch intent.
         arguments += Achievements.launchArguments(this)
         return arguments.toTypedArray()
@@ -479,6 +480,8 @@ class EmulatorActivity : SDLActivity() {
             "com.izzy2lost.neonsaturn.extra.TRANSPARENT_MESHES"
         private const val EXTRA_REWIND_ENABLED =
             "com.izzy2lost.neonsaturn.extra.REWIND_ENABLED"
+        private const val EXTRA_CARTRIDGE =
+            "com.izzy2lost.neonsaturn.extra.CARTRIDGE"
 
         fun createIntent(
             context: Context,
@@ -491,7 +494,8 @@ class EmulatorActivity : SDLActivity() {
             resolutionScale: Int = BootstrapStore.RESOLUTION_SOFTWARE,
             deinterlace: Boolean = false,
             transparentMeshes: Boolean = false,
-            rewindEnabled: Boolean = false
+            rewindEnabled: Boolean = false,
+            cartridge: String = BootstrapStore.CARTRIDGE_AUTO
         ): Intent =
             Intent(context, EmulatorActivity::class.java).apply {
                 putExtra(EXTRA_IPL_PATH, selection.iplPath)
@@ -507,6 +511,7 @@ class EmulatorActivity : SDLActivity() {
                 putExtra(EXTRA_DEINTERLACE, deinterlace)
                 putExtra(EXTRA_TRANSPARENT_MESHES, transparentMeshes)
                 putExtra(EXTRA_REWIND_ENABLED, rewindEnabled)
+                putExtra(EXTRA_CARTRIDGE, cartridge)
             }
 
         private fun updateCurrentInstance(instance: EmulatorActivity?) {

@@ -264,6 +264,58 @@
             android:text="@string/settings_rewind_note"
             android:textAppearance="?attr/textAppearanceBodySmall" />
 
+        <!-- Expansion cartridge -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_cartridge"
+            android:textAppearance="?attr/textAppearanceLabelLarge" />
+
+        <com.google.android.material.chip.ChipGroup
+            android:id="@+id/cartridgeChipGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            app:selectionRequired="true"
+            app:singleSelection="true">
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/cartridgeChipAuto"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_cartridge_auto" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/cartridgeChipNone"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_cartridge_none" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/cartridgeChipDram8"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_cartridge_dram8" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/cartridgeChipDram32"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_cartridge_dram32" />
+        </com.google.android.material.chip.ChipGroup>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/settings_cartridge_note"
+            android:textAppearance="?attr/textAppearanceBodySmall" />
+
         <!-- RetroAchievements -->
         <TextView
             android:layout_width="match_parent"

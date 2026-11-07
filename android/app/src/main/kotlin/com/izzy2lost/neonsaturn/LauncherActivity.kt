@@ -406,6 +406,23 @@ class LauncherActivity : AppCompatActivity() {
             store.saveRewindEnabled(isChecked)
         }
 
+        val cartridgeGroup = content.findViewById<com.google.android.material.chip.ChipGroup>(R.id.cartridgeChipGroup)
+        when (store.loadCartridge()) {
+            BootstrapStore.CARTRIDGE_NONE -> cartridgeGroup.check(R.id.cartridgeChipNone)
+            BootstrapStore.CARTRIDGE_DRAM_8MBIT -> cartridgeGroup.check(R.id.cartridgeChipDram8)
+            BootstrapStore.CARTRIDGE_DRAM_32MBIT -> cartridgeGroup.check(R.id.cartridgeChipDram32)
+            else -> cartridgeGroup.check(R.id.cartridgeChipAuto)
+        }
+        cartridgeGroup.setOnCheckedStateChangeListener { _, checkedIds ->
+            val value = when (checkedIds.firstOrNull()) {
+                R.id.cartridgeChipNone -> BootstrapStore.CARTRIDGE_NONE
+                R.id.cartridgeChipDram8 -> BootstrapStore.CARTRIDGE_DRAM_8MBIT
+                R.id.cartridgeChipDram32 -> BootstrapStore.CARTRIDGE_DRAM_32MBIT
+                else -> BootstrapStore.CARTRIDGE_AUTO
+            }
+            store.saveCartridge(value)
+        }
+
         // RetroAchievements
         val cheevosAccountText = content.findViewById<TextView>(R.id.cheevosAccountText)
         val cheevosAccountButton = content.findViewById<MaterialButton>(R.id.cheevosAccountButton)
@@ -750,7 +767,8 @@ class LauncherActivity : AppCompatActivity() {
                         resolutionScale = store.loadResolutionScale(),
                         deinterlace = store.loadDeinterlaceEnabled(),
                         transparentMeshes = store.loadTransparentMeshesEnabled(),
-                        rewindEnabled = store.loadRewindEnabled()
+                        rewindEnabled = store.loadRewindEnabled(),
+                        cartridge = store.loadCartridge()
                     ))
                 }.onFailure { error ->
                     Toast.makeText(
