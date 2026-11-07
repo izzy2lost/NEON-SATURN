@@ -51,7 +51,9 @@
     <string name="settings_resolution_gpu_2x">GPU 2x</string>
     <string name="settings_resolution_gpu_3x">GPU 3x</string>
     <string name="settings_resolution_gpu_4x">GPU 4x</string>
-    <string name="settings_resolution_note">The GPU renderer uses Vulkan and can render at a higher internal resolution for sharper 3D polygons and sprites. Higher resolutions need a faster GPU and more memory. Falls back to a lower resolution, or to the Software renderer, if the device can\'t run it. The Software renderer is the most accurate.</string>
+    <string name="settings_resolution_gpu_6x">GPU 6x</string>
+    <string name="settings_resolution_gpu_8x">GPU 8x</string>
+    <string name="settings_resolution_note">The GPU renderer uses Vulkan and can render at a higher internal resolution for sharper 3D polygons and sprites. Higher resolutions need a faster GPU and more memory: 6x needs about 0.8 GB and 8x about 1.4 GB, so they are meant for high-end devices. Falls back to a lower resolution, or to the Software renderer, if the device can\'t run it. The Software renderer is the most accurate.</string>
     <string name="settings_graphics_enhancements">Graphics Enhancements</string>
     <string name="settings_deinterlace_enabled">Deinterlace high-resolution video</string>
     <string name="settings_transparent_meshes_enabled">Render mesh polygons as transparency</string>

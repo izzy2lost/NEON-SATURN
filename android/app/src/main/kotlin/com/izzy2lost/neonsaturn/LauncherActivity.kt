@@ -360,11 +360,15 @@ class LauncherActivity : AppCompatActivity() {
             1 to R.id.resolutionChipGpu1x,
             2 to R.id.resolutionChipGpu2x,
             3 to R.id.resolutionChipGpu3x,
-            4 to R.id.resolutionChipGpu4x
+            4 to R.id.resolutionChipGpu4x,
+            6 to R.id.resolutionChipGpu6x,
+            8 to R.id.resolutionChipGpu8x
         )
         val resolutionGroup = content.findViewById<com.google.android.material.chip.ChipGroup>(R.id.resolutionChipGroup)
         val savedResolution = store.loadResolutionScale()
-        resolutionGroup.check(resolutionChips.first { it.first == savedResolution }.second)
+        resolutionGroup.check(
+            (resolutionChips.lastOrNull { it.first <= savedResolution } ?: resolutionChips.first()).second
+        )
         resolutionGroup.setOnCheckedStateChangeListener { _, checkedIds ->
             val value = resolutionChips.firstOrNull { it.second == checkedIds.firstOrNull() }?.first
                 ?: BootstrapStore.RESOLUTION_SOFTWARE

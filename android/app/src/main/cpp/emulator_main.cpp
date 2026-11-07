@@ -1399,7 +1399,29 @@ private:
     /// then at lower resolutions (the larger ones need more GPU memory), and the software renderer is the fallback
     /// for devices that can't run it at all.
     bool ActivateRenderer() {
-        for (int scale = m_config.resolutionScale; scale >= 1; --scale) {
+        // The finished frame becomes one SDL texture, up to 704 pixels wide per scale step (hi-res modes), so a
+        // scale whose frames the presenter can't hold would only show a black screen.
+        int maxScale = m_config.resolutionScale;
+        if (m_renderer != nullptr) {
+            const auto maxTexture = SDL_GetNumberProperty(SDL_GetRendererProperties(m_renderer),
+                                                          SDL_PROP_RENDERER_MAX_TEXTURE_SIZE_NUMBER, 0);
+            if (maxTexture > 0) {
+                const int fits = static_cast<int>(maxTexture / ymir::vdp::kMaxResH);
+                if (fits < maxScale) {
+                    SDL_Log("Max texture size %d fits only %dx; capping internal resolution",
+                            static_cast<int>(maxTexture), fits);
+                    maxScale = std::max(fits, 1);
+                }
+            }
+        }
+
+        // Only the settings menu's steps: an odd one in between (7x, 5x) costs nearly as much memory as the one
+        // that just failed.
+        static constexpr std::array<int, 6> kScaleSteps{8, 6, 4, 3, 2, 1};
+        for (const int scale : kScaleSteps) {
+            if (scale > maxScale) {
+                continue;
+            }
             auto result = m_saturn.VDP.UseVulkanRenderer(static_cast<std::uint32_t>(scale));
             if (result && result.Value() != nullptr) {
                 SDL_Log("Using Vulkan renderer on %s at %dx internal resolution",

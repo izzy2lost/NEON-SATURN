@@ -32,7 +32,8 @@ public:
     ~VulkanVDPRenderer();
 
     /// @brief Maximum supported internal resolution scale.
-    static constexpr uint32 kMaxResolutionScale = 4;
+    // Capped by the 3-bit scale-minus-one field in the shader enhancements word, which holds up to 7.
+    static constexpr uint32 kMaxResolutionScale = 8;
 
     /// @brief Creates a Vulkan renderer.
     /// @param[in] resolutionScale the internal resolution scale, from 1 (native) to `kMaxResolutionScale`. Every

@@ -1199,7 +1199,7 @@ struct VulkanVDPRenderer::Impl {
     struct EnhancementsParams {
         HLSLuint deinterlace : 1;       //     0  Deinterlace
         HLSLuint transparentMeshes : 1; //     1  Render mesh sprites as transparent
-        HLSLuint resolutionScale : 3;   //   2-4  Internal resolution scale minus one
+        HLSLuint resolutionScale : 3;   //   2-4  Internal resolution scale minus one (1x-8x)
         HLSLuint sharpBackgrounds : 1;  //     5  Sample VDP2 backgrounds at scaled pixel positions
     };
     static_assert(sizeof(EnhancementsParams) == sizeof(HLSLuint));
@@ -2816,7 +2816,11 @@ struct VulkanVDPRenderer::Impl {
 
         // Generic upload buffer
         // Leave room for uploading both scaled framebuffers at once
-        const size_t uploadBufferSize = kUploadBufferSize + ScaledFBSize() * 2;
+        // The VDP1 FBRAM upload (both scaled framebuffers) must fit contiguously on one side of the ring's wrap
+        // point. Twice its size on top of the base guarantees that once older frames drain: the free space then
+        // splits into two runs, and the larger is at least half of it. With only one copy, at 6x and 8x (where the
+        // upload outgrows the base size) it failed whenever the head sat just past the base size.
+        const size_t uploadBufferSize = kUploadBufferSize + ScaledFBSize() * 2 * 2;
         if (auto result = uploadBuffer.Create(vk, uploadBufferSize); !result) {
             return util::ErrorMessage{fmt::format("Could not create VDP upload buffer: {}", result.Error().message)};
         }

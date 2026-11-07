@@ -262,7 +262,7 @@ class BootstrapStore(context: Context) {
         const val UPSCALE_XBRZ_6X = 1
 
         const val RESOLUTION_SOFTWARE = 0
-        const val RESOLUTION_MAX = 4
+        const val RESOLUTION_MAX = 8
 
         private const val KEY_IPL_PATH = "ipl_path"
         private const val KEY_CDB_PATH = "cdb_path"
