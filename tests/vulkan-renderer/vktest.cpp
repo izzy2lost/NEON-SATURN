@@ -9,7 +9,12 @@
 //   SCALE=<n>          run the Vulkan renderer at an internal resolution of n and compare against the software
 //                      renderer's output upscaled with nearest neighbor filtering
 //   LAYER_MASK=<mask>  enable only the given VDP2 layers (debug render option bits)
-//   SAVE=1             dump mismatching frames as PPM images
+//   SAVE=1             dump mismatching frames as PPM images (SAVE=all: every frame)
+//   DUMP_REGS=1        print every VDP2 register write
+//   DUMP_CMDS=1        print every VDP1 command written
+//   DUMP_FB=<f>,<x>,<y> print the VDP1 framebuffer words at (x,y) after frame f (both buffers, both renderers)
+//   ONLY_POLY=<list>   in the random VDP1 scenes, draw only these commands (comma separated indices) each frame
+//   ZERO_REGS=<list>   override VDP2 register writes: comma separated hex "off" (forced to zero) or "off:val"
 //   SHARP=0            disable the sharp backgrounds enhancement (on by default)
 //   SHARP_CHECK=1      with SCALE>1, render each scene with sharp backgrounds off and on instead of comparing against
 //                      the software renderer: the top-left pixel of every block (the native sample position) must
@@ -25,6 +30,7 @@
 #include <ymir/hw/vdp/renderer/vdp_renderer.hpp>
 #include <ymir/sys/saturn.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -49,6 +55,34 @@ struct Bus {
         s.mainBus.Write<uint16>(a, v);
     }
     void Reg2(uint32 off, uint16 v) {
+        // DUMP_REGS=1 prints every VDP2 register write, to see what a random scene configured
+        static const bool dump = std::getenv("DUMP_REGS") != nullptr;
+        // ZERO_REGS=<list> overrides VDP2 register writes, for narrowing a random scene down to the registers behind a
+        // mismatch. Comma separated hex entries: "off" forces the register to zero, "off:val" to that value
+        static const std::vector<std::pair<uint32, uint16>> overrides = [] {
+            std::vector<std::pair<uint32, uint16>> entries;
+            if (const char *list = std::getenv("ZERO_REGS")) {
+                for (const char *p = list; *p;) {
+                    char *end;
+                    const uint32 o = std::strtoul(p, &end, 16);
+                    uint16 val = 0;
+                    if (*end == ':') {
+                        val = std::strtoul(end + 1, &end, 16);
+                    }
+                    entries.emplace_back(o, val);
+                    p = *end ? end + 1 : end;
+                }
+            }
+            return entries;
+        }();
+        for (const auto &[o, val] : overrides) {
+            if (o == off) {
+                v = val;
+            }
+        }
+        if (dump) {
+            std::printf("REG2 %03X=%04X\n", off, v);
+        }
         W16(0x5F80000 + off, v);
     }
     void Reg1(uint32 off, uint16 v) {
@@ -73,6 +107,13 @@ struct Cmd {
 
 static void WriteCmd(Bus &b, uint32 index, const Cmd &c) {
     const uint32 a = index * 0x20;
+    // DUMP_CMDS=1 prints every VDP1 command written
+    static const bool dump = std::getenv("DUMP_CMDS") != nullptr;
+    if (dump) {
+        std::printf("CMD %u ctrl=%04X pmod=%04X colr=%04X srca=%04X size=%04X grda=%04X (%d,%d) (%d,%d) (%d,%d) (%d,%d)\n",
+                    index, c.ctrl, c.pmod, c.colr, c.srca, c.size, c.grda, c.x[0], c.y[0], c.x[1], c.y[1], c.x[2],
+                    c.y[2], c.x[3], c.y[3]);
+    }
     b.VRAM1(a + 0x00, c.ctrl);
     b.VRAM1(a + 0x02, c.link);
     b.VRAM1(a + 0x04, c.pmod);
@@ -190,9 +231,24 @@ static std::vector<Frame> Run(Kind kind, const Scene &scene, int numFrames, vdp:
 
     Bus b{*sat};
     std::unique_ptr<Bus> refBus = ref ? std::make_unique<Bus>(*ref) : nullptr;
+    // DUMP_FB=<frame>,<x>,<y> prints the 16-bit VDP1 framebuffer words at that pixel (both buffers) after the frame
+    int dumpFrame = -1, dumpX = 0, dumpY = 0;
+    if (const char *env = std::getenv("DUMP_FB")) {
+        std::sscanf(env, "%d,%d,%d", &dumpFrame, &dumpX, &dumpY);
+    }
     for (int i = 0; i < numFrames; ++i) {
         scene(b, i);
         sat->RunFrame();
+        if (i == dumpFrame) {
+            auto state = std::make_unique<savestate::SaveState>();
+            sat->SaveState(*state);
+            const size_t offset = (static_cast<size_t>(dumpY) * 512 + dumpX) * 2;
+            for (size_t fb = 0; fb < 2; ++fb) {
+                const auto &fbram = state->vdp.FBRAM[fb];
+                std::printf("FB %s frame %d fb%zu (%d,%d) = %02X%02X\n", kind == Kind::VK ? "vk" : "sw", i, fb, dumpX,
+                            dumpY, fbram[offset], fbram[offset + 1]);
+            }
+        }
         if (checkStates && std::strcmp(std::getenv("SAVESTATE"), "same") == 0) {
             // Deferred capture finished on another thread vs. a regular sync of the same GPU FBRAM: must be identical
             sat->SaveState(*deferredState, true);
@@ -239,6 +295,15 @@ static bool Compare(const std::string &name, const std::vector<Frame> &a, const 
         return false;
     }
     const bool save = std::getenv("SAVE") != nullptr;
+    if (save && std::strcmp(std::getenv("SAVE"), "all") == 0) {
+        // SAVE=all dumps every delivered frame, including the skipped ones, to check frame alignment
+        for (size_t i = 0; i < a.size(); ++i) {
+            SavePPM(name + "_all_sw" + std::to_string(i) + ".ppm", a[i]);
+        }
+        for (size_t i = 0; i < b.size(); ++i) {
+            SavePPM(name + "_all_vk" + std::to_string(i) + ".ppm", b[i]);
+        }
+    }
     bool okAll = true;
     for (size_t i = firstFrame; i < n; ++i) {
         const Frame &fa = a[i];
@@ -468,7 +533,22 @@ static Scene MakeVDP1Scene(uint32 seed, bool random, int onlyMode = -1, int only
                 break;
             }
             }
-            WriteCmd(b, idx++, pc);
+            // ONLY_POLY=<n,m,...> draws only those random commands of each frame (user clipping commands are still
+            // written), to trace a mismatching pixel to a few commands
+            static const std::vector<int> onlyPolys = [] {
+                std::vector<int> list;
+                if (const char *env = std::getenv("ONLY_POLY")) {
+                    for (const char *q = env; *q;) {
+                        char *end;
+                        list.push_back(std::strtol(q, &end, 10));
+                        q = *end ? end + 1 : end;
+                    }
+                }
+                return list;
+            }();
+            if (onlyPolys.empty() || std::find(onlyPolys.begin(), onlyPolys.end(), p) != onlyPolys.end()) {
+                WriteCmd(b, idx++, pc);
+            }
         }
         EndCommandList(b, idx);
     };
