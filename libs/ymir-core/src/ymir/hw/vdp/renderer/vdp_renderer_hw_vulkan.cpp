@@ -4245,8 +4245,53 @@ struct VulkanVDPRenderer::Impl {
             VDP1SubmitSpansMidCommand(data);
         }
 
-        // Indicate that the span was drawn
-        return true;
+        // Indicate whether the span was drawn. Callers stop drawing a quad once a line misses after others hit, so this
+        // must match the software renderer's notion of a plotted line exactly: any pixel passing system and user
+        // clipping. The clipping above pads the area, and user clipping isn't checked there; either way a quad would
+        // keep drawing lines the software renderer never draws, and they overwrite the earlier lines' pixels.
+        return VDP1SpanPassesClipping(coord0, coord1, antialias, data.mode.userClippingEnable,
+                                      data.mode.clippingMode);
+    }
+
+    /// @brief Determines if any pixel of a span (or its antialiasing pixels) passes system and user clipping.
+    /// Matches what the software renderer counts as a plotted line, except for textured lines in "draw outside" mode,
+    /// where it doesn't count transparent pixels.
+    bool VDP1SpanPassesClipping(CoordS32 coord0, CoordS32 coord1, bool antialias, bool userClippingEnable,
+                                bool clippingMode) const {
+        const VDP1State &state = vdpState.state1;
+        const sint32 doubleV = vdp1.doubleV ? 1 : 0;
+        const CoordS32 sysClip = GetScaledSystemClip();
+        const sint32 userX0 = ScaleNear(state.userClipX0);
+        const sint32 userY0 = ScaleNear((state.userClipY0 << doubleV) | doubleV);
+        const sint32 userX1 = ScaleFar(state.userClipX1);
+        const sint32 userY1 = ScaleFar((state.userClipY1 << doubleV) | doubleV);
+
+        auto passes = [&](CoordS32 coord) {
+            const auto [x, y] = coord;
+            if (x < 0 || y < 0 || x > sysClip.x() || y > sysClip.y()) {
+                return false;
+            }
+            if (!userClippingEnable) {
+                return true;
+            }
+            // Draw inside (clippingMode == false) keeps pixels inside the area; draw outside keeps the rest
+            const bool inside = x >= userX0 && x <= userX1 && y >= userY0 && y <= userY1;
+            return inside != clippingMode;
+        };
+
+        // The endpoints are plotted pixels, so most lines are settled without stepping through them
+        if (passes(coord0) || passes(coord1)) {
+            return true;
+        }
+
+        LineStepper line{coord0, coord1, antialias};
+        bool aa = false;
+        for (line.Step(); line.CanStep(); aa = line.Step()) {
+            if (passes(line.Coord()) || (aa && passes(line.AACoord()))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     void VDP1PlotTexturedQuad(VDP1SpanData &data, uint32 cmdAddress, VDP1Command::Control control, CoordS32 coordA,
@@ -4274,7 +4319,7 @@ struct VulkanVDPRenderer::Impl {
         TextureStepper texVStepper{};
         quad.SetupTexture(texVStepper, charSizeH == 0 ? 1 : charSizeV, flipV);
 
-        data.texV = charSizeV; // out of range value to ensure first iteration fetches end codes
+        bool texVValid = false; // ensures the first iteration fetches end codes
 
         // Optimization for the case where the quad goes outside the system clipping area.
         // Skip rendering the rest of the quad when a line is clipped after plotting at least one line.
@@ -4393,7 +4438,8 @@ struct VulkanVDPRenderer::Impl {
             texVStepper.StepPixel();
 
             const uint32 newTexV = texVStepper.Value();
-            if (newTexV != data.texV) {
+            if (!texVValid || newTexV != data.texV) {
+                texVValid = true;
                 data.texV = newTexV;
                 data.endCodeIndex = findEndCodeIndex(newTexV);
             }
@@ -4928,7 +4974,9 @@ struct VulkanVDPRenderer::Impl {
         CRAMColorCache &colorCache = vdp2.cpuCRAMColorCache;
         switch (vdpState.regs2.vramControl.colorRAMMode) {
         case 0: // RGB 5:5:5, half CRAM
-            for (uint32 i = 0; i < 1024; ++i) {
+            // All 2048 entries, like single writes and the software renderer's cache: line color screen indices are
+            // masked to 11 bits, so entries past 1024 are still read. Leaving them out turned those lines black.
+            for (uint32 i = 0; i < 2048; ++i) {
                 const auto value = vdpState.mem2.ReadCRAM<uint16>(i * sizeof(uint16));
                 const Color555 color5{.u16 = value};
                 const Color888 color8 = ConvertRGB555to888(color5);
@@ -4952,9 +5000,7 @@ struct VulkanVDPRenderer::Impl {
         case 2: [[fallthrough]]; // RGB 8:8:8, full CRAM
         case 3: [[fallthrough]]; // RGB 8:8:8, full CRAM
         default:
-            // All 2048 entries, like single writes and the software renderer's cache: line color screen indices are
-            // masked to 11 bits, so entries past 1024 are still read. Leaving them out turned those lines black.
-            for (uint32 i = 0; i < 2048; ++i) {
+            for (uint32 i = 0; i < 1024; ++i) {
                 const auto value = vdpState.mem2.ReadCRAM<uint32>(i * sizeof(uint32));
                 const Color888 color8{.u32 = value};
                 colorCache[i].r = color8.r;

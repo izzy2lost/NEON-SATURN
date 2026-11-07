@@ -698,7 +698,9 @@ void CSMain(uint3 id : SV_DispatchThreadID) {
             return;
         }
 
-        const uint texV = BitExtract(span.attrs, 3, 10);
+        // Sign-extended: a zero-height texture steps V from 0 to -1, and the address must wrap around VRAM from the
+        // full 32-bit value like the software renderer does (rows otherwise only go up to 255)
+        const uint texV = uint(SignExtend(int(BitExtract(span.attrs, 3, 10)), 10));
         const uint charAddr = BitExtract(cmdParams.cmdsizesrca, 16, 16) << 3u;
         bool transparent;
         bool hasEndCode;

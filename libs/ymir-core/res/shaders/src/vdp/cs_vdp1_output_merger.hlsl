@@ -286,9 +286,42 @@ void Merge8(uint2 pos, uint field) {
 }
 
 void Merge16(uint2 pos, uint field) {
-    Merge16Single(pos, field);
 #if POLYSPEC_TRANSPARENT_MESH
-    Merge16Single(pos, field + 2);
+    // Like the software renderer: shadow always reads the normal layer. A normal shadow pixel removes the mesh pixel
+    // beneath it; a mesh shadow pixel puts the normal layer's pixel, shadowed once, on the mesh layer. Counts carry no
+    // drawing order, so when both kinds hit a pixel in one batch the mesh one is taken as the last.
+    const uint2 inPos = uint2(pos.x * 2, pos.y);
+    const uint inMeshOffset = inPos.x + inPos.y * fbSize.x + (field + 2) * fbSize.x * fbSize.y;
+    const uint inOffset = inPos.x + inPos.y * fbSize.x + field * fbSize.x * fbSize.y;
+    const uint2 normalCount = uint2(g_internalSpriteOut[inOffset + 0], g_internalSpriteOut[inOffset + 1]);
+    const uint2 meshCount = uint2(g_internalSpriteOut[inMeshOffset + 0], g_internalSpriteOut[inMeshOffset + 1]);
+    g_internalSpriteOut[inMeshOffset + 0] = 0;
+    g_internalSpriteOut[inMeshOffset + 1] = 0;
+#endif
+
+    Merge16Single(pos, field);
+
+#if POLYSPEC_TRANSPARENT_MESH
+    if (any(normalCount != 0) || any(meshCount != 0)) {
+        const uint outOffset = (inPos.x + inPos.y * fbSize.x) * 2 + field * kScaledFBRAMSize;
+        const uint normalValue = g_fbramOut.Load(outOffset + fbOffset);
+        const uint meshAddress = outOffset + kScaledFBRAMSize * 2 + fbOffset;
+        uint meshValue = g_fbramOut.Load(meshAddress);
+        for (uint i = 0; i < 2; ++i) {
+            const uint shiftBits = i * 16u;
+            if (meshCount[i] != 0) {
+                uint4 color = Uint16ToColor555(ByteSwap16(normalValue >> shiftBits));
+                if (color.a != 0u) {
+                    color.rgb >>= 1u;
+                }
+                meshValue &= ~(0xFFFFu << shiftBits);
+                meshValue |= ByteSwap16(Color555ToUint16(color)) << shiftBits;
+            } else if (normalCount[i] != 0) {
+                meshValue &= ~(0xFFFFu << shiftBits);
+            }
+        }
+        g_fbramOut.Store(meshAddress, meshValue);
+    }
 #endif
 }
 
@@ -303,13 +336,50 @@ uint HalfTransparentBlend(uint baseColor, uint listHead) {
     }
 
     // Collect fragments
-    // TODO: what if the cap is exceeded?
     OITFragment frags[32];
     uint count = 0;
     uint curr = listHead;
     while (curr != 0xFFFFFFFF && count < 32) {
         frags[count++] = g_fragments[curr];
         curr = frags[count - 1].next;
+    }
+
+    if (curr != 0xFFFFFFFF) {
+        // More fragments than fit: heavily overdrawn pixels (folded quads redraw the same pixels many times). Every
+        // blend counts, the oldest ones included, so walk the list in drawing order instead, picking the next
+        // (sequence number, node) pair each time.
+        uint4 color = Uint16ToColor555(baseColor);
+        uint lastSeq = 0;
+        uint lastNode = 0;
+        bool first = true;
+        while (true) {
+            uint bestSeq = 0xFFFFFFFF;
+            uint bestNode = 0xFFFFFFFF;
+            uint bestData = 0;
+            for (uint node = listHead; node != 0xFFFFFFFF; node = g_fragments[node].next) {
+                const uint seq = BitExtract(g_fragments[node].data, 16, 16);
+                const bool after = first || seq > lastSeq || (seq == lastSeq && node > lastNode);
+                const bool better = seq < bestSeq || (seq == bestSeq && node < bestNode);
+                if (after && better) {
+                    bestSeq = seq;
+                    bestNode = node;
+                    bestData = g_fragments[node].data;
+                }
+            }
+            if (bestNode == 0xFFFFFFFF) {
+                break;
+            }
+            const uint4 fragColor = Uint16ToColor555(bestData);
+            if (color.a != 0) {
+                color.rgb = (color.rgb + fragColor.rgb) >> 1u;
+            } else {
+                color = fragColor;
+            }
+            lastSeq = bestSeq;
+            lastNode = bestNode;
+            first = false;
+        }
+        return Color555ToUint16(color);
     }
 
     // Sort by sequence number in ascending order (oldest to latest) so that fragments are blended in drawing order,
@@ -373,10 +443,44 @@ void Merge8(uint2 pos, uint field) {
     // Half-Transparency does not apply to 8-bit mode.
 }
 
+#if POLYSPEC_TRANSPARENT_MESH
+// Latest sequence number in a pixel's fragment list, or 0 if empty
+uint LatestSequence(uint listHead) {
+    uint latest = 0;
+    for (uint node = listHead; node != 0xFFFFFFFF; node = g_fragments[node].next) {
+        latest = max(latest, BitExtract(g_fragments[node].data, 16, 16));
+    }
+    return latest;
+}
+#endif
+
 void Merge16(uint2 pos, uint field) {
+#if POLYSPEC_TRANSPARENT_MESH
+    // A normal pixel drawn after a mesh pixel removes it from the mesh layer, as in the software renderer (and the copy
+    // merger). Find which was drawn last before the lists are consumed.
+    const uint2 inPos = uint2(pos.x * 2, pos.y);
+    const uint inOffset = inPos.x + inPos.y * fbSize.x + field * fbSize.x * fbSize.y;
+    const uint inMeshOffset = inPos.x + inPos.y * fbSize.x + (field + 2) * fbSize.x * fbSize.y;
+    const uint2 latestNormal = uint2(LatestSequence(g_listHeads[inOffset + 0]), LatestSequence(g_listHeads[inOffset + 1]));
+    const uint2 latestMesh =
+        uint2(LatestSequence(g_listHeads[inMeshOffset + 0]), LatestSequence(g_listHeads[inMeshOffset + 1]));
+#endif
+
     Merge16Single(pos, field);
 #if POLYSPEC_TRANSPARENT_MESH
     Merge16Single(pos, field + 2);
+
+    if (any(latestNormal > latestMesh)) {
+        const uint meshAddress = (inPos.x + inPos.y * fbSize.x) * 2 + fbOffset + (field + 2) * kScaledFBRAMSize;
+        uint meshValue = g_fbramOut.Load(meshAddress);
+        if (latestNormal.x > latestMesh.x) {
+            meshValue &= ~0xFFFFu;
+        }
+        if (latestNormal.y > latestMesh.y) {
+            meshValue &= ~0xFFFF0000u;
+        }
+        g_fbramOut.Store(meshAddress, meshValue);
+    }
 #endif
 }
 
