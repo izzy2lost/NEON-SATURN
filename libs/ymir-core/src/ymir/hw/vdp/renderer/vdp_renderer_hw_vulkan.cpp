@@ -5601,7 +5601,19 @@ struct VulkanVDPRenderer::Impl {
     }
 
     void VDP2CalcVCellScrollDelay() {
-        if (vdpState.regs2.accessPatternsDirty) {
+        // Refresh the layer parameters when the results change. Checking accessPatternsDirty here wasn't enough: the
+        // access pattern calculation right before this clears it, and the results also depend on SCRCTL, so the
+        // shader kept the delay from before the registers changed.
+        auto &states = vdpState.state2.nbgLayerStates;
+        const auto snapshot = [&](uint32 i) {
+            return std::array<uint32, 3>{states[i].vcellScrollOffset, states[i].vcellScrollDelay,
+                                         states[i].vcellScrollRepeat};
+        };
+        const auto before0 = snapshot(0);
+        const auto before1 = snapshot(1);
+        const uint32 incBefore = vdpState.regs2.vcellScrollInc;
+        vdpState.state2.CalcVCellScrollDelay(vdpState.regs2);
+        if (snapshot(0) != before0 || snapshot(1) != before1 || vdpState.regs2.vcellScrollInc != incBefore) {
             ++vdp2.layerRenderParamsGeneration;
         }
         vdpState.state2.CalcVCellScrollDelay(vdpState.regs2);
