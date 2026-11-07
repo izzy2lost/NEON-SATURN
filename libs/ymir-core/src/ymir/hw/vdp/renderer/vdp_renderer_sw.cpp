@@ -3484,6 +3484,8 @@ FORCE_INLINE static void Color888SelectMasked(const std::span<Color888> dest,
 FORCE_INLINE static void Color888GradationMasked(const std::span<Color888> dest,
                                                  const std::span<const bool, kMaxResH> mask,
                                                  const std::span<const Color888> src) {
+    // dest[i] is the pixel at src[i + 2], blended with the two to its left. The mask is indexed by screen pixel like
+    // src, so the pixel written to dest[i] is selected by mask[i + 2].
     size_t i = 0;
 
 #if defined(_M_X64) || defined(__x86_64__)
@@ -3491,7 +3493,7 @@ FORCE_INLINE static void Color888GradationMasked(const std::span<Color888> dest,
     // Eight pixels at a time
     for (; (i + 8) < dest.size(); i += 8) {
         // Load eight mask bytes into 32-bit lanes of 000... or 111...
-        __m256i mask_x8 = _mm256_cvtepu8_epi32(_mm_loadu_si64(mask.data() + i));
+        __m256i mask_x8 = _mm256_cvtepu8_epi32(_mm_loadu_si64(mask.data() + i + 2));
         mask_x8 = _mm256_sub_epi32(_mm256_setzero_si256(), mask_x8);
 
         const __m256i color0_x8 = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(&src[i]));
@@ -3517,7 +3519,7 @@ FORCE_INLINE static void Color888GradationMasked(const std::span<Color888> dest,
     // Four pixels at a time
     for (; (i + 4) < dest.size(); i += 4) {
         // Load four mask values and expand each byte into 32-bit 000... or 111...
-        __m128i mask_x4 = _mm_loadu_si32(mask.data() + i);
+        __m128i mask_x4 = _mm_loadu_si32(mask.data() + i + 2);
         mask_x4 = _mm_unpacklo_epi8(mask_x4, _mm_setzero_si128());
         mask_x4 = _mm_unpacklo_epi16(mask_x4, _mm_setzero_si128());
         mask_x4 = _mm_sub_epi32(_mm_setzero_si128(), mask_x4);
@@ -3535,7 +3537,7 @@ FORCE_INLINE static void Color888GradationMasked(const std::span<Color888> dest,
 
         // Blend with mask
         const __m128i dstColor_x4 =
-            _mm_or_si128(_mm_and_si128(color2_x4, blend2_x4), _mm_andnot_si128(mask_x4, color2_x4));
+            _mm_or_si128(_mm_and_si128(mask_x4, blend2_x4), _mm_andnot_si128(mask_x4, color2_x4));
 
         // Write
         _mm_storeu_si128(reinterpret_cast<__m128i *>(&dest[i]), dstColor_x4);
@@ -3545,7 +3547,7 @@ FORCE_INLINE static void Color888GradationMasked(const std::span<Color888> dest,
     // Four pixels at a time
     for (; (i + 4) < dest.size(); i += 4) {
         // Load four mask values and expand each byte into 32-bit 000... or 111...
-        uint32x4_t mask_x4 = vld1q_lane_u32(reinterpret_cast<const uint32 *>(mask.data() + i), vdupq_n_u32(0), 0);
+        uint32x4_t mask_x4 = vld1q_lane_u32(reinterpret_cast<const uint32 *>(mask.data() + i + 2), vdupq_n_u32(0), 0);
         mask_x4 = vmovl_u16(vget_low_u16(vmovl_u8(vget_low_u8(mask_x4))));
         mask_x4 = vnegq_s32(mask_x4);
 
@@ -3558,7 +3560,7 @@ FORCE_INLINE static void Color888GradationMasked(const std::span<Color888> dest,
         const uint32x4_t blend2_x4 = vhaddq_u8(blend01_x4, color2_x4);
 
         // Blend with mask
-        const uint32x4_t dstColor_x4 = vbslq_u32(mask_x4, color2_x4, blend2_x4);
+        const uint32x4_t dstColor_x4 = vbslq_u32(mask_x4, blend2_x4, color2_x4);
 
         // Write
         vst1q_u32(reinterpret_cast<uint32 *>(&dest[i]), dstColor_x4);
@@ -3570,7 +3572,7 @@ FORCE_INLINE static void Color888GradationMasked(const std::span<Color888> dest,
         const Color888 &color1 = src[i + 1];
         const Color888 &color2 = src[i + 2];
         Color888 &dstColor = dest[i];
-        if (mask[i]) {
+        if (mask[i + 2]) {
             dstColor = AverageRGB888(AverageRGB888(color0, color1), color2);
         } else {
             dstColor = color2;
