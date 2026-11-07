@@ -4042,6 +4042,12 @@ struct VulkanVDPRenderer::Impl {
     // the center of their block. Every quad only grows as a result, so polygons sharing edges overlap slightly instead
     // of leaving cracks between them. Lines are drawn through the center of the blocks.
 
+    /// @brief Color format value for the BG shaders. The undefined values 5-7 render as RGB888, as in the software
+    /// renderer; passed through unchanged, they matched none of the shader's formats and the layer came out wrong.
+    static HLSLuint ShaderColorFormat(ColorFormat format) {
+        return std::min(static_cast<HLSLuint>(format), static_cast<HLSLuint>(ColorFormat::RGB888));
+    }
+
     /// @brief Scales an inclusive lower bound coordinate.
     sint32 ScaleNear(sint32 value) const {
         return value * static_cast<sint32>(resolutionScale);
@@ -4946,7 +4952,9 @@ struct VulkanVDPRenderer::Impl {
         case 2: [[fallthrough]]; // RGB 8:8:8, full CRAM
         case 3: [[fallthrough]]; // RGB 8:8:8, full CRAM
         default:
-            for (uint32 i = 0; i < 1024; ++i) {
+            // All 2048 entries, like single writes and the software renderer's cache: line color screen indices are
+            // masked to 11 bits, so entries past 1024 are still read. Leaving them out turned those lines black.
+            for (uint32 i = 0; i < 2048; ++i) {
                 const auto value = vdpState.mem2.ReadCRAM<uint32>(i * sizeof(uint32));
                 const Color888 color8{.u32 = value};
                 colorCache[i].r = color8.r;
@@ -5294,7 +5302,7 @@ struct VulkanVDPRenderer::Impl {
             renderParams.base.priorityMode = static_cast<HLSLuint>(bgParams.priorityMode);
             renderParams.base.specialFunctionSelect = bgParams.specialFunctionSelect;
             renderParams.base.cellSizeShift = bgParams.cellSizeShift;
-            renderParams.base.colorFormat = static_cast<HLSLuint>(bgParams.colorFormat);
+            renderParams.base.colorFormat = ShaderColorFormat(bgParams.colorFormat);
             renderParams.base.cramOffset = bgParams.cramOffset;
             renderParams.base.supplScrollCharNum = bgParams.supplScrollCharNum;
             renderParams.base.supplPalNum = bitmap ? bgParams.supplBitmapPalNum : bgParams.supplScrollPalNum;
@@ -5355,7 +5363,7 @@ struct VulkanVDPRenderer::Impl {
             renderParams.base.priorityMode = static_cast<HLSLuint>(bgParams.priorityMode);
             renderParams.base.specialFunctionSelect = bgParams.specialFunctionSelect;
             renderParams.base.cellSizeShift = bgParams.cellSizeShift;
-            renderParams.base.colorFormat = static_cast<HLSLuint>(bgParams.colorFormat);
+            renderParams.base.colorFormat = ShaderColorFormat(bgParams.colorFormat);
             renderParams.base.cramOffset = bgParams.cramOffset;
             renderParams.base.supplScrollCharNum = bgParams.supplScrollCharNum;
             renderParams.base.supplPalNum = bitmap ? bgParams.supplBitmapPalNum : bgParams.supplScrollPalNum;

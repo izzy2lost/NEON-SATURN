@@ -390,6 +390,36 @@ bool CanFetchCoefficient(const uint coeffDataSize, uint coeffAddress) {
     return BitTest(coeffDataAccess, bank);
 }
 
+// Per-dot coefficients are read in sequence along the line, and the software renderer keeps the last one read while
+// the address is in a bank not designated for coefficients. Finds the address of the coefficient in effect at pixel x,
+// where KA = KAline + x * dKAx. Returns false if none was read yet on this line (the default, transparent coefficient).
+// The bank is bits 25+ of the address (bits 17-18 of the byte address), so instead of walking the line this jumps back
+// to the end of each previous bank region; going through all four banks means none of them can be read.
+bool FindFetchedCoeffAddress(const uint coeffDataSize, const uint KAline, const int dKAx, const uint x, inout uint KA) {
+    if (CanFetchCoefficient(coeffDataSize, KA)) {
+        return true;
+    }
+    if (dKAx == 0) {
+        return false;
+    }
+    const uint regionSize = 1u << (25u + coeffDataSize);
+    const uint regionMask = regionSize - 1u;
+    const uint step = uint(abs(dKAx));
+    int j = int(x);
+    for (uint i = 0; i < 4; ++i) {
+        const uint dist = dKAx > 0 ? (KA & regionMask) + 1u : regionSize - (KA & regionMask);
+        j -= int((dist + step - 1u) / step);
+        if (j < 0) {
+            return false;
+        }
+        KA = KAline + uint(j * dKAx);
+        if (CanFetchCoefficient(coeffDataSize, KA)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 RotCoefficient ReadRotCoefficient(const uint coeffDataSize, const uint coeffDataMode, uint coeffAddress) {
     const uint offset = coeffAddress >> 10;
 
@@ -430,6 +460,18 @@ RotCoefficient ReadRotCoefficient(const uint coeffDataSize, const uint coeffData
     }
 
     return coeff;
+}
+
+RotCoefficient ReadPerDotRotCoefficient(const uint coeffDataSize, const uint coeffDataMode, const uint KAline,
+                                        const int dKAx, const uint x, uint KA) {
+    if (coeffDataPerDot && !FindFetchedCoeffAddress(coeffDataSize, KAline, dKAx, x, KA)) {
+        RotCoefficient coeff;
+        coeff.value = 0;
+        coeff.lineColorData = 0;
+        coeff.transparent = true;
+        return coeff;
+    }
+    return ReadRotCoefficient(coeffDataSize, coeffDataMode, KA);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -531,11 +573,12 @@ uint2 CalcRotationScreenCoords(uint2 pos, uint index) {
 
     if (coeffTableEnable) {
         // Current coefficient address (16.10)
-        const uint KAxofs = coeffDataPerDot ? pos.x * t.dKAx + ((t.dKAx * int(s_rotSubFrac.x)) >> 8) : 0;
-        const uint KA = base.KA + ((t.dKAst * int(s_rotSubFrac.y)) >> 8) + KAxofs;
+        const uint KAline = base.KA + ((t.dKAst * int(s_rotSubFrac.y)) >> 8) +
+                            (coeffDataPerDot ? uint((t.dKAx * int(s_rotSubFrac.x)) >> 8) : 0u);
+        const uint KA = KAline + (coeffDataPerDot ? pos.x * t.dKAx : 0);
 
         // Read and apply rotation coefficient
-        const RotCoefficient coeff = ReadRotCoefficient(coeffDataSize, coeffDataMode, KA);
+        const RotCoefficient coeff = ReadPerDotRotCoefficient(coeffDataSize, coeffDataMode, KAline, t.dKAx, pos.x, KA);
 
         switch (coeffDataMode) {
             case kCoeffDataModeScaleCoeffXY:
@@ -580,13 +623,14 @@ RotCoefficient CalcRotationCoefficient(uint2 pos, uint index) {
         // Current coefficient address (16.10)
         const int dKAst = SignExtend(ReadVRAM32(base.tableAddress + 0x58) >> 6, 20);
         const int dKAx = SignExtend(ReadVRAM32(base.tableAddress + 0x5C) >> 6, 20);
-        const uint KAxofs = coeffDataPerDot ? pos.x * dKAx + ((dKAx * int(s_rotSubFrac.x)) >> 8) : 0;
-        const uint KA = base.KA + ((dKAst * int(s_rotSubFrac.y)) >> 8) + KAxofs;
+        const uint KAline = base.KA + ((dKAst * int(s_rotSubFrac.y)) >> 8) +
+                            (coeffDataPerDot ? uint((dKAx * int(s_rotSubFrac.x)) >> 8) : 0u);
+        const uint KA = KAline + (coeffDataPerDot ? pos.x * dKAx : 0);
 
         // Read and apply rotation coefficient
         const uint coeffDataSize = BitExtract(g_commonParams.rotParams, coeffParamsOffset + 1, 1);
         const uint coeffDataMode = BitExtract(g_commonParams.rotParams, coeffParamsOffset + 2, 2);
-        coeff = ReadRotCoefficient(coeffDataSize, coeffDataMode, KA);
+        coeff = ReadPerDotRotCoefficient(coeffDataSize, coeffDataMode, KAline, dKAx, pos.x, KA);
     } else {
         coeff.value = 0;
         coeff.lineColorData = 0;
@@ -610,7 +654,9 @@ struct Character {
 static const Character kBlankCharacter = (Character) 0;
 
 Character ExtractOneWordCharacter(const BaseBGParams params, uint charData) {
-    const bool extChar = params.extChar;
+    // Two-word mode takes precedence over the extended character number bit: the screen over pattern name, the one
+    // caller in two-word mode, is then read as a standard one-word character, as in the software renderer
+    const bool extChar = params.extChar && !params.twoWordChar;
     const uint cellSizeShift = params.cellSizeShift;
 
     // Character number bit range from the 1-word character pattern data (charData)
@@ -897,6 +943,22 @@ uint4 DrawNBG(uint2 pos, // pixel coordinates
         pos.y >>= 1;
     }
 
+    // Mosaic repeats the top-left pixel of each block of the screen, as the software renderer does by copying the
+    // previous pixel/line: the block origin is drawn normally, with its own scroll, zoom and window. Snapping the
+    // scroll coordinates instead only matched without zoom or scrolling.
+    const bool mosaicEnable = params.base.mosaicEnable;
+    if (mosaicEnable) {
+        const uint2 mosaic = uint2(BitExtract(g_commonParams.layerParams, 14, 4) + 1, BitExtract(g_commonParams.layerParams, 18, 4) + 1);
+        pos.x -= pos.x % mosaic.x;
+        if (interlaceMode == kInterlaceModeDoubleDensity && !exclusiveMonitor) {
+            // Both fields count the same lines; keep the field bit
+            const uint fieldLine = pos.y >> 1;
+            pos.y = ((fieldLine - fieldLine % mosaic.y) << 1) | (pos.y & 1);
+        } else {
+            pos.y -= pos.y % mosaic.y;
+        }
+    }
+
     if (InsideWindows(params.base.windowParams, pos)) {
         return kTransparentPixel;
     }
@@ -905,7 +967,6 @@ uint4 DrawNBG(uint2 pos, // pixel coordinates
     const uint twoWordChar = params.base.twoWordChar;
     const uint cellSizeShift = params.base.cellSizeShift;
     const uint pageSize = kPageSizes[cellSizeShift][twoWordChar];
-    const bool mosaicEnable = params.base.mosaicEnable;
     const bool vcellScrollEnable = params.vcellScrollEnable;
 
     uint2 baseFracScroll = uint2(0, 0);
@@ -947,7 +1008,10 @@ uint4 DrawNBG(uint2 pos, // pixel coordinates
             baseFracScroll.y = BitExtract(ReadVRAM32(tableAddr), 8, 19);
             pos.y &= (1u << lineScrollIntervalShift) - 1u; // reset cumulative scrollIncV increment
         }
-        if (lineZoomEnable) {
+        // The software renderer resets the horizontal increment to the register value every line and only reads the
+        // table's on the first line of each interval, so the table zoom only applies to that line
+        const uint fieldY = interlaceMode == kInterlaceModeDoubleDensity && !exclusiveMonitor ? pos.y >> 1 : pos.y;
+        if (lineZoomEnable && (fieldY & ((1u << lineScrollIntervalShift) - 1u)) == 0) {
             const uint tableAddr = baseTableAddr + lineZoomOffset;
             scrollInc.x = BitExtract(ReadVRAM32(tableAddr), 8, 11);
         }
@@ -958,8 +1022,12 @@ uint4 DrawNBG(uint2 pos, // pixel coordinates
         const bool vcellScrollDelay = params.vcellScrollDelay;
         const bool vcellScrollRepeat = params.vcellScrollRepeat;
 
-        const uint scrollX = baseFracScroll.x >> 8;
-        int offset = (pos.x + (scrollX & 7)) >> 3;
+        // The software renderer reads the next entry whenever the horizontal scroll coordinate enters another cell,
+        // so cells are counted in scroll space: zoom and the scroll register count, not just screen pixels. The
+        // increment is below 8.0, so each pixel crosses at most one cell boundary.
+        const uint startFracX = baseFracScroll.x + params.scrollAmount.x;
+        const uint fracX = startFracX + scrollInc.x * pos.x;
+        int offset = int((fracX >> 11u) - (startFracX >> 11u));
         if (vcellScrollRepeat && offset > 0) {
             --offset;
         }
@@ -989,10 +1057,6 @@ uint4 DrawNBG(uint2 pos, // pixel coordinates
         fracScrollPos += (scrollInc * subFrac) >> 8;
     }
     uint2 scrollPos = fracScrollPos >> 8;
-    if (mosaicEnable) {
-        const uint2 mosaic = uint2(BitExtract(g_commonParams.layerParams, 14, 4) + 1, BitExtract(g_commonParams.layerParams, 18, 4) + 1);
-        scrollPos -= scrollPos % mosaic;
-    }
 
     const bool bitmap = params.base.bitmap;
     if (bitmap) {
@@ -1100,17 +1164,13 @@ void StoreRotationLineColorData(uint2 pos, uint2 rotPos, uint index, uint rotSel
         }
     }
 
-    g_rbgLineColorOut[uint3(pos.xy, index)] = g_cramColor[cramAddress];
+    // Line color table entries are raw 16-bit values. Like the software renderer (and the LNCL screen on the CPU side),
+    // take 11 bits in every CRAM mode; unmasked, values past the end of CRAM read zero (black)
+    g_rbgLineColorOut[uint3(pos.xy, index)] = g_cramColor[cramAddress & 0x7FF];
 }
 
-uint4 DrawScrollRBG(uint2 pos, uint index, uint rotSel, uint2 scrollPos) {
+uint4 DrawScrollRBG(uint2 pos, uint2 rotPos, uint index, uint rotSel, uint2 scrollPos) {
     const RBGParams params = g_layerRenderParams[0].rbg[index];
-
-    uint2 rotPos = pos;
-    if (params.base.mosaicEnable) {
-        const uint mosaicH = BitExtract(g_commonParams.layerParams, 14, 4) + 1;
-        rotPos.x -= rotPos.x % mosaicH;
-    }
 
     const RBGParams rotParams = g_layerRenderParams[0].rbg[rotSel];
     const uint2 pageShift = rotParams.base.pageShift;
@@ -1142,15 +1202,10 @@ uint4 DrawScrollRBG(uint2 pos, uint index, uint rotSel, uint2 scrollPos) {
     return kTransparentPixel;
 }
 
-uint4 DrawBitmapRBG(uint2 pos, uint index, uint rotSel, uint2 scrollPos) {
+uint4 DrawBitmapRBG(uint2 pos, uint2 rotPos, uint index, uint rotSel, uint2 scrollPos) {
     const RBGParams params = g_layerRenderParams[0].rbg[index];
     const uint screenOverProcess = params.screenOverProcess;
 
-    uint2 rotPos = pos;
-    if (params.base.mosaicEnable) {
-        const uint mosaicH = BitExtract(g_commonParams.layerParams, 14, 4) + 1;
-        rotPos.x -= rotPos.x % mosaicH;
-    }
 
     const uint2 pageShift = g_layerRenderParams[0].rbg[rotSel].base.pageShift;
 
@@ -1178,7 +1233,21 @@ uint4 DrawRBG(uint2 pos, // pixel coordinates
         return kTransparentPixel;
     }
 
-    if (InsideWindows(params.base.windowParams, uint2(pos.x, GetY(pos.y, false)))) {
+    // Mosaic repeats the first pixel of each horizontal block, counted in the rotation's (halved, in hi-res) pixels
+    // like the software renderer, which copies the previous pixel: that one keeps its window state, and in hi-res it
+    // is the second (odd) half of the block's first position.
+    const bool mosaicEnable = params.base.mosaicEnable;
+    const uint mosaicH = BitExtract(g_commonParams.layerParams, 14, 4) + 1;
+    uint2 windowPos = pos;
+    if (mosaicEnable) {
+        const uint rotX = hiResH ? pos.x >> 1 : pos.x;
+        const uint offset = rotX % mosaicH;
+        if (offset != 0) {
+            windowPos.x = hiResH ? ((rotX - offset) << 1) | 1 : rotX - offset;
+        }
+    }
+
+    if (InsideWindows(params.base.windowParams, uint2(windowPos.x, GetY(windowPos.y, false)))) {
         return kTransparentPixel;
     }
 
@@ -1204,8 +1273,14 @@ uint4 DrawRBG(uint2 pos, // pixel coordinates
         pos.y >>= 1;
     }
 
-    const uint rotSel = index == 0 ? SelectRotationParameter(params, pos) : kRotParamB;
-    const RotCoefficient rotCoeff = CalcRotationCoefficient(pos, rotSel);
+    // The rotation is evaluated at the block's first pixel; pos stays the output position for line color data
+    uint2 samplePos = pos;
+    if (mosaicEnable) {
+        samplePos.x -= samplePos.x % mosaicH;
+    }
+
+    const uint rotSel = index == 0 ? SelectRotationParameter(params, samplePos) : kRotParamB;
+    const RotCoefficient rotCoeff = CalcRotationCoefficient(samplePos, rotSel);
 
     // Handle transparent pixels in coefficient table
     const uint coeffParamsOffset = 6 + rotSel * 5;
@@ -1214,10 +1289,10 @@ uint4 DrawRBG(uint2 pos, // pixel coordinates
         return kTransparentPixel;
     }
 
-    const uint2 screenCoords = CalcRotationScreenCoords(pos, rotSel);
+    const uint2 screenCoords = CalcRotationScreenCoords(samplePos, rotSel);
     return params.base.bitmap
-        ? DrawBitmapRBG(pos, index, rotSel, screenCoords)
-        : DrawScrollRBG(pos, index, rotSel, screenCoords);
+        ? DrawBitmapRBG(pos, samplePos, index, rotSel, screenCoords)
+        : DrawScrollRBG(pos, samplePos, index, rotSel, screenCoords);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
