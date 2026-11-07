@@ -25,10 +25,14 @@ enum class TouchControlId(
 data class TouchControlPlacement(
     val x: Float,
     val y: Float,
+    /** Size of this control relative to its default, on top of [TouchControlsLayout.globalScale]. */
+    val scale: Float = 1f,
 )
 
 data class TouchControlsLayout(
-    val placements: Map<TouchControlId, TouchControlPlacement>
+    val placements: Map<TouchControlId, TouchControlPlacement>,
+    /** Size applied to every control, multiplied with each control's own scale. */
+    val globalScale: Float = 1f,
 ) {
     fun placementFor(controlId: TouchControlId): TouchControlPlacement =
         placements[controlId] ?: DEFAULT.placementFor(controlId)
@@ -36,7 +40,16 @@ data class TouchControlsLayout(
     fun withPlacement(controlId: TouchControlId, placement: TouchControlPlacement): TouchControlsLayout =
         copy(placements = placements + (controlId to placement))
 
+    /** The size a control is actually drawn at, relative to its default. */
+    fun effectiveScale(controlId: TouchControlId): Float =
+        globalScale * placementFor(controlId).scale
+
     companion object {
+        const val MIN_SCALE = 0.5f
+        const val MAX_SCALE = 2.0f
+
+        fun clampScale(scale: Float): Float = scale.coerceIn(MIN_SCALE, MAX_SCALE)
+
         val DEFAULT_PORTRAIT = TouchControlsLayout(
             mapOf(
                 TouchControlId.DPAD to TouchControlPlacement(0.18f, 0.65f),

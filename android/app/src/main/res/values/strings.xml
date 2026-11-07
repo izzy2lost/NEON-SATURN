@@ -106,8 +106,10 @@
     <string name="validation_missing_selected_disc">The selected game could not be staged for launch.</string>
     <string name="validation_missing_companion_disc_files">This disc format needs its companion track files. Make sure the full disc set exists in the selected games folder.</string>
     <string name="touch_controls_editor_title">Touch Controls Layout</string>
-    <string name="touch_controls_editor_summary">Drag the on-screen Saturn controls where you want them. Changes save immediately and show up in the Android emulator overlay.</string>
+    <string name="touch_controls_editor_summary">Drag the on-screen Saturn controls where you want them. Tap a control and use the slider (or pinch it) to resize it; tap empty space to resize everything. Changes save immediately and show up in the Android emulator overlay.</string>
     <string name="touch_controls_reset">Reset Layout</string>
+    <string name="touch_controls_size_all">Size (all): %1$d%%</string>
+    <string name="touch_controls_size_one">Size (%1$s): %2$d%%</string>
     <string name="touch_controls_done">Done</string>
     <string name="view_mode_list">List</string>
     <string name="view_mode_na_covers">NA Boxes</string>

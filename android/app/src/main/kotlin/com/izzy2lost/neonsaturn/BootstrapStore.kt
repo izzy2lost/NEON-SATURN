@@ -166,13 +166,19 @@ class BootstrapStore(context: Context) {
 
     private fun loadTouchControlsLayoutWithDefaults(prefix: String, defaults: TouchControlsLayout): TouchControlsLayout =
         TouchControlsLayout(
-            TouchControlId.values().associateWith { controlId ->
+            placements = TouchControlId.values().associateWith { controlId ->
                 val defaultPlacement = defaults.placementFor(controlId)
                 TouchControlPlacement(
                     x = preferences.getFloat("${prefix}${controlId.preferenceKey}_x", defaultPlacement.x),
                     y = preferences.getFloat("${prefix}${controlId.preferenceKey}_y", defaultPlacement.y),
+                    scale = TouchControlsLayout.clampScale(
+                        preferences.getFloat("${prefix}${controlId.preferenceKey}_scale", defaultPlacement.scale)
+                    ),
                 )
-            }
+            },
+            globalScale = TouchControlsLayout.clampScale(
+                preferences.getFloat("${prefix}global_scale", defaults.globalScale)
+            ),
         )
 
     private fun saveTouchControlsLayoutWithPrefix(prefix: String, layout: TouchControlsLayout) {
@@ -181,7 +187,9 @@ class BootstrapStore(context: Context) {
                 val placement = layout.placementFor(controlId)
                 putFloat("${prefix}${controlId.preferenceKey}_x", placement.x)
                 putFloat("${prefix}${controlId.preferenceKey}_y", placement.y)
+                putFloat("${prefix}${controlId.preferenceKey}_scale", placement.scale)
             }
+            putFloat("${prefix}global_scale", layout.globalScale)
         }.apply()
     }
 
@@ -190,7 +198,9 @@ class BootstrapStore(context: Context) {
             TouchControlId.values().forEach { controlId ->
                 remove("${prefix}${controlId.preferenceKey}_x")
                 remove("${prefix}${controlId.preferenceKey}_y")
+                remove("${prefix}${controlId.preferenceKey}_scale")
             }
+            remove("${prefix}global_scale")
         }.apply()
     }
 

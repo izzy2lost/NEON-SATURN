@@ -40,6 +40,15 @@ class TouchControlsView @JvmOverloads constructor(
         val inside: Boolean = true,
     )
 
+    /** Editor two-finger resize of one control. */
+    private data class PinchGesture(
+        val controlId: TouchControlId,
+        val pointerA: Int,
+        val pointerB: Int,
+        val startDistance: Float,
+        val startScale: Float,
+    )
+
     var interactionMode: InteractionMode = InteractionMode.PLAY
         set(value) {
             if (field == value) {
@@ -56,6 +65,19 @@ class TouchControlsView @JvmOverloads constructor(
             notifyGameBandChanged()
             invalidate()
         }
+
+    /** Editor only: the control the size slider applies to, or null for all controls. */
+    var selectedControl: TouchControlId? = null
+        set(value) {
+            if (field == value) {
+                return
+            }
+            field = value
+            onSelectionChanged?.invoke(value)
+            invalidate()
+        }
+
+    var onSelectionChanged: ((TouchControlId?) -> Unit)? = null
 
     var onStateChanged: ((TouchControlsState) -> Unit)? = null
     var onLayoutChanged: ((TouchControlsLayout) -> Unit)? = null
@@ -128,6 +150,15 @@ class TouchControlsView @JvmOverloads constructor(
     }
     private val tempRect = RectF()
     private val pointerInteractions = mutableMapOf<Int, PointerInteraction>()
+    private var pinchGesture: PinchGesture? = null
+    private var editDownPoint = PointF()
+    private var editMoved = false
+    private val selectionPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 2f * density
+        color = Color.parseColor("#3FD7FF")
+        pathEffect = android.graphics.DashPathEffect(floatArrayOf(8f * density, 6f * density), 0f)
+    }
     private var currentState = TouchControlsState()
 
     // The vector ships with a theme-resolved tint; force white so they read against the
@@ -222,6 +253,67 @@ class TouchControlsView @JvmOverloads constructor(
         if (rewindAvailable) {
             drawIconButton(canvas, TouchControlId.REWIND, rewindIcon, Color.parseColor("#394550"))
         }
+
+        if (interactionMode == InteractionMode.EDIT) {
+            selectedControl?.takeIf { isControlAvailable(it) }?.let { drawSelection(canvas, it) }
+        }
+    }
+
+    private fun drawSelection(canvas: Canvas, controlId: TouchControlId) {
+        val center = controlCenter(controlId)
+        val (extentX, extentY) = controlExtents(controlId)
+        val pad = 6f * density
+        tempRect.set(center.x - extentX - pad, center.y - extentY - pad, center.x + extentX + pad, center.y + extentY + pad)
+        val corner = minOf(tempRect.width(), tempRect.height()) / 2f
+        canvas.drawRoundRect(tempRect, corner, corner, selectionPaint)
+    }
+
+    /** Sets the size of the selected control, or of every control when none is selected. */
+    fun setScaleForSelection(scale: Float) {
+        val clamped = TouchControlsLayout.clampScale(scale)
+        val controlId = selectedControl
+        val updated = if (controlId == null) {
+            touchControlsLayout.copy(globalScale = clamped)
+        } else {
+            touchControlsLayout.withPlacement(controlId, touchControlsLayout.placementFor(controlId).copy(scale = clamped))
+        }
+        applyEditedLayout(reclamp(updated, controlId))
+    }
+
+    fun scaleForSelection(): Float {
+        val controlId = selectedControl ?: return touchControlsLayout.globalScale
+        return touchControlsLayout.placementFor(controlId).scale
+    }
+
+    private fun applyEditedLayout(layout: TouchControlsLayout) {
+        touchControlsLayout = layout
+        onLayoutChanged?.invoke(layout)
+    }
+
+    /**
+     * Pulls a resized control (or every control, for [only] == null) back on screen after a size change pushed its
+     * edges past the view bounds.
+     */
+    private fun reclamp(layout: TouchControlsLayout, only: TouchControlId?): TouchControlsLayout {
+        if (width == 0 || height == 0) {
+            return layout
+        }
+        val previous = touchControlsLayout
+        touchControlsLayout = layout
+        var result = layout
+        for (controlId in only?.let { listOf(it) } ?: TouchControlId.entries) {
+            val placement = result.placementFor(controlId)
+            val clamped = clampControlCenter(controlId, width * placement.x, height * placement.y)
+            result = result.withPlacement(
+                controlId,
+                placement.copy(
+                    x = (clamped.x / width).coerceIn(0f, 1f),
+                    y = (clamped.y / height).coerceIn(0f, 1f),
+                ),
+            )
+        }
+        touchControlsLayout = previous
+        return result
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean =
@@ -362,21 +454,75 @@ class TouchControlsView @JvmOverloads constructor(
             MotionEvent.ACTION_DOWN,
             MotionEvent.ACTION_POINTER_DOWN -> {
                 val index = event.actionIndex
+                val pointerId = event.getPointerId(index)
                 val x = event.getX(index)
                 val y = event.getY(index)
-                val controlId = hitTestControl(x, y) ?: return false
+                val controlId = hitTestControl(x, y)
+
+                // A second finger on the held control, or on empty space, turns the drag into a pinch resize.
+                val held = pointerInteractions.entries.singleOrNull()
+                if (held != null && pinchGesture == null && (controlId == null || controlId == held.value.controlId)) {
+                    val heldIndex = event.findPointerIndex(held.key)
+                    if (heldIndex >= 0) {
+                        val distance = hypot(x - event.getX(heldIndex), y - event.getY(heldIndex))
+                        val target = held.value.controlId
+                        pinchGesture = PinchGesture(
+                            controlId = target,
+                            pointerA = held.key,
+                            pointerB = pointerId,
+                            startDistance = distance.coerceAtLeast(1f),
+                            startScale = touchControlsLayout.placementFor(target).scale,
+                        )
+                        selectedControl = target
+                        editMoved = true
+                        return true
+                    }
+                }
+
+                if (controlId == null) {
+                    if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                        // Tapping empty space goes back to sizing every control at once.
+                        selectedControl = null
+                    }
+                    return event.actionMasked == MotionEvent.ACTION_DOWN
+                }
                 val center = controlCenter(controlId)
-                pointerInteractions[event.getPointerId(index)] = PointerInteraction(
+                pointerInteractions[pointerId] = PointerInteraction(
                     pointerType = PointerType.EDIT,
                     controlId = controlId,
                     offsetX = center.x - x,
                     offsetY = center.y - y,
                 )
+                if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                    editDownPoint = PointF(x, y)
+                    editMoved = false
+                }
+                selectedControl = controlId
                 invalidate()
                 true
             }
 
             MotionEvent.ACTION_MOVE -> {
+                val pinch = pinchGesture
+                if (pinch != null) {
+                    val a = event.findPointerIndex(pinch.pointerA)
+                    val b = event.findPointerIndex(pinch.pointerB)
+                    if (a >= 0 && b >= 0) {
+                        val distance = hypot(event.getX(a) - event.getX(b), event.getY(a) - event.getY(b))
+                        val scale = TouchControlsLayout.clampScale(pinch.startScale * distance / pinch.startDistance)
+                        val placement = touchControlsLayout.placementFor(pinch.controlId)
+                        if (scale != placement.scale) {
+                            applyEditedLayout(
+                                reclamp(
+                                    touchControlsLayout.withPlacement(pinch.controlId, placement.copy(scale = scale)),
+                                    pinch.controlId,
+                                )
+                            )
+                        }
+                    }
+                    return true
+                }
+
                 var handled = false
                 for (index in 0 until event.pointerCount) {
                     val pointerId = event.getPointerId(index)
@@ -385,6 +531,14 @@ class TouchControlsView @JvmOverloads constructor(
                         continue
                     }
 
+                    if (!editMoved &&
+                        hypot(event.getX(index) - editDownPoint.x, event.getY(index) - editDownPoint.y) < 6f * density
+                    ) {
+                        handled = true
+                        continue
+                    }
+                    editMoved = true
+
                     val clampedPoint = clampControlCenter(
                         controlId = interaction.controlId,
                         x = event.getX(index) + interaction.offsetX,
@@ -392,13 +546,12 @@ class TouchControlsView @JvmOverloads constructor(
                     )
                     val updatedLayout = touchControlsLayout.withPlacement(
                         interaction.controlId,
-                        TouchControlPlacement(
+                        touchControlsLayout.placementFor(interaction.controlId).copy(
                             x = (clampedPoint.x / width.toFloat()).coerceIn(0f, 1f),
                             y = (clampedPoint.y / height.toFloat()).coerceIn(0f, 1f),
                         ),
                     )
-                    touchControlsLayout = updatedLayout
-                    onLayoutChanged?.invoke(updatedLayout)
+                    applyEditedLayout(updatedLayout)
                     handled = true
                 }
                 handled
@@ -406,12 +559,22 @@ class TouchControlsView @JvmOverloads constructor(
 
             MotionEvent.ACTION_UP,
             MotionEvent.ACTION_POINTER_UP -> {
-                pointerInteractions.remove(event.getPointerId(event.actionIndex)) != null
+                val pointerId = event.getPointerId(event.actionIndex)
+                val pinch = pinchGesture
+                if (pinch != null && (pointerId == pinch.pointerA || pointerId == pinch.pointerB)) {
+                    // End the pinch; the remaining finger stays inert until lifted so the control does not jump.
+                    pinchGesture = null
+                    pointerInteractions.clear()
+                    invalidate()
+                    return true
+                }
+                pointerInteractions.remove(pointerId) != null
             }
 
             MotionEvent.ACTION_CANCEL -> {
-                val handled = pointerInteractions.isNotEmpty()
+                val handled = pointerInteractions.isNotEmpty() || pinchGesture != null
                 pointerInteractions.clear()
+                pinchGesture = null
                 invalidate()
                 handled
             }
@@ -466,19 +629,19 @@ class TouchControlsView @JvmOverloads constructor(
     private fun drawEditorInstruction(canvas: Canvas) {
         textPaint.textSize = 15f * density
         textPaint.color = Color.argb(220, 255, 255, 255)
-        canvas.drawText("Drag any control to reposition it", width / 2f, 28f * density, textPaint)
+        canvas.drawText("Drag to move \u2022 tap to select \u2022 pinch to resize", width / 2f, 28f * density, textPaint)
     }
 
     private fun drawRoundButton(canvas: Canvas, controlId: TouchControlId, color: Int, textColor: Int = Color.WHITE) {
         val center = controlCenter(controlId)
-        val radius = faceButtonRadius()
+        val radius = faceButtonRadius(controlId)
         val pressed = isControlPressed(controlId)
         fillPaint.color = fillColorFor(color, pressed)
         strokePaint.color = outlineColorFor(color, pressed)
         canvas.drawCircle(center.x, center.y, radius, fillPaint)
         canvas.drawCircle(center.x, center.y, radius, strokePaint)
 
-        textPaint.textSize = 23f * density
+        textPaint.textSize = 23f * unit(controlId)
         textPaint.color = textColor
         val baseline = center.y - ((textPaint.descent() + textPaint.ascent()) / 2f)
         canvas.drawText(controlId.label, center.x, baseline, textPaint)
@@ -490,8 +653,8 @@ class TouchControlsView @JvmOverloads constructor(
 
     private fun drawCapsuleButton(canvas: Canvas, controlId: TouchControlId, color: Int) {
         val center = controlCenter(controlId)
-        val width = if (controlId == TouchControlId.MENU) 92f * density else 86f * density
-        val height = 34f * density
+        val width = if (controlId == TouchControlId.MENU) 92f * unit(controlId) else 86f * unit(controlId)
+        val height = 34f * unit(controlId)
         tempRect.set(center.x - (width / 2f), center.y - (height / 2f), center.x + (width / 2f), center.y + (height / 2f))
         val pressed = isControlPressed(controlId)
         fillPaint.color = fillColorFor(color, pressed)
@@ -499,7 +662,7 @@ class TouchControlsView @JvmOverloads constructor(
         canvas.drawRoundRect(tempRect, height / 2f, height / 2f, fillPaint)
         canvas.drawRoundRect(tempRect, height / 2f, height / 2f, strokePaint)
 
-        textPaint.textSize = if (controlId == TouchControlId.MENU) 13f * density else 15f * density
+        textPaint.textSize = if (controlId == TouchControlId.MENU) 13f * unit(controlId) else 15f * unit(controlId)
         textPaint.color = Color.WHITE
         val baseline = center.y - ((textPaint.descent() + textPaint.ascent()) / 2f)
         canvas.drawText(controlId.label.uppercase(), center.x, baseline, textPaint)
@@ -536,16 +699,17 @@ class TouchControlsView @JvmOverloads constructor(
 
     private fun drawShoulderButton(canvas: Canvas, controlId: TouchControlId, color: Int) {
         val center = controlCenter(controlId)
-        val width = 110f * density
-        val height = 30f * density
+        val width = 110f * unit(controlId)
+        val height = 30f * unit(controlId)
         tempRect.set(center.x - (width / 2f), center.y - (height / 2f), center.x + (width / 2f), center.y + (height / 2f))
         val pressed = isControlPressed(controlId)
         fillPaint.color = fillColorFor(color, pressed)
         strokePaint.color = outlineColorFor(color, pressed)
-        canvas.drawRoundRect(tempRect, 18f * density, 18f * density, fillPaint)
-        canvas.drawRoundRect(tempRect, 18f * density, 18f * density, strokePaint)
+        val corner = 18f * unit(controlId)
+        canvas.drawRoundRect(tempRect, corner, corner, fillPaint)
+        canvas.drawRoundRect(tempRect, corner, corner, strokePaint)
 
-        textPaint.textSize = 18f * density
+        textPaint.textSize = 18f * unit(controlId)
         textPaint.color = Color.WHITE
         val baseline = center.y - ((textPaint.descent() + textPaint.ascent()) / 2f)
         canvas.drawText(controlId.label, center.x, baseline, textPaint)
@@ -699,8 +863,25 @@ class TouchControlsView @JvmOverloads constructor(
             else -> (currentState.buttonMask and buttonMaskFor(controlId)) != 0
         }
 
+    /** Reverse of the draw order in [onDraw], so the editor picks whichever control is visibly on top. */
+    private val editHitOrder = listOf(
+        TouchControlId.REWIND,
+        TouchControlId.MENU,
+        TouchControlId.START,
+        TouchControlId.C,
+        TouchControlId.B,
+        TouchControlId.A,
+        TouchControlId.Z,
+        TouchControlId.Y,
+        TouchControlId.X,
+        TouchControlId.ANALOG,
+        TouchControlId.DPAD,
+        TouchControlId.R,
+        TouchControlId.L,
+    )
+
     private fun hitTestControl(x: Float, y: Float): TouchControlId? =
-        controlHitOrder.firstOrNull { controlId ->
+        (if (interactionMode == InteractionMode.EDIT) editHitOrder else controlHitOrder).firstOrNull { controlId ->
             isControlAvailable(controlId) && isPointInsideControl(controlId, x, y)
         }
 
@@ -715,10 +896,10 @@ class TouchControlsView @JvmOverloads constructor(
             TouchControlId.L,
             TouchControlId.R -> {
                 tempRect.set(
-                    center.x - (55f * density * hitExpansion),
-                    center.y - (18f * density * hitExpansion),
-                    center.x + (55f * density * hitExpansion),
-                    center.y + (18f * density * hitExpansion),
+                    center.x - (55f * unit(controlId) * hitExpansion),
+                    center.y - (18f * unit(controlId) * hitExpansion),
+                    center.x + (55f * unit(controlId) * hitExpansion),
+                    center.y + (18f * unit(controlId) * hitExpansion),
                 )
                 tempRect.contains(x, y)
             }
@@ -728,8 +909,8 @@ class TouchControlsView @JvmOverloads constructor(
 
             TouchControlId.START,
             TouchControlId.MENU -> {
-                val width = if (controlId == TouchControlId.MENU) 46f * density else 43f * density
-                val height = 18f * density
+                val width = if (controlId == TouchControlId.MENU) 46f * unit(controlId) else 43f * unit(controlId)
+                val height = 18f * unit(controlId)
                 tempRect.set(
                     center.x - (width * hitExpansion),
                     center.y - (height * hitExpansion),
@@ -739,7 +920,7 @@ class TouchControlsView @JvmOverloads constructor(
                 tempRect.contains(x, y)
             }
 
-            else -> hypot(x - center.x, y - center.y) <= faceButtonRadius() * hitExpansion
+            else -> hypot(x - center.x, y - center.y) <= faceButtonRadius(controlId) * hitExpansion
         }
     }
 
@@ -764,20 +945,23 @@ class TouchControlsView @JvmOverloads constructor(
             TouchControlId.DPAD -> dpadRadius() to dpadRadius()
             TouchControlId.ANALOG -> analogRadius() to analogRadius()
             TouchControlId.L,
-            TouchControlId.R -> (56f * density) to (20f * density)
-            TouchControlId.START -> (44f * density) to (20f * density)
-            TouchControlId.MENU -> (48f * density) to (20f * density)
+            TouchControlId.R -> (56f * unit(controlId)) to (20f * unit(controlId))
+            TouchControlId.START -> (44f * unit(controlId)) to (20f * unit(controlId))
+            TouchControlId.MENU -> (48f * unit(controlId)) to (20f * unit(controlId))
             TouchControlId.REWIND -> actionButtonRadius() to actionButtonRadius()
-            else -> faceButtonRadius() to faceButtonRadius()
+            else -> faceButtonRadius(controlId) to faceButtonRadius(controlId)
         }
 
-    private fun faceButtonRadius(): Float = 29f * density
+    /** One dp at this control's user-chosen size. */
+    private fun unit(controlId: TouchControlId): Float = density * touchControlsLayout.effectiveScale(controlId)
 
-    private fun actionButtonRadius(): Float = 22f * density
+    private fun faceButtonRadius(controlId: TouchControlId): Float = 29f * unit(controlId)
 
-    private fun dpadRadius(): Float = 58f * density
+    private fun actionButtonRadius(): Float = 22f * unit(TouchControlId.REWIND)
 
-    private fun analogRadius(): Float = 56f * density
+    private fun dpadRadius(): Float = 58f * unit(TouchControlId.DPAD)
+
+    private fun analogRadius(): Float = 56f * unit(TouchControlId.ANALOG)
 
     private fun quantizeAxis(value: Float): Int =
         when {
